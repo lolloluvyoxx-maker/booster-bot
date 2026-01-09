@@ -7,7 +7,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildPresences // REQUIRED for boost detection
+    GatewayIntentBits.GuildPresences
   ],
   partials: ["CHANNEL"]
 });
@@ -18,20 +18,19 @@ const SOURCE_GUILD_ID = "1439575441693343809";
 const TARGET_GUILD_ID = "1425102156125442140";
 
 // Role IDs
-const DISCORD_BOOSTER_ROLE_ID = "1439576681403781212"; // Discord's automatic booster role
-const CUSTOM_BOOSTER_ROLE_ID = "1439656430163722240"; // Your custom role to give after boost
-const ACCESS_ROLE_ID = "1439978535736578119"; // Access in target server
-const DENIED_ROLE_ID = "1426874194263805992"; // Denied in target server
+const DISCORD_BOOSTER_ROLE_ID = "1439576681403781212";
+const CUSTOM_BOOSTER_ROLE_ID = "1439656430163722240";
+const ACCESS_ROLE_ID = "1439978535736578119";
+const DENIED_ROLE_ID = "1426874194263805992";
 
 // ===== VANITY CONFIG =====
 const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
-const CHECK_INTERVAL = 30 * 1000; // 30 seconds
-const REQUIRED_404_COUNT = 5; // 5 consecutive 404s = vanity free
+const CHECK_INTERVAL = 30 * 1000;
+const REQUIRED_404_COUNT = 5;
 
 // ===== TRACKERS =====
 const vanity404Counter = {};
 const vanityNotified = {};
-const memberCache = new Map(); // Cache for member data to reduce API calls
 
 VANITY_CODES.forEach(v => {
   vanity404Counter[v] = 0;
@@ -51,7 +50,6 @@ function log(message, type = "info") {
 
 // ===== BOOST DETECTION =====
 function isBoosting(member) {
-  // Check both Discord's booster role AND premiumSince for reliability
   return member.roles.cache.has(DISCORD_BOOSTER_ROLE_ID) || !!member.premiumSince;
 }
 
@@ -59,11 +57,11 @@ async function giveCustomBoosterRole(member) {
   try {
     if (!member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
       await member.roles.add(CUSTOM_BOOSTER_ROLE_ID);
-      log(`Gave custom booster role to ${member.user.tag} (${member.id})`, "success");
+      log(`Gave custom booster role to ${member.user.tag}`, "success");
       return true;
     }
   } catch (error) {
-    log(`Failed to give custom booster role to ${member.user.tag}: ${error.message}`, "error");
+    log(`Failed to give custom booster role: ${error.message}`, "error");
   }
   return false;
 }
@@ -72,11 +70,11 @@ async function removeCustomBoosterRole(member) {
   try {
     if (member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
       await member.roles.remove(CUSTOM_BOOSTER_ROLE_ID);
-      log(`Removed custom booster role from ${member.user.tag} (${member.id})`, "success");
+      log(`Removed custom booster role from ${member.user.tag}`, "success");
       return true;
     }
   } catch (error) {
-    log(`Failed to remove custom booster role from ${member.user.tag}: ${error.message}`, "error");
+    log(`Failed to remove custom booster role: ${error.message}`, "error");
   }
   return false;
 }
@@ -86,66 +84,120 @@ async function updateTargetServerAccess(userId, shouldHaveAccess) {
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
     const targetMember = await targetGuild.members.fetch(userId).catch(() => null);
     
-    if (!targetMember) return false;
+    if (!targetMember) {
+      log(`User ${userId} not found in target server`, "info");
+      return false;
+    }
     
     if (shouldHaveAccess) {
       await targetMember.roles.add(ACCESS_ROLE_ID);
       await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
-      log(`Granted access to ${targetMember.user.tag} in target server`, "success");
+      log(`Granted access to ${targetMember.user.tag}`, "success");
     } else {
       await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
       await targetMember.roles.add(DENIED_ROLE_ID);
-      log(`Revoked access from ${targetMember.user.tag} in target server`, "success");
+      log(`Denied access to ${targetMember.user.tag}`, "success");
     }
+    
     return true;
   } catch (error) {
-    log(`Failed to update target server access for ${userId}: ${error.message}`, "error");
+    log(`Failed to update target server access: ${error.message}`, "error");
     return false;
+  }
+}
+
+// ===== NEW: CHECK ALL MEMBERS FUNCTION =====
+async function checkAllTargetMembers() {
+  try {
+    log("Starting check of ALL members in target server...", "info");
+    
+    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+    
+    // Fetch all members from target server
+    const targetMembers = await targetGuild.members.fetch();
+    log(`Found ${targetMembers.size} members in target server`, "info");
+    
+    let updatedCount = 0;
+    let errorCount = 0;
+    
+    // Process each member
+    for (const targetMember of targetMembers.values()) {
+      try {
+        // Skip bots
+        if (targetMember.user.bot) continue;
+        
+        // Fetch from source server
+        const sourceMember = await sourceGuild.members.fetch(targetMember.id).catch(() => null);
+        
+        if (sourceMember) {
+          const isBoostingMember = isBoosting(sourceMember);
+          const hasAccessRole = targetMember.roles.cache.has(ACCESS_ROLE_ID);
+          const hasDeniedRole = targetMember.roles.cache.has(DENIED_ROLE_ID);
+          
+          // Update custom booster role in source server
+          if (isBoostingMember) {
+            await giveCustomBoosterRole(sourceMember);
+          } else {
+            await removeCustomBoosterRole(sourceMember);
+          }
+          
+          // Check if roles need updating in target server
+          if (isBoostingMember && (!hasAccessRole || hasDeniedRole)) {
+            // Should have access but doesn't
+            await targetMember.roles.add(ACCESS_ROLE_ID);
+            await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
+            log(`Fixed: ${targetMember.user.tag} - Added access role (boosting)`, "success");
+            updatedCount++;
+          } else if (!isBoostingMember && (hasAccessRole || !hasDeniedRole)) {
+            // Should NOT have access but does
+            await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+            await targetMember.roles.add(DENIED_ROLE_ID);
+            log(`Fixed: ${targetMember.user.tag} - Added denied role (not boosting)`, "success");
+            updatedCount++;
+          }
+        } else {
+          // Member not in source server - should have denied role
+          if (!targetMember.roles.cache.has(DENIED_ROLE_ID)) {
+            await targetMember.roles.add(DENIED_ROLE_ID);
+            await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+            log(`Fixed: ${targetMember.user.tag} - Added denied role (not in source)`, "success");
+            updatedCount++;
+          }
+        }
+        
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (memberError) {
+        errorCount++;
+        log(`Error processing ${targetMember.user.tag}: ${memberError.message}`, "error");
+      }
+    }
+    
+    log(`✅ Check complete! Updated ${updatedCount} members, ${errorCount} errors`, "success");
+    return { updated: updatedCount, errors: errorCount, total: targetMembers.size };
+    
+  } catch (error) {
+    log(`Failed to check all members: ${error.message}`, "error");
+    return { updated: 0, errors: 1, total: 0 };
   }
 }
 
 // ===== BOT EVENTS =====
 client.once("ready", async () => {
-  log(`Logged in as ${client.user.tag} (${client.user.id})`, "success");
+  log(`Logged in as ${client.user.tag}`, "success");
   
-  // Initial setup check
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
     
-    log(`Source Server: ${sourceGuild.name} (${sourceGuild.id})`);
-    log(`Target Server: ${targetGuild.name} (${targetGuild.id})`);
+    log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
     
-    // Check bot permissions
-    const sourcePerms = sourceGuild.members.me.permissions;
-    const targetPerms = targetGuild.members.me.permissions;
+    // Run initial check on startup (optional)
+    log("Running initial member check...", "info");
+    await checkAllTargetMembers();
     
-    if (!sourcePerms.has(PermissionFlagsBits.ManageRoles)) {
-      log("WARNING: Bot missing 'Manage Roles' permission in source server!", "error");
-    }
-    if (!targetPerms.has(PermissionFlagsBits.ManageRoles)) {
-      log("WARNING: Bot missing 'Manage Roles' permission in target server!", "error");
-    }
-    
-    // Process existing boosters
-    log("Checking existing boosters in source server...");
-    const members = await sourceGuild.members.fetch();
-    let boosterCount = 0;
-    
-    for (const member of members.values()) {
-      if (isBoosting(member)) {
-        boosterCount++;
-        await giveCustomBoosterRole(member);
-        
-        // Update their access in target server if they're there
-        const targetMember = await targetGuild.members.fetch(member.id).catch(() => null);
-        if (targetMember) {
-          await updateTargetServerAccess(member.id, true);
-        }
-      }
-    }
-    
-    log(`Found ${boosterCount} existing boosters`, "success");
   } catch (error) {
     log(`Startup error: ${error.message}`, "error");
   }
@@ -157,23 +209,27 @@ client.once("ready", async () => {
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== TARGET_GUILD_ID) return;
   
-  log(`${member.user.tag} joined target server`, "info");
+  log(`${member.user.tag} joined TARGET server`, "info");
   
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const sourceMember = await sourceGuild.members.fetch(member.id).catch(() => null);
     
     if (sourceMember && isBoosting(sourceMember)) {
-      // User is boosting - grant access
+      log(`${member.user.tag} IS boosting!`, "success");
       await updateTargetServerAccess(member.id, true);
       await giveCustomBoosterRole(sourceMember);
     } else {
-      // User is not boosting - deny access
+      log(`${member.user.tag} is NOT boosting`, "info");
       await updateTargetServerAccess(member.id, false);
     }
   } catch (error) {
-    log(`Error processing ${member.user.tag} join: ${error.message}`, "error");
-    await member.roles.add(DENIED_ROLE_ID).catch(() => {});
+    log(`Error processing join: ${error.message}`, "error");
+    try {
+      await member.roles.add(DENIED_ROLE_ID);
+    } catch (roleError) {
+      log(`Failed to add denied role: ${roleError.message}`, "error");
+    }
   }
 });
 
@@ -184,20 +240,21 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const wasBoosting = isBoosting(oldMember);
   const isNowBoosting = isBoosting(newMember);
   
-  // Skip if no change
   if (wasBoosting === isNowBoosting) return;
   
-  log(`Boost status changed for ${newMember.user.tag}: ${wasBoosting ? 'Boosting' : 'Not boosting'} → ${isNowBoosting ? 'Boosting' : 'Not boosting'}`, "info");
+  log(`Boost change: ${newMember.user.tag} - ${wasBoosting ? 'Was' : 'Not'} -> ${isNowBoosting ? 'Now' : 'Not'}`, "info");
   
-  // Update custom booster role
-  if (isNowBoosting) {
-    await giveCustomBoosterRole(newMember);
-  } else {
-    await removeCustomBoosterRole(newMember);
+  try {
+    if (isNowBoosting) {
+      await giveCustomBoosterRole(newMember);
+    } else {
+      await removeCustomBoosterRole(newMember);
+    }
+    
+    await updateTargetServerAccess(newMember.id, isNowBoosting);
+  } catch (error) {
+    log(`Error updating boost: ${error.message}`, "error");
   }
-  
-  // Update target server access
-  await updateTargetServerAccess(newMember.id, isNowBoosting);
 });
 
 // ===== ADMIN COMMANDS =====
@@ -221,7 +278,7 @@ client.on("messageCreate", async (message) => {
         vanity404Counter[v] = 0;
         vanityNotified[v] = false;
       });
-      return message.reply("✅ All vanity monitors have been reset.");
+      return message.reply("✅ All vanity monitors reset.");
     }
     
     if (!VANITY_CODES.includes(arg)) {
@@ -230,85 +287,123 @@ client.on("messageCreate", async (message) => {
     
     vanity404Counter[arg] = 0;
     vanityNotified[arg] = false;
-    return message.reply(`✅ Vanity **${arg}** has been reset.`);
+    return message.reply(`✅ Vanity **${arg}** reset.`);
   }
   
-  // !checkboost command - NEW
-  if (command === "checkboost") {
+  // !checkall command - NEW
+  if (command === "checkall") {
+    log(`Owner requested check of all members`, "info");
+    message.reply("🔍 Checking ALL members in target server... This may take a minute.");
+    
+    const result = await checkAllTargetMembers();
+    
+    const embed = {
+      color: result.errors > 0 ? 0xff9900 : 0x00ff00,
+      title: "Member Check Complete",
+      fields: [
+        { name: "Total Members", value: `${result.total}`, inline: true },
+        { name: "Updated", value: `${result.updated}`, inline: true },
+        { name: "Errors", value: `${result.errors}`, inline: true }
+      ],
+      description: result.updated > 0 ? 
+        `Fixed role assignments for ${result.updated} members` : 
+        'All roles are already correct!',
+      timestamp: new Date()
+    };
+    
+    message.reply({ embeds: [embed] });
+  }
+  
+  // !fixuser command
+  if (command === "fixuser") {
     const userId = args[1] || message.mentions.users.first()?.id;
     
     if (!userId) {
-      return message.reply("Usage: `!checkboost <userid|@mention>`");
+      return message.reply("Usage: `!fixuser <userid|@mention>`");
     }
     
     try {
       const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
-      const member = await sourceGuild.members.fetch(userId).catch(() => null);
+      const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
       
-      if (!member) {
-        return message.reply("❌ User not found in source server.");
+      const sourceMember = await sourceGuild.members.fetch(userId).catch(() => null);
+      const targetMember = await targetGuild.members.fetch(userId).catch(() => null);
+      
+      if (!targetMember) {
+        return message.reply("❌ User not found in target server.");
       }
       
-      const boosting = isBoosting(member);
+      let response = `**Fixing roles for ${targetMember.user.tag}**\n`;
+      
+      if (sourceMember) {
+        const boosting = isBoosting(sourceMember);
+        response += `Source server: ${boosting ? '✅ Boosting' : '❌ Not boosting'}\n`;
+        
+        // Update custom role
+        if (boosting) {
+          await giveCustomBoosterRole(sourceMember);
+          response += `Custom role: ✅ Added\n`;
+        } else {
+          await removeCustomBoosterRole(sourceMember);
+          response += `Custom role: ✅ Removed\n`;
+        }
+        
+        // Update target access
+        await updateTargetServerAccess(userId, boosting);
+        response += `Target access: ${boosting ? '✅ Granted' : '❌ Denied'}`;
+      } else {
+        response += `User not in source server\n`;
+        await updateTargetServerAccess(userId, false);
+        response += `Target access: ❌ Denied`;
+      }
+      
+      message.reply(response);
+    } catch (error) {
+      message.reply(`Error: ${error.message}`);
+    }
+  }
+  
+  // !stats command
+  if (command === "stats") {
+    try {
+      const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+      const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+      
+      const sourceMembers = await sourceGuild.members.fetch();
+      const targetMembers = await targetGuild.members.fetch();
+      
+      let boosters = 0;
+      sourceMembers.forEach(member => {
+        if (isBoosting(member)) boosters++;
+      });
+      
+      let withAccess = 0;
+      let withDenied = 0;
+      targetMembers.forEach(member => {
+        if (member.roles.cache.has(ACCESS_ROLE_ID)) withAccess++;
+        if (member.roles.cache.has(DENIED_ROLE_ID)) withDenied++;
+      });
+      
       const embed = {
-        color: boosting ? 0x00ff00 : 0xff0000,
-        title: `Boost Status: ${member.user.tag}`,
+        color: 0x0099ff,
+        title: "Bot Statistics",
         fields: [
-          { name: "Is Boosting", value: boosting ? "✅ Yes" : "❌ No", inline: true },
-          { name: "Custom Booster Role", value: member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID) ? "✅ Yes" : "❌ No", inline: true },
-          { name: "Discord Booster Role", value: member.roles.cache.has(DISCORD_BOOSTER_ROLE_ID) ? "✅ Yes" : "❌ No", inline: true },
-          { name: "Boosting Since", value: member.premiumSince ? new Date(member.premiumSince).toLocaleString() : "❌ Not boosting", inline: false },
-          { name: "User ID", value: member.id, inline: false }
+          { name: "Source Server", value: `Members: ${sourceMembers.size}\nBoosters: ${boosters}`, inline: true },
+          { name: "Target Server", value: `Members: ${targetMembers.size}\nWith Access: ${withAccess}\nWith Denied: ${withDenied}`, inline: true },
+          { name: "Bot Uptime", value: `${Math.floor(process.uptime() / 60)} minutes`, inline: true }
         ],
         timestamp: new Date()
       };
       
       message.reply({ embeds: [embed] });
     } catch (error) {
-      message.reply("❌ Error checking boost status.");
-      log(`Checkboost error: ${error.message}`, "error");
-    }
-  }
-  
-  // !forceupdate command - NEW
-  if (command === "forceupdate") {
-    const userId = args[1] || message.mentions.users.first()?.id;
-    
-    if (!userId) {
-      return message.reply("Usage: `!forceupdate <userid|@mention>`");
-    }
-    
-    try {
-      const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
-      const member = await sourceGuild.members.fetch(userId).catch(() => null);
-      
-      if (!member) {
-        return message.reply("❌ User not found in source server.");
-      }
-      
-      const boosting = isBoosting(member);
-      
-      // Update roles based on current status
-      if (boosting) {
-        await giveCustomBoosterRole(member);
-        await updateTargetServerAccess(userId, true);
-        message.reply(`✅ Force updated ${member.user.tag} - Granted booster role and access (Boosting: ✅)`);
-      } else {
-        await removeCustomBoosterRole(member);
-        await updateTargetServerAccess(userId, false);
-        message.reply(`✅ Force updated ${member.user.tag} - Removed booster role and access (Boosting: ❌)`);
-      }
-    } catch (error) {
-      message.reply("❌ Error force updating user.");
-      log(`Forceupdate error: ${error.message}`, "error");
+      message.reply(`Error: ${error.message}`);
     }
   }
 });
 
 // ===== VANITY MONITOR =====
 function startVanityMonitor() {
-  log("Vanity monitor started", "success");
-  
   setInterval(async () => {
     for (const vanity of VANITY_CODES) {
       if (vanityNotified[vanity]) continue;
@@ -320,7 +415,6 @@ function startVanityMonitor() {
         
         if (response.status === 404) {
           vanity404Counter[vanity]++;
-          log(`Vanity ${vanity}: 404 count ${vanity404Counter[vanity]}/${REQUIRED_404_COUNT}`);
         } else {
           vanity404Counter[vanity] = 0;
         }
@@ -329,39 +423,33 @@ function startVanityMonitor() {
           vanityNotified[vanity] = true;
           
           const owner = await client.users.fetch(OWNER_ID);
-          await owner.send({
-            embeds: [{
-              color: 0xff0000,
-              title: "🚨 VANITY AVAILABLE 🚨",
-              description: `Vanity: **discord.gg/${vanity}**`,
-              fields: [
-                { name: "Time", value: utcTimestamp() },
-                { name: "Status", value: "Confirmed available" }
-              ],
-              timestamp: new Date()
-            }]
-          });
+          await owner.send(
+            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
+            `Vanity: **discord.gg/${vanity}**\n` +
+            `Time: **${utcTimestamp()}**`
+          );
           
-          log(`Vanity ${vanity} confirmed available - Notification sent`, "success");
+          log(`Vanity ${vanity} available!`, "success");
         }
       } catch (error) {
-        log(`Vanity check error for ${vanity}: ${error.message}`, "error");
+        // Silent fail
       }
     }
   }, CHECK_INTERVAL);
 }
+
+// ===== AUTO-CHECK SCHEDULER =====
+// Run check every 6 hours to catch any inconsistencies
+setInterval(async () => {
+  if (client.isReady()) {
+    log("Running scheduled check of all members...", "info");
+    await checkAllTargetMembers();
+  }
+}, 6 * 60 * 60 * 1000); // 6 hours
 
 // ===== ERROR HANDLING =====
 client.on("error", (error) => {
   log(`Client error: ${error.message}`, "error");
 });
 
-process.on("unhandledRejection", (error) => {
-  log(`Unhandled rejection: ${error.message}`, "error");
-});
-
-// ===== START BOT =====
-client.login(process.env.TOKEN).catch(error => {
-  log(`Failed to login: ${error.message}`, "error");
-  process.exit(1);
-});
+client.login(process.env.TOKEN);
