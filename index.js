@@ -20,7 +20,9 @@ client.once("ready", () => {
   console.log(`Online come ${client.user.tag}`);
 });
 
-// Quando entra nel TARGET
+/**
+ * Quando una persona entra nel TARGET server
+ */
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== TARGET_GUILD_ID) return;
 
@@ -35,29 +37,39 @@ client.on("guildMemberAdd", async (member) => {
       await member.roles.add(DENIED_ROLE_ID);
     }
   } catch (err) {
-    console.error(err);
+    console.error("guildMemberAdd:", err);
   }
 });
 
-// Quando smette di boostare
+/**
+ * Quando cambia lo stato boost nel SOURCE
+ * (inizia o smette di boostare)
+ */
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (oldMember.guild.id !== SOURCE_GUILD_ID) return;
 
   const hadBoost = oldMember.premiumSince;
   const hasBoost = newMember.premiumSince;
 
-  if (hadBoost && !hasBoost) {
-    try {
-      const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
-      const targetMember = await targetGuild.members.fetch(newMember.id).catch(() => null);
+  try {
+    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+    const targetMember = await targetGuild.members.fetch(newMember.id).catch(() => null);
+    if (!targetMember) return;
 
-      if (targetMember) {
-        await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
-        await targetMember.roles.add(DENIED_ROLE_ID).catch(() => {});
-      }
-    } catch (err) {
-      console.error(err);
+    // 🔴 HA TOLTO IL BOOST → DENIED
+    if (hadBoost && !hasBoost) {
+      await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+      await targetMember.roles.add(DENIED_ROLE_ID).catch(() => {});
     }
+
+    // 🟢 HA INIZIATO A BOOSTARE → ACCESS
+    if (!hadBoost && hasBoost) {
+      await targetMember.roles.add(ACCESS_ROLE_ID).catch(() => {});
+      await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
+    }
+
+  } catch (err) {
+    console.error("guildMemberUpdate:", err);
   }
 });
 
