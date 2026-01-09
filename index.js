@@ -8,7 +8,7 @@ const client = new Client({
 });
 
 // 🔴 METTI QUI GLI ID
-const ROLE_ID = "ID_DEL_RUOLO";
+const ROLE_ID = "1439656430163722240";
 const GUILD_ID = "ID_DEL_SERVER";
 
 client.once("ready", () => {
