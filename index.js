@@ -1,14 +1,18 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 
-// ===== CLIENT SETUP =====
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages
   ],
   partials: ["CHANNEL"]
 });
+
+// ===== OWNER =====
+const OWNER_ID = "1005237630113419315";
 
 // ===== BOOST CONFIG =====
 const SOURCE_GUILD_ID = "1439575441693343809";
@@ -18,22 +22,32 @@ const BOOSTER_ROLE_ID = "1439656430163722240";
 const ACCESS_ROLE_ID = "1439978535736578119";
 const DENIED_ROLE_ID = "1426874194263805992";
 
-// ===== VANITY MONITOR CONFIG =====
+// ===== VANITY CONFIG =====
 const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
-const CHECK_INTERVAL = 30 * 1000; // 30 seconds
-const NOTIFY_USER_ID = "1005237630113419315";
+const CHECK_INTERVAL = 30 * 1000;
+const REQUIRED_404_COUNT = 5;
 
-// Track which vanity was already reported
-const vanityStatus = {};
-VANITY_CODES.forEach(v => (vanityStatus[v] = false));
+// ===== TRACKERS =====
+const vanity404Counter = {};
+const vanityNotified = {};
 
-// ===== BOT READY =====
+VANITY_CODES.forEach(v => {
+  vanity404Counter[v] = 0;
+  vanityNotified[v] = false;
+});
+
+// ===== UTIL =====
+function utcTimestamp() {
+  return new Date().toISOString().replace("T", " ").replace("Z", " UTC");
+}
+
+// ===== READY =====
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
   startVanityMonitor();
 });
 
-// ===== USER JOINS TARGET SERVER =====
+// ===== TARGET JOIN =====
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== TARGET_GUILD_ID) return;
 
@@ -47,74 +61,102 @@ client.on("guildMemberAdd", async (member) => {
     } else {
       await member.roles.add(DENIED_ROLE_ID);
     }
-  } catch (error) {
-    console.error("guildMemberAdd error:", error);
+  } catch (e) {
+    console.error(e);
   }
 });
 
-// ===== BOOST STATUS CHANGE =====
-client.on("guildMemberUpdate", async (oldMember, newMember) => {
-  if (oldMember.guild.id !== SOURCE_GUILD_ID) return;
+// ===== BOOST CHANGE =====
+client.on("guildMemberUpdate", async (oldM, newM) => {
+  if (oldM.guild.id !== SOURCE_GUILD_ID) return;
 
-  const hadBoost = !!oldMember.premiumSince;
-  const hasBoost = !!newMember.premiumSince;
+  const hadBoost = !!oldM.premiumSince;
+  const hasBoost = !!newM.premiumSince;
 
   try {
-    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
-    const targetMember = await targetGuild.members.fetch(newMember.id).catch(() => null);
-    if (!targetMember) return;
+    const target = await client.guilds.fetch(TARGET_GUILD_ID);
+    const member = await target.members.fetch(newM.id).catch(() => null);
+    if (!member) return;
 
-    // Boost removed → DENIED
     if (hadBoost && !hasBoost) {
-      await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
-      await targetMember.roles.add(DENIED_ROLE_ID).catch(() => {});
+      await member.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+      await member.roles.add(DENIED_ROLE_ID).catch(() => {});
     }
 
-    // Boost added → ACCESS
     if (!hadBoost && hasBoost) {
-      await targetMember.roles.add(ACCESS_ROLE_ID).catch(() => {});
-      await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
+      await member.roles.add(ACCESS_ROLE_ID).catch(() => {});
+      await member.roles.remove(DENIED_ROLE_ID).catch(() => {});
     }
-  } catch (error) {
-    console.error("guildMemberUpdate error:", error);
+  } catch (e) {
+    console.error(e);
   }
 });
 
-// ===== VANITY MONITOR (MULTI) =====
+// ===== RESET COMMAND =====
+client.on("messageCreate", async (msg) => {
+  if (msg.author.id !== OWNER_ID) return;
+  if (!msg.content.startsWith("!resetvanity")) return;
+
+  const arg = msg.content.split(" ")[1];
+  if (!arg) {
+    msg.reply("Usage: `!resetvanity <name | all>`");
+    return;
+  }
+
+  if (arg === "all") {
+    VANITY_CODES.forEach(v => {
+      vanity404Counter[v] = 0;
+      vanityNotified[v] = false;
+    });
+    msg.reply("✅ All vanity monitors have been reset.");
+    return;
+  }
+
+  if (!VANITY_CODES.includes(arg)) {
+    msg.reply("❌ Vanity not found.");
+    return;
+  }
+
+  vanity404Counter[arg] = 0;
+  vanityNotified[arg] = false;
+  msg.reply(`✅ Vanity **${arg}** has been reset.`);
+});
+
+// ===== VANITY MONITOR =====
 function startVanityMonitor() {
   setInterval(async () => {
     for (const vanity of VANITY_CODES) {
-      if (vanityStatus[vanity]) continue;
+      if (vanityNotified[vanity]) continue;
 
       try {
-        const response = await fetch(
+        const res = await fetch(
           `https://discord.com/api/v10/invites/${vanity}`,
-          {
-            headers: {
-              Authorization: `Bot ${process.env.TOKEN}`
-            }
-          }
+          { headers: { Authorization: `Bot ${process.env.TOKEN}` } }
         );
 
-        // 404 = vanity is free
-        if (response.status === 404) {
-          vanityStatus[vanity] = true;
+        if (res.status === 404) {
+          vanity404Counter[vanity]++;
+        } else {
+          vanity404Counter[vanity] = 0;
+        }
 
-          const user = await client.users.fetch(NOTIFY_USER_ID);
+        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
+          vanityNotified[vanity] = true;
+
+          const user = await client.users.fetch(OWNER_ID);
           await user.send(
             `🚨 **VANITY AVAILABLE** 🚨\n\n` +
-            `The vanity URL **discord.gg/${vanity}** is currently AVAILABLE.\n` +
-            `Try to claim it manually as soon as possible.`
+            `Vanity: **discord.gg/${vanity}**\n` +
+            `Time: **${utcTimestamp()}**`
           );
 
-          console.log(`Vanity available: ${vanity}`);
+          console.log(`Vanity confirmed free: ${vanity}`);
         }
-      } catch (error) {
-        console.error(`Vanity monitor error (${vanity}):`, error);
+      } catch (e) {
+        console.error(e);
       }
     }
   }, CHECK_INTERVAL);
 }
 
-// ===== LOGIN =====
 client.login(process.env.TOKEN);
