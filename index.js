@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 
-// ===== CLIENT =====
+// ===== CLIENT SETUP =====
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -18,20 +18,22 @@ const BOOSTER_ROLE_ID = "1439656430163722240";
 const ACCESS_ROLE_ID = "1439978535736578119";
 const DENIED_ROLE_ID = "1426874194263805992";
 
-// ===== VANITY CONFIG =====
-const VANITY_CODE = "vanityteen";
-const CHECK_INTERVAL = 30 * 1000; // 30 secondi
+// ===== VANITY MONITOR CONFIG =====
+const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
+const CHECK_INTERVAL = 30 * 1000; // 30 seconds
 const NOTIFY_USER_ID = "1005237630113419315";
 
-let vanityAlreadyFree = false;
+// Track which vanity was already reported
+const vanityStatus = {};
+VANITY_CODES.forEach(v => (vanityStatus[v] = false));
 
-// ===== READY =====
+// ===== BOT READY =====
 client.once("ready", () => {
-  console.log(`Online come ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag}`);
   startVanityMonitor();
 });
 
-// ===== TARGET JOIN =====
+// ===== USER JOINS TARGET SERVER =====
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== TARGET_GUILD_ID) return;
 
@@ -45,12 +47,12 @@ client.on("guildMemberAdd", async (member) => {
     } else {
       await member.roles.add(DENIED_ROLE_ID);
     }
-  } catch (err) {
-    console.error("guildMemberAdd error:", err);
+  } catch (error) {
+    console.error("guildMemberAdd error:", error);
   }
 });
 
-// ===== BOOST UPDATE =====
+// ===== BOOST STATUS CHANGE =====
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (oldMember.guild.id !== SOURCE_GUILD_ID) return;
 
@@ -62,53 +64,54 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     const targetMember = await targetGuild.members.fetch(newMember.id).catch(() => null);
     if (!targetMember) return;
 
-    // ❌ Boost rimosso
+    // Boost removed → DENIED
     if (hadBoost && !hasBoost) {
       await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
       await targetMember.roles.add(DENIED_ROLE_ID).catch(() => {});
     }
 
-    // ✅ Boost aggiunto
+    // Boost added → ACCESS
     if (!hadBoost && hasBoost) {
       await targetMember.roles.add(ACCESS_ROLE_ID).catch(() => {});
       await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
     }
-
-  } catch (err) {
-    console.error("guildMemberUpdate error:", err);
+  } catch (error) {
+    console.error("guildMemberUpdate error:", error);
   }
 });
 
-// ===== VANITY MONITOR =====
+// ===== VANITY MONITOR (MULTI) =====
 function startVanityMonitor() {
   setInterval(async () => {
-    if (vanityAlreadyFree) return;
+    for (const vanity of VANITY_CODES) {
+      if (vanityStatus[vanity]) continue;
 
-    try {
-      const res = await fetch(
-        `https://discord.com/api/v10/invites/${VANITY_CODE}`,
-        {
-          headers: {
-            Authorization: `Bot ${process.env.TOKEN}`
+      try {
+        const response = await fetch(
+          `https://discord.com/api/v10/invites/${vanity}`,
+          {
+            headers: {
+              Authorization: `Bot ${process.env.TOKEN}`
+            }
           }
-        }
-      );
-
-      // 404 = vanity libera
-      if (res.status === 404) {
-        vanityAlreadyFree = true;
-
-        const user = await client.users.fetch(NOTIFY_USER_ID);
-        await user.send(
-          `🚨 **VANITY DISPONIBILE** 🚨\n\n` +
-          `👉 discord.gg/${VANITY_CODE} risulta LIBERA adesso.\n` +
-          `Prova a prenderla manualmente subito.`
         );
 
-        console.log("Vanity libera, DM inviato.");
+        // 404 = vanity is free
+        if (response.status === 404) {
+          vanityStatus[vanity] = true;
+
+          const user = await client.users.fetch(NOTIFY_USER_ID);
+          await user.send(
+            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
+            `The vanity URL **discord.gg/${vanity}** is currently AVAILABLE.\n` +
+            `Try to claim it manually as soon as possible.`
+          );
+
+          console.log(`Vanity available: ${vanity}`);
+        }
+      } catch (error) {
+        console.error(`Vanity monitor error (${vanity}):`, error);
       }
-    } catch (err) {
-      console.error("Vanity monitor error:", err);
     }
   }, CHECK_INTERVAL);
 }
