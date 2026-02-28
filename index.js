@@ -26,13 +26,13 @@ const DENIED_ROLE_ID = "1426874194263805992";
 // Channel IDs
 const PERKS_CHANNEL_ID = "1475125441919455346";
 
-// ===== CUSTOM MESSAGES (in-memory, modificabili con !setmsg) =====
+// ===== CUSTOM MESSAGES (in-memory, editable with !setmsg) =====
 const customMessages = {
   boost:`<:SENSATIONAL:1475072755467550781>  {user}  Boosting grants you __access to our locked vault__  a space reserved for boosters. Inside, you’ll find all creator channels listed under *perks*.
 
 The *invite link* is private — **sharing it is forbidden** and will get you **blacklisted**. If you ever **remove your boost**, you’ll be **automatically removed** from the vault.
 
-[Ი𐑼](https://discord.com/channels/1463635465222619218/1475125441919455346)`
+[Ი𐑼](https://discord.com/channels/1463635465222619218/1475125441919455346)`,
   unboost: `We regret that you’ve __withdrawn your boost__ <user_id> . From this point on, **your access** to our **exclusive server** will be __revoked__. If **boost again**, you’ll __regain entry__ without issue.`,
   ping: `{user}`
 };
@@ -338,29 +338,29 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).split(" ");
   const command = args[0].toLowerCase();
 
-  // !setmsg boost/unboost/ping <testo>
+  // !setmsg boost/unboost/ping <text>
   if (command === "setmsg") {
     const type = args[1]?.toLowerCase();
     if (!type || !["boost", "unboost", "ping"].includes(type)) {
-      return message.reply("Usage: `!setmsg <boost|unboost|ping> <testo>`\nNel ping usa `{user}` come placeholder.");
+      return message.reply("Usage: `!setmsg <boost|unboost|ping> <text>`\nIn the ping message use `{user}` as a placeholder for the mention.");
     }
     const text = args.slice(2).join(" ");
-    if (!text) return message.reply("❌ Scrivi il testo del messaggio dopo il tipo.");
+    if (!text) return message.reply("❌ Please write the message text after the type.");
     customMessages[type] = text;
-    return message.reply(`✅ Messaggio **${type}** aggiornato!\n\nAnteprima:\n${text.replace("{user}", `@${message.author.username}`)}`);
+    return message.reply(`✅ **${type}** message updated!\n\nPreview:\n${text.replace("{user}", `@${message.author.username}`)}`);
   }
 
   // !viewmsg
   if (command === "viewmsg") {
     const embed = {
       color: 0x9b59b6,
-      title: "📨 Messaggi attuali",
+      title: "📨 Current Messages",
       fields: [
-        { name: "💜 DM Boost", value: customMessages.boost.substring(0, 1024) },
-        { name: "😔 DM Unboost", value: customMessages.unboost.substring(0, 1024) },
-        { name: "📣 Ping canale perks", value: customMessages.ping }
+        { name: "💜 Boost DM", value: customMessages.boost.substring(0, 1024) },
+        { name: "😔 Unboost DM", value: customMessages.unboost.substring(0, 1024) },
+        { name: "📣 Perks channel ping", value: customMessages.ping }
       ],
-      footer: { text: "Modifica con !setmsg boost/unboost/ping <testo>" }
+      footer: { text: "Edit with !setmsg boost/unboost/ping <text>" }
     };
     return message.reply({ embeds: [embed] });
   }
