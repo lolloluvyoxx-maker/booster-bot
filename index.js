@@ -28,9 +28,13 @@ const PERKS_CHANNEL_ID = "1475125441919455346";
 
 // ===== CUSTOM MESSAGES (in-memory, modificabili con !setmsg) =====
 const customMessages = {
-  boost: `💜 **Grazie per aver boostato il server!**\n\nIl tuo boost ci aiuta tantissimo e hai sbloccato accesso a contenuti esclusivi. Goditi i tuoi perks! 🚀`,
-  unboost: `😔 **Il tuo boost è scaduto.**\n\nSembra che tu abbia smesso di boostare il server. Se si tratta di un errore o vuoi tornare, siamo sempre qui! Reboostando riavrai subito accesso ai tuoi perks. 💜`,
-  ping: `{user} hai sbloccato i perks del server grazie al tuo boost! 💜🚀`
+  boost:`<:SENSATIONAL:1475072755467550781>  {user}  Boosting grants you __access to our locked vault__  a space reserved for boosters. Inside, you’ll find all creator channels listed under *perks*.
+
+The *invite link* is private — **sharing it is forbidden** and will get you **blacklisted**. If you ever **remove your boost**, you’ll be **automatically removed** from the vault.
+
+[Ი𐑼](https://discord.com/channels/1463635465222619218/1475125441919455346)`
+  unboost: `We regret that you’ve __withdrawn your boost__ <user_id> . From this point on, **your access** to our **exclusive server** will be __revoked__. If **boost again**, you’ll __regain entry__ without issue.`,
+  ping: `{user}`
 };
 
 // ===== VANITY CONFIG =====
