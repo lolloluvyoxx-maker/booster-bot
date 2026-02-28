@@ -1,5 +1,4 @@
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require("discord.js");
-const fs = require("fs");
 
 const client = new Client({
   intents: [
@@ -27,34 +26,12 @@ const DENIED_ROLE_ID = "1426874194263805992";
 // Channel IDs
 const PERKS_CHANNEL_ID = "1475125441919455346";
 
-// ===== CUSTOM MESSAGES (persistent via JSON) =====
-const MESSAGES_FILE = "./custom_messages.json";
-
-const DEFAULT_MESSAGES = {
+// ===== CUSTOM MESSAGES (in-memory, modificabili con !setmsg) =====
+const customMessages = {
   boost: `💜 **Grazie per aver boostato il server!**\n\nIl tuo boost ci aiuta tantissimo e hai sbloccato accesso a contenuti esclusivi. Goditi i tuoi perks! 🚀`,
   unboost: `😔 **Il tuo boost è scaduto.**\n\nSembra che tu abbia smesso di boostare il server. Se si tratta di un errore o vuoi tornare, siamo sempre qui! Reboostando riavrai subito accesso ai tuoi perks. 💜`,
-  ping: `<@{user}> hai sbloccato i perks del server grazie al tuo boost! 💜🚀`
+  ping: `{user} hai sbloccato i perks del server grazie al tuo boost! 💜🚀`
 };
-
-function loadMessages() {
-  try {
-    if (fs.existsSync(MESSAGES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(MESSAGES_FILE, "utf8"));
-      return { ...DEFAULT_MESSAGES, ...data };
-    }
-  } catch (e) {}
-  return { ...DEFAULT_MESSAGES };
-}
-
-function saveMessages(msgs) {
-  try {
-    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(msgs, null, 2), "utf8");
-  } catch (e) {
-    log(`Failed to save messages: ${e.message}`, "error");
-  }
-}
-
-let customMessages = loadMessages();
 
 // ===== VANITY CONFIG =====
 const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
@@ -64,7 +41,7 @@ const REQUIRED_404_COUNT = 5;
 // ===== TRACKERS =====
 const vanity404Counter = {};
 const vanityNotified = {};
-const recentBoosters = new Set(); // Track recent boosters to prevent premature removal
+const recentBoosters = new Set();
 
 VANITY_CODES.forEach(v => {
   vanity404Counter[v] = 0;
@@ -90,7 +67,6 @@ async function fetchMemberWithRetry(guild, userId, maxRetries = 3) {
       return member;
     } catch (error) {
       if (i < maxRetries - 1) {
-        // Wait before retrying
         await new Promise(resolve => setTimeout(resolve, 500 + (i * 500)));
         log(`Retry ${i + 1}/${maxRetries} fetching member ${userId}...`, "info");
       } else {
@@ -132,6 +108,7 @@ async function removeCustomBoosterRole(member) {
   return false;
 }
 
+// ===== DM ON BOOST/UNBOOST =====
 async function sendBoostDM(user, boosted) {
   try {
     const msg = boosted ? customMessages.boost : customMessages.unboost;
@@ -142,6 +119,7 @@ async function sendBoostDM(user, boosted) {
   }
 }
 
+// ===== PING IN PERKS CHANNEL ON BOOST =====
 async function pingBoosterInPerksChannel(member) {
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
@@ -150,12 +128,9 @@ async function pingBoosterInPerksChannel(member) {
       log(`Perks channel not found: ${PERKS_CHANNEL_ID}`, "error");
       return;
     }
-    const pingText = customMessages.ping.replace("{user}", member.id);
+    const pingText = customMessages.ping.replace("{user}", `<@${member.id}>`);
     const msg = await channel.send(pingText);
-    // Delete the ping after 5 seconds
-    setTimeout(() => {
-      msg.delete().catch(() => {});
-    }, 5000);
+    setTimeout(() => { msg.delete().catch(() => {}); }, 5000);
     log(`Pinged ${member.user.tag} in perks channel`, "success");
   } catch (error) {
     log(`Failed to ping in perks channel: ${error.message}`, "error");
@@ -175,11 +150,9 @@ async function updateTargetServerAccess(userId, shouldHaveAccess) {
     if (shouldHaveAccess) {
       await targetMember.roles.add(ACCESS_ROLE_ID);
       await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
-      // Add to recent boosters to prevent false removal
       recentBoosters.add(userId);
       log(`Granted access to ${targetMember.user.tag}`, "success");
     } else {
-      // Only remove if not in recent boosters
       if (!recentBoosters.has(userId)) {
         await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
         await targetMember.roles.add(DENIED_ROLE_ID);
@@ -202,23 +175,17 @@ async function checkAllTargetMembers() {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
 
-    // Fetch all members from target server
     const targetMembers = await targetGuild.members.fetch();
     log(`Found ${targetMembers.size} members in target server`, "info");
 
     let updatedCount = 0;
     let errorCount = 0;
 
-    // Process each member
     for (const targetMember of targetMembers.values()) {
       try {
-        // Skip bots
         if (targetMember.user.bot) continue;
 
-        // Skip recent boosters for 10 minutes to avoid race conditions
         const isRecentBooster = recentBoosters.has(targetMember.id);
-
-        // Fetch from source server with retry
         const sourceMember = await fetchMemberWithRetry(sourceGuild, targetMember.id).catch(() => null);
 
         if (sourceMember) {
@@ -226,28 +193,22 @@ async function checkAllTargetMembers() {
           const hasAccessRole = targetMember.roles.cache.has(ACCESS_ROLE_ID);
           const hasDeniedRole = targetMember.roles.cache.has(DENIED_ROLE_ID);
 
-          // Update custom booster role in source server
           if (isBoostingMember) {
             await giveCustomBoosterRole(sourceMember);
           } else {
             await removeCustomBoosterRole(sourceMember);
           }
 
-          // Check if roles need updating in target server
           if (isBoostingMember) {
             if (!hasAccessRole || hasDeniedRole) {
-              // Should have access but doesn't
               await targetMember.roles.add(ACCESS_ROLE_ID);
               await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
               log(`Fixed: ${targetMember.user.tag} - Added access role (boosting)`, "success");
               updatedCount++;
             }
-            // Mark as recent booster
             recentBoosters.add(targetMember.id);
           } else if (!isRecentBooster) {
-            // Only remove if not a recent booster
             if (hasAccessRole || !hasDeniedRole) {
-              // Should NOT have access but does
               await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
               await targetMember.roles.add(DENIED_ROLE_ID);
               log(`Fixed: ${targetMember.user.tag} - Added denied role (not boosting)`, "success");
@@ -255,7 +216,6 @@ async function checkAllTargetMembers() {
             }
           }
         } else if (!isRecentBooster) {
-          // Member not in source server - should have denied role
           if (!targetMember.roles.cache.has(DENIED_ROLE_ID)) {
             await targetMember.roles.add(DENIED_ROLE_ID);
             await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
@@ -264,7 +224,6 @@ async function checkAllTargetMembers() {
           }
         }
 
-        // Small delay to avoid rate limits
         await new Promise(resolve => setTimeout(resolve, 100));
 
       } catch (memberError) {
@@ -292,7 +251,6 @@ client.once("ready", async () => {
 
     log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
 
-    // Run initial check on startup (optional)
     log("Running initial member check...", "info");
     await checkAllTargetMembers();
 
@@ -312,10 +270,8 @@ client.on("guildMemberAdd", async (member) => {
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
 
-    // Add delay to let boost status sync
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Fetch with retry to ensure we get the latest data
     const sourceMember = await fetchMemberWithRetry(sourceGuild, member.id).catch(() => null);
 
     if (sourceMember && isBoosting(sourceMember)) {
@@ -346,7 +302,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 
   if (wasBoosting === isNowBoosting) return;
 
-  log(`Boost change: ${newMember.user.tag} - ${wasBoosting ? 'Was' : 'Not'} -> ${isNowBoosting ? 'Now' : 'Not'}`, "info");
+  log(`Boost change: ${newMember.user.tag} - ${wasBoosting ? "Was" : "Not"} -> ${isNowBoosting ? "Now" : "Not"}`, "info");
 
   try {
     if (isNowBoosting) {
@@ -355,10 +311,8 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       await sendBoostDM(newMember.user, true);
       await pingBoosterInPerksChannel(newMember);
     } else {
-      // Wait 30 seconds before removing in case user is rejoining
       await new Promise(resolve => setTimeout(resolve, 30000));
 
-      // Check if still not boosting
       const refreshedMember = await newMember.guild.members.fetch(newMember.id).catch(() => null);
       if (refreshedMember && !isBoosting(refreshedMember)) {
         await removeCustomBoosterRole(refreshedMember);
@@ -380,7 +334,34 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).split(" ");
   const command = args[0].toLowerCase();
 
-  // !resetvanity command
+  // !setmsg boost/unboost/ping <testo>
+  if (command === "setmsg") {
+    const type = args[1]?.toLowerCase();
+    if (!type || !["boost", "unboost", "ping"].includes(type)) {
+      return message.reply("Usage: `!setmsg <boost|unboost|ping> <testo>`\nNel ping usa `{user}` come placeholder.");
+    }
+    const text = args.slice(2).join(" ");
+    if (!text) return message.reply("❌ Scrivi il testo del messaggio dopo il tipo.");
+    customMessages[type] = text;
+    return message.reply(`✅ Messaggio **${type}** aggiornato!\n\nAnteprima:\n${text.replace("{user}", `@${message.author.username}`)}`);
+  }
+
+  // !viewmsg
+  if (command === "viewmsg") {
+    const embed = {
+      color: 0x9b59b6,
+      title: "📨 Messaggi attuali",
+      fields: [
+        { name: "💜 DM Boost", value: customMessages.boost.substring(0, 1024) },
+        { name: "😔 DM Unboost", value: customMessages.unboost.substring(0, 1024) },
+        { name: "📣 Ping canale perks", value: customMessages.ping }
+      ],
+      footer: { text: "Modifica con !setmsg boost/unboost/ping <testo>" }
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !resetvanity
   if (command === "resetvanity") {
     const arg = args[1];
 
@@ -405,7 +386,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(`✅ Vanity **${arg}** reset.`);
   }
 
-  // !checkall command
+  // !checkall
   if (command === "checkall") {
     log(`Owner requested check of all members`, "info");
     message.reply("🔍 Checking ALL members in target server... This may take a minute.");
@@ -422,14 +403,14 @@ client.on("messageCreate", async (message) => {
       ],
       description: result.updated > 0 ?
         `Fixed role assignments for ${result.updated} members` :
-        'All roles are already correct!',
+        "All roles are already correct!",
       timestamp: new Date()
     };
 
     message.reply({ embeds: [embed] });
   }
 
-  // !fixuser command
+  // !fixuser
   if (command === "fixuser") {
     const userId = args[1] || message.mentions.users.first()?.id;
 
@@ -452,9 +433,8 @@ client.on("messageCreate", async (message) => {
 
       if (sourceMember) {
         const boosting = isBoosting(sourceMember);
-        response += `Source server: ${boosting ? '✅ Boosting' : '❌ Not boosting'}\n`;
+        response += `Source server: ${boosting ? "✅ Boosting" : "❌ Not boosting"}\n`;
 
-        // Update custom role
         if (boosting) {
           await giveCustomBoosterRole(sourceMember);
           response += `Custom role: ✅ Added\n`;
@@ -464,9 +444,8 @@ client.on("messageCreate", async (message) => {
           response += `Custom role: ✅ Removed\n`;
         }
 
-        // Update target access
         await updateTargetServerAccess(userId, boosting);
-        response += `Target access: ${boosting ? '✅ Granted' : '❌ Denied'}`;
+        response += `Target access: ${boosting ? "✅ Granted" : "❌ Denied"}`;
       } else {
         response += `User not in source server\n`;
         await updateTargetServerAccess(userId, false);
@@ -479,53 +458,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // !setmsg command — set custom boost/unboost/ping messages
-  // Usage: !setmsg boost <testo> | !setmsg unboost <testo> | !setmsg ping <testo>
-  // Nel ping usa {user} come placeholder per il mention dell'utente
-  if (command === "setmsg") {
-    const type = args[1]?.toLowerCase();
-    if (!type || !["boost", "unboost", "ping"].includes(type)) {
-      return message.reply("Usage: `!setmsg <boost|unboost|ping> <testo>`\nNel ping usa `{user}` come placeholder per il mention (es: `Ciao {user}!`).");
-    }
-    const text = args.slice(2).join(" ");
-    if (!text) {
-      return message.reply(`❌ Devi scrivere il testo del messaggio dopo il tipo.`);
-    }
-    customMessages[type] = text;
-    saveMessages(customMessages);
-    return message.reply(`✅ Messaggio **${type}** aggiornato!\n\nAnteprima:\n${text.replace("{user}", `@${message.author.username}`)}`);
-  }
-
-  // !viewmsg command — mostra i messaggi attuali
-  if (command === "viewmsg") {
-    const embed = {
-      color: 0x9b59b6,
-      title: "📨 Messaggi attuali",
-      fields: [
-        { name: "💜 DM Boost", value: customMessages.boost.substring(0, 1024) },
-        { name: "😔 DM Unboost", value: customMessages.unboost.substring(0, 1024) },
-        { name: "📣 Ping canale perks", value: customMessages.ping }
-      ],
-      footer: { text: "Modifica con !setmsg boost/unboost/ping <testo> • Resetta con !resetmsg" }
-    };
-    return message.reply({ embeds: [embed] });
-  }
-
-  // !resetmsg command — ripristina i messaggi di default
-  if (command === "resetmsg") {
-    const type = args[1]?.toLowerCase();
-    if (type && ["boost", "unboost", "ping"].includes(type)) {
-      customMessages[type] = DEFAULT_MESSAGES[type];
-      saveMessages(customMessages);
-      return message.reply(`✅ Messaggio **${type}** ripristinato al default.`);
-    } else {
-      customMessages = { ...DEFAULT_MESSAGES };
-      saveMessages(customMessages);
-      return message.reply("✅ Tutti i messaggi ripristinati ai default.");
-    }
-  }
-
-
+  // !stats
   if (command === "stats") {
     try {
       const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
@@ -581,4 +514,43 @@ function startVanityMonitor() {
           vanity404Counter[vanity] = 0;
         }
 
-  
+        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
+          vanityNotified[vanity] = true;
+
+          const owner = await client.users.fetch(OWNER_ID);
+          await owner.send(
+            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
+            `Vanity: **discord.gg/${vanity}**\n` +
+            `Time: **${utcTimestamp()}**`
+          );
+
+          log(`Vanity ${vanity} available!`, "success");
+        }
+      } catch (error) {
+        // Silent fail
+      }
+    }
+  }, CHECK_INTERVAL);
+}
+
+// ===== CLEAR RECENT BOOSTERS CACHE =====
+setInterval(() => {
+  log(`Clearing recent boosters cache (${recentBoosters.size} entries)`, "info");
+  recentBoosters.clear();
+}, 10 * 60 * 1000);
+
+// ===== AUTO-CHECK SCHEDULER =====
+setInterval(async () => {
+  if (client.isReady()) {
+    log("Running scheduled check of all members...", "info");
+    await checkAllTargetMembers();
+  }
+}, 6 * 60 * 60 * 1000);
+
+// ===== ERROR HANDLING =====
+client.on("error", (error) => {
+  log(`Client error: ${error.message}`, "error");
+});
+
+client.login(process.env.TOKEN);
+                          
