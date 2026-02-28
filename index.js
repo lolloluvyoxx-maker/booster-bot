@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require("discord.js");
+const fs = require("fs");
 
 const client = new Client({
   intents: [
@@ -22,6 +23,38 @@ const DISCORD_BOOSTER_ROLE_ID = "1475164627808813158";
 const CUSTOM_BOOSTER_ROLE_ID = "1474900074185097358";
 const ACCESS_ROLE_ID = "1475167075789181122";
 const DENIED_ROLE_ID = "1426874194263805992";
+
+// Channel IDs
+const PERKS_CHANNEL_ID = "1475125441919455346";
+
+// ===== CUSTOM MESSAGES (persistent via JSON) =====
+const MESSAGES_FILE = "./custom_messages.json";
+
+const DEFAULT_MESSAGES = {
+  boost: `💜 **Grazie per aver boostato il server!**\n\nIl tuo boost ci aiuta tantissimo e hai sbloccato accesso a contenuti esclusivi. Goditi i tuoi perks! 🚀`,
+  unboost: `😔 **Il tuo boost è scaduto.**\n\nSembra che tu abbia smesso di boostare il server. Se si tratta di un errore o vuoi tornare, siamo sempre qui! Reboostando riavrai subito accesso ai tuoi perks. 💜`,
+  ping: `<@{user}> hai sbloccato i perks del server grazie al tuo boost! 💜🚀`
+};
+
+function loadMessages() {
+  try {
+    if (fs.existsSync(MESSAGES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(MESSAGES_FILE, "utf8"));
+      return { ...DEFAULT_MESSAGES, ...data };
+    }
+  } catch (e) {}
+  return { ...DEFAULT_MESSAGES };
+}
+
+function saveMessages(msgs) {
+  try {
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(msgs, null, 2), "utf8");
+  } catch (e) {
+    log(`Failed to save messages: ${e.message}`, "error");
+  }
+}
+
+let customMessages = loadMessages();
 
 // ===== VANITY CONFIG =====
 const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
@@ -97,6 +130,36 @@ async function removeCustomBoosterRole(member) {
     log(`Failed to remove custom booster role: ${error.message}`, "error");
   }
   return false;
+}
+
+async function sendBoostDM(user, boosted) {
+  try {
+    const msg = boosted ? customMessages.boost : customMessages.unboost;
+    await user.send(msg);
+    log(`DM sent to ${user.tag} (boosted: ${boosted})`, "success");
+  } catch (error) {
+    log(`Failed to send DM to ${user.tag}: ${error.message}`, "error");
+  }
+}
+
+async function pingBoosterInPerksChannel(member) {
+  try {
+    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+    const channel = await sourceGuild.channels.fetch(PERKS_CHANNEL_ID).catch(() => null);
+    if (!channel) {
+      log(`Perks channel not found: ${PERKS_CHANNEL_ID}`, "error");
+      return;
+    }
+    const pingText = customMessages.ping.replace("{user}", member.id);
+    const msg = await channel.send(pingText);
+    // Delete the ping after 5 seconds
+    setTimeout(() => {
+      msg.delete().catch(() => {});
+    }, 5000);
+    log(`Pinged ${member.user.tag} in perks channel`, "success");
+  } catch (error) {
+    log(`Failed to ping in perks channel: ${error.message}`, "error");
+  }
 }
 
 async function updateTargetServerAccess(userId, shouldHaveAccess) {
@@ -289,6 +352,8 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     if (isNowBoosting) {
       recentBoosters.add(newMember.id);
       await giveCustomBoosterRole(newMember);
+      await sendBoostDM(newMember.user, true);
+      await pingBoosterInPerksChannel(newMember);
     } else {
       // Wait 30 seconds before removing in case user is rejoining
       await new Promise(resolve => setTimeout(resolve, 30000));
@@ -297,6 +362,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       const refreshedMember = await newMember.guild.members.fetch(newMember.id).catch(() => null);
       if (refreshedMember && !isBoosting(refreshedMember)) {
         await removeCustomBoosterRole(refreshedMember);
+        await sendBoostDM(newMember.user, false);
       }
     }
     
@@ -413,7 +479,53 @@ client.on("messageCreate", async (message) => {
     }
   }
   
-  // !stats command
+  // !setmsg command — set custom boost/unboost/ping messages
+  // Usage: !setmsg boost <testo> | !setmsg unboost <testo> | !setmsg ping <testo>
+  // Nel ping usa {user} come placeholder per il mention dell'utente
+  if (command === "setmsg") {
+    const type = args[1]?.toLowerCase();
+    if (!type || !["boost", "unboost", "ping"].includes(type)) {
+      return message.reply("Usage: `!setmsg <boost|unboost|ping> <testo>`\nNel ping usa `{user}` come placeholder per il mention (es: `Ciao {user}!`).");
+    }
+    const text = args.slice(2).join(" ");
+    if (!text) {
+      return message.reply(`❌ Devi scrivere il testo del messaggio dopo il tipo.`);
+    }
+    customMessages[type] = text;
+    saveMessages(customMessages);
+    return message.reply(`✅ Messaggio **${type}** aggiornato!\n\nAnteprima:\n${text.replace("{user}", `@${message.author.username}`)}`);
+  }
+
+  // !viewmsg command — mostra i messaggi attuali
+  if (command === "viewmsg") {
+    const embed = {
+      color: 0x9b59b6,
+      title: "📨 Messaggi attuali",
+      fields: [
+        { name: "💜 DM Boost", value: customMessages.boost.substring(0, 1024) },
+        { name: "😔 DM Unboost", value: customMessages.unboost.substring(0, 1024) },
+        { name: "📣 Ping canale perks", value: customMessages.ping }
+      ],
+      footer: { text: "Modifica con !setmsg boost/unboost/ping <testo> • Resetta con !resetmsg" }
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !resetmsg command — ripristina i messaggi di default
+  if (command === "resetmsg") {
+    const type = args[1]?.toLowerCase();
+    if (type && ["boost", "unboost", "ping"].includes(type)) {
+      customMessages[type] = DEFAULT_MESSAGES[type];
+      saveMessages(customMessages);
+      return message.reply(`✅ Messaggio **${type}** ripristinato al default.`);
+    } else {
+      customMessages = { ...DEFAULT_MESSAGES };
+      saveMessages(customMessages);
+      return message.reply("✅ Tutti i messaggi ripristinati ai default.");
+    }
+  }
+
+
   if (command === "stats") {
     try {
       const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
@@ -459,55 +571,4 @@ function startVanityMonitor() {
       if (vanityNotified[vanity]) continue;
       
       try {
-        const response = await fetch(`https://discord.com/api/v10/invites/${vanity}`, {
-          headers: { Authorization: `Bot ${process.env.TOKEN}` }
-        });
-        
-        if (response.status === 404) {
-          vanity404Counter[vanity]++;
-        } else {
-          vanity404Counter[vanity] = 0;
-        }
-        
-        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
-          vanityNotified[vanity] = true;
-          
-          const owner = await client.users.fetch(OWNER_ID);
-          await owner.send(
-            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
-            `Vanity: **discord.gg/${vanity}**\n` +
-            `Time: **${utcTimestamp()}**`
-          );
-          
-          log(`Vanity ${vanity} available!`, "success");
-        }
-      } catch (error) {
-        // Silent fail
-      }
-    }
-  }, CHECK_INTERVAL);
-}
-
-// ===== CLEAR RECENT BOOSTERS CACHE =====
-// Clear recent boosters every 10 minutes to prevent stale cache
-setInterval(() => {
-  log(`Clearing recent boosters cache (${recentBoosters.size} entries)`, "info");
-  recentBoosters.clear();
-}, 10 * 60 * 1000);
-
-// ===== AUTO-CHECK SCHEDULER =====
-// Run check every 6 hours to catch any inconsistencies
-setInterval(async () => {
-  if (client.isReady()) {
-    log("Running scheduled check of all members...", "info");
-    await checkAllTargetMembers();
-  }
-}, 6 * 60 * 60 * 1000); // 6 hours
-
-// ===== ERROR HANDLING =====
-client.on("error", (error) => {
-  log(`Client error: ${error.message}`, "error");
-});
-
-client.login(process.env.TOKEN);
-          
+        const response = await fetch(
