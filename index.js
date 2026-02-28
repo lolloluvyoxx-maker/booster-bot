@@ -33,7 +33,7 @@ const customMessages = {
 The *invite link* is private — **sharing it is forbidden** and will get you **blacklisted**. If you ever **remove your boost**, you’ll be **automatically removed** from the vault.
 
 [Ი𐑼](https://discord.com/channels/1463635465222619218/1475125441919455346)`,
-  unboost: `We regret that you’ve __withdrawn your boost__ <user_id> . From this point on, **your access** to our **exclusive server** will be __revoked__. If **boost again**, you’ll __regain entry__ without issue.`,
+  unboost: `We regret that you’ve __withdrawn your boost__ {user} . From this point on, **your access** to our **exclusive server** will be __revoked__. If **boost again**, you’ll __regain entry__ without issue.`,
   ping: `{user}`
 };
 
@@ -115,7 +115,8 @@ async function removeCustomBoosterRole(member) {
 // ===== DM ON BOOST/UNBOOST =====
 async function sendBoostDM(user, boosted) {
   try {
-    const msg = boosted ? customMessages.boost : customMessages.unboost;
+    const template = boosted ? customMessages.boost : customMessages.unboost;
+    const msg = template.replace("{user}", `<@${user.id}>`);
     await user.send(msg);
     log(`DM sent to ${user.tag} (boosted: ${boosted})`, "success");
   } catch (error) {
