@@ -1,26 +1,40 @@
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require("discord.js");
-const fs = require("fs");
 
-// ===== BAN STATS PERSISTENCE =====
-const BAN_STATS_FILE = "./ban_stats.json";
+// banStats[guildId][modId] = { tag, actions, bans, ignores }
+const banStats = {};
 
-function loadBanStats() {
+async function loadBanStatsFromAuditLogs(guild) {
+  const stats = {};
   try {
-    if (fs.existsSync(BAN_STATS_FILE)) {
-      return JSON.parse(fs.readFileSync(BAN_STATS_FILE, "utf8"));
-    }
-  } catch (e) {}
-  return {};
-}
+    let before = undefined;
+    let fetched;
 
-function saveBanStats(stats) {
-  try {
-    fs.writeFileSync(BAN_STATS_FILE, JSON.stringify(stats, null, 2));
-  } catch (e) {}
-}
+    // Fetch all ban audit log entries (100 at a time)
+    do {
+      fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, before });
+      if (fetched.entries.size === 0) break;
 
-// banStats[guildId][moderatorId] = { tag, actions, bans, ignores }
-const banStats = loadBanStats();
+      for (const entry of fetched.entries.values()) {
+        if (!entry.executor) continue;
+        const modId = entry.executor.id;
+        const modTag = entry.executor.tag || entry.executor.username;
+
+        if (!stats[modId]) {
+          stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+        }
+        stats[modId].tag = modTag;
+        stats[modId].actions += 1;
+        stats[modId].bans += 1;
+      }
+
+      before = fetched.entries.last()?.id;
+    } while (fetched.entries.size === 100);
+
+  } catch (e) {
+    log(`Failed to load audit logs for ${guild.name}: ${e.message}`, "error");
+  }
+  return stats;
+}
 
 const client = new Client({
   intents: [
@@ -278,6 +292,16 @@ client.once("ready", async () => {
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
 
     log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
+
+    // Load ban history in background (non-blocking) so bot starts instantly
+    (async () => {
+      for (const guild of [sourceGuild, targetGuild]) {
+        log(`Loading ban history from audit logs for ${guild.name}...`, "info");
+        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
+        const total = Object.values(banStats[guild.id]).reduce((sum, m) => sum + m.bans, 0);
+        log(`Loaded ${total} historical bans for ${guild.name}`, "success");
+      }
+    })();
 
     log("Running initial member check...", "info");
     await checkAllTargetMembers();
@@ -545,7 +569,7 @@ client.on("guildBanAdd", async (ban) => {
     banStats[guildId][modId].tag = modTag;
     banStats[guildId][modId].actions += 1;
     banStats[guildId][modId].bans += 1;
-    saveBanStats(banStats);
+    log(`Ban tracked: ${modTag} banned ${ban.user.tag}`, "info");
 
     log(`Ban tracked: ${modTag} banned ${ban.user.tag}`, "info");
   } catch (error) {
@@ -566,9 +590,7 @@ client.on("messageCreate", async (message) => {
   const member = message.member;
   if (!member) return;
 
-  const guildId = message.guild.id;
-  const stats = banStats[guildId] || {};
-  const entries = Object.entries(stats);
+  const entries = Object.entries(banStats[message.guild.id] || {});
 
   if (entries.length === 0) {
     return message.reply("📊 No ban stats recorded yet.");
