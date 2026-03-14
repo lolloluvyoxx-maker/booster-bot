@@ -563,15 +563,8 @@ client.on("messageCreate", async (message) => {
   if (!message.content.startsWith(",modstats")) return;
   if (!message.guild) return;
 
-  // Only allow moderators or owner
   const member = message.member;
   if (!member) return;
-  const hasPermission =
-    message.author.id === OWNER_ID ||
-    member.permissions.has(PermissionFlagsBits.BanMembers) ||
-    member.permissions.has(PermissionFlagsBits.Administrator);
-
-  if (!hasPermission) return;
 
   const guildId = message.guild.id;
   const stats = banStats[guildId] || {};
@@ -585,4 +578,12 @@ client.on("messageCreate", async (message) => {
   entries.sort((a, b) => b[1].bans - a[1].bans || b[1].actions - a[1].actions);
 
   const lines = entries.map(([, data]) => {
-    const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0"
+    const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0";
+    return `**@${data.tag}**\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
+  });
+
+  const embed = {
+    color: 0x5865F2,
+    title: "📊 Mod Stats — Ban Leaderboard",
+    description: lines.join("\n\n"),
+    fo
