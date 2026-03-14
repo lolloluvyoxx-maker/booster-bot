@@ -1,4 +1,26 @@
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require("discord.js");
+const fs = require("fs");
+
+// ===== BAN STATS PERSISTENCE =====
+const BAN_STATS_FILE = "./ban_stats.json";
+
+function loadBanStats() {
+  try {
+    if (fs.existsSync(BAN_STATS_FILE)) {
+      return JSON.parse(fs.readFileSync(BAN_STATS_FILE, "utf8"));
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveBanStats(stats) {
+  try {
+    fs.writeFileSync(BAN_STATS_FILE, JSON.stringify(stats, null, 2));
+  } catch (e) {}
+}
+
+// banStats[guildId][moderatorId] = { tag, actions, bans, ignores }
+const banStats = loadBanStats();
 
 const client = new Client({
   intents: [
@@ -7,7 +29,8 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildPresences
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildModeration,
   ],
   partials: ["CHANNEL"]
 });
@@ -502,60 +525,64 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// ===== VANITY MONITOR =====
-function startVanityMonitor() {
-  setInterval(async () => {
-    for (const vanity of VANITY_CODES) {
-      if (vanityNotified[vanity]) continue;
+// ===== TRACK BANS (guildBanAdd) =====
+client.on("guildBanAdd", async (ban) => {
+  try {
+    const guild = ban.guild;
+    const auditLogs = await guild.fetchAuditLogs({ type: 22 /* BAN */, limit: 5 });
+    const entry = auditLogs.entries.find(e => e.target?.id === ban.user.id);
+    if (!entry) return;
 
-      try {
-        const response = await fetch(`https://discord.com/api/v10/invites/${vanity}`, {
-          headers: { Authorization: `Bot ${process.env.TOKEN}` }
-        });
+    const modId = entry.executor.id;
+    const modTag = entry.executor.tag || entry.executor.username;
+    const guildId = guild.id;
 
-        if (response.status === 404) {
-          vanity404Counter[vanity]++;
-        } else {
-          vanity404Counter[vanity] = 0;
-        }
-
-        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
-          vanityNotified[vanity] = true;
-
-          const owner = await client.users.fetch(OWNER_ID);
-          await owner.send(
-            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
-            `Vanity: **discord.gg/${vanity}**\n` +
-            `Time: **${utcTimestamp()}**`
-          );
-
-          log(`Vanity ${vanity} available!`, "success");
-        }
-      } catch (error) {
-        // Silent fail
-      }
+    if (!banStats[guildId]) banStats[guildId] = {};
+    if (!banStats[guildId][modId]) {
+      banStats[guildId][modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
     }
-  }, CHECK_INTERVAL);
-}
 
-// ===== CLEAR RECENT BOOSTERS CACHE =====
-setInterval(() => {
-  log(`Clearing recent boosters cache (${recentBoosters.size} entries)`, "info");
-  recentBoosters.clear();
-}, 10 * 60 * 1000);
+    banStats[guildId][modId].tag = modTag;
+    banStats[guildId][modId].actions += 1;
+    banStats[guildId][modId].bans += 1;
+    saveBanStats(banStats);
 
-// ===== AUTO-CHECK SCHEDULER =====
-setInterval(async () => {
-  if (client.isReady()) {
-    log("Running scheduled check of all members...", "info");
-    await checkAllTargetMembers();
+    log(`Ban tracked: ${modTag} banned ${ban.user.tag}`, "info");
+  } catch (error) {
+    log(`Failed to track ban: ${error.message}`, "error");
   }
-}, 6 * 60 * 60 * 1000);
-
-// ===== ERROR HANDLING =====
-client.on("error", (error) => {
-  log(`Client error: ${error.message}`, "error");
 });
 
-client.login(process.env.TOKEN);
-                          
+// ===== TRACK IGNORES (guildBanRemove = unban used as "ignore"/pardon) =====
+// If you want to track "ignores" as manual increments, use ,addignore <userId> command
+// Otherwise ignores = 0 by default unless explicitly tracked
+
+// ===== MODSTATS COMMAND =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (!message.content.startsWith(",modstats")) return;
+  if (!message.guild) return;
+
+  // Only allow moderators or owner
+  const member = message.member;
+  if (!member) return;
+  const hasPermission =
+    message.author.id === OWNER_ID ||
+    member.permissions.has(PermissionFlagsBits.BanMembers) ||
+    member.permissions.has(PermissionFlagsBits.Administrator);
+
+  if (!hasPermission) return;
+
+  const guildId = message.guild.id;
+  const stats = banStats[guildId] || {};
+  const entries = Object.entries(stats);
+
+  if (entries.length === 0) {
+    return message.reply("📊 No ban stats recorded yet.");
+  }
+
+  // Sort by bans descending, then by actions
+  entries.sort((a, b) => b[1].bans - a[1].bans || b[1].actions - a[1].actions);
+
+  const lines = entries.map(([, data]) => {
+    const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0"
