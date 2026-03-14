@@ -586,4 +586,65 @@ client.on("messageCreate", async (message) => {
     color: 0x5865F2,
     title: "📊 Mod Stats — Ban Leaderboard",
     description: lines.join("\n\n"),
-    fo
+    footer: { text: `${message.guild.name} • ${new Date().toUTCString()}` }
+  };
+
+  message.channel.send({ embeds: [embed] });
+});
+
+
+function startVanityMonitor() {
+  setInterval(async () => {
+    for (const vanity of VANITY_CODES) {
+      if (vanityNotified[vanity]) continue;
+
+      try {
+        const response = await fetch(`https://discord.com/api/v10/invites/${vanity}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        });
+
+        if (response.status === 404) {
+          vanity404Counter[vanity]++;
+        } else {
+          vanity404Counter[vanity] = 0;
+        }
+
+        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
+          vanityNotified[vanity] = true;
+
+          const owner = await client.users.fetch(OWNER_ID);
+          await owner.send(
+            `🚨 **VANITY AVAILABLE** 🚨\n\n` +
+            `Vanity: **discord.gg/${vanity}**\n` +
+            `Time: **${utcTimestamp()}**`
+          );
+
+          log(`Vanity ${vanity} available!`, "success");
+        }
+      } catch (error) {
+        // Silent fail
+      }
+    }
+  }, CHECK_INTERVAL);
+}
+
+// ===== CLEAR RECENT BOOSTERS CACHE =====
+setInterval(() => {
+  log(`Clearing recent boosters cache (${recentBoosters.size} entries)`, "info");
+  recentBoosters.clear();
+}, 10 * 60 * 1000);
+
+// ===== AUTO-CHECK SCHEDULER =====
+setInterval(async () => {
+  if (client.isReady()) {
+    log("Running scheduled check of all members...", "info");
+    await checkAllTargetMembers();
+  }
+}, 6 * 60 * 60 * 1000);
+
+// ===== ERROR HANDLING =====
+client.on("error", (error) => {
+  log(`Client error: ${error.message}`, "error");
+});
+
+client.login(process.env.TOKEN);
