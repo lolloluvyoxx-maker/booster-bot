@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require("discord.js");
 
 // ===================================================
 // ===== GREED-STYLE RESPONSE SYSTEM =================
@@ -406,8 +406,8 @@ client.once("ready", async () => {
     status: "online",
     activities: [{
       name: "ugh, this is so /sensational",
-      type: 1, // STREAMING
-      url: "https://www.twitch.tv/greed"
+      type: ActivityType.Streaming,
+      url: "https://www.twitch.tv/sensational"
     }]
   });
 });
@@ -7169,13 +7169,20 @@ client.on("messageCreate", async (message) => {
   // ,activity <type> <text> — set bot activity
   if (command === "activity") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
-    const types = { playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 };
+    const types = {
+      playing: ActivityType.Playing,
+      streaming: ActivityType.Streaming,
+      listening: ActivityType.Listening,
+      watching: ActivityType.Watching,
+      competing: ActivityType.Competing
+    };
     const type = args[1]?.toLowerCase();
     const text = args.slice(2).join(" ");
-    if (!types[type] && types[type] !== 0 || !text) return err(message, "missing required argument");
-
-    client.user.setActivity(text, { type: types[type] });
-    return ok(message, `Activity set to **${type} ${text}**`);
+    if (!types[type] || !text) return err(message, "usage: `,activity <playing|streaming|listening|watching|competing> <text>`");
+    const opts = { type: types[type] };
+    if (type === "streaming") opts.url = "https://www.twitch.tv/sensational";
+    client.user.setActivity(text, opts);
+    return ok(message, `activity set to **${type}** ${text}`);
   }
 
   // ,say2 <#channel> <message> — send to different channel
