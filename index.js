@@ -61,11 +61,16 @@ async function confirm(message, text, onConfirm) {
   });
   const collector = msg.createMessageComponentCollector({ filter: i => i.user.id === message.author.id, time: 15000, max: 1 });
   collector.on("collect", async i => {
-    if (i.customId === "confirm_yes") {
-      await i.update({ components: [] });
-      await onConfirm();
-    } else {
-      await i.update({ embeds: [{ color: 0x2b2d31, description: "✖ Action cancelled." }], components: [] });
+    try {
+      if (i.customId === "confirm_yes") {
+        await i.deferUpdate();
+        await msg.edit({ components: [] }).catch(() => {});
+        await onConfirm();
+      } else {
+        await i.update({ embeds: [{ color: PINK, description: "✖ Action cancelled." }], components: [] });
+      }
+    } catch (e) {
+      if (!i.replied && !i.deferred) await i.update({ components: [] }).catch(() => {});
     }
   });
   collector.on("end", (collected) => {
@@ -459,6 +464,15 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).split(" ");
   const command = args[0].toLowerCase();
 
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
+
   // !setmsg boost/unboost/ping <text>
   if (command === "setmsg") {
     const type = args[1]?.toLowerCase();
@@ -727,9 +741,13 @@ client.on("messageCreate", async (message) => {
   });
 
   collector.on("collect", async i => {
-    if (i.customId === "modstats_prev" && page > 0) page--;
-    else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
-    await i.update({ embeds: [buildEmbed(page)], components: [buildRow(page)] });
+    try {
+      if (i.customId === "modstats_prev" && page > 0) page--;
+      else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
+      await i.update({ embeds: [buildEmbed(page)], components: [buildRow(page)] });
+    } catch (e) {
+      if (!i.replied && !i.deferred) await i.update({ components: [] }).catch(() => {});
+    }
   });
 
   collector.on("end", () => {
@@ -826,9 +844,12 @@ client.on("messageUpdate", (oldMsg, newMsg) => {
   });
 });
 
-// ===== XP SYSTEM =====
+// ===== XP SYSTEM (disabled by default — enable with ,leveling on) =====
+const levelingEnabled = new Map(); // guildId => boolean
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
+  if (!levelingEnabled.get(message.guild.id)) return; // Only run if enabled
   const key = `${message.guild.id}-${message.author.id}`;
   const data = xpData.get(key) || { xp: 0, level: 0 };
   data.xp += Math.floor(Math.random() * 10) + 5;
@@ -836,7 +857,7 @@ client.on("messageCreate", async (message) => {
   if (data.xp >= needed) {
     data.level += 1;
     data.xp = 0;
-    message.channel.send(`🎉 ${message.author} reached level **${data.level}**!`).catch(() => {});
+    message.channel.send({ embeds: [{ color: PINK, description: `🌸 ${message.author} reached level **${data.level}**! 🎉` }] }).catch(() => {});
   }
   xpData.set(key, data);
 });
@@ -929,6 +950,432 @@ setInterval(async () => {
   }
 }, 15000);
 
+// ===== GLOBAL COMMAND SCHEMA (usage + required args for ALL 450 commands) =====
+const CMD_SCHEMA = {
+  // Moderation
+  ban: { usage: ",ban <user> [reason]", args: ["user"] },
+  unban: { usage: ",unban <userId>", args: ["userId"] },
+  kick: { usage: ",kick <user> [reason]", args: ["user"] },
+  mute: { usage: ",mute <user> [mins] [reason]", args: ["user"] },
+  unmute: { usage: ",unmute <user>", args: ["user"] },
+  timeout: { usage: ",timeout <user> <time> [reason]", args: ["user", "time"] },
+  untimeout: { usage: ",untimeout <user>", args: ["user"] },
+  tempban: { usage: ",tempban <user> <mins> [reason]", args: ["user", "mins"] },
+  softban: { usage: ",softban <user> [reason]", args: ["user"] },
+  hardban: { usage: ",hardban <user> [reason]", args: ["user"] },
+  hackban: { usage: ",hackban <userId> [reason]", args: ["userId"] },
+  massban: { usage: ",massban <id1> <id2> ...", args: ["id1"] },
+  masskick: { usage: ",masskick @user1 @user2 ...", args: ["user"] },
+  warn: { usage: ",warn <user> <reason>", args: ["user", "reason"] },
+  warnings: { usage: ",warnings <user>", args: [] },
+  warns: { usage: ",warnings <user>", args: [] },
+  clearwarns: { usage: ",clearwarns <user>", args: ["user"] },
+  delwarn: { usage: ",delwarn <user> <number>", args: ["user", "number"] },
+  jail: { usage: ",jail <user> [reason]", args: ["user"] },
+  unjail: { usage: ",unjail <user>", args: ["user"] },
+  imute: { usage: ",imute <user>", args: ["user"] },
+  iunmute: { usage: ",iunmute <user>", args: ["user"] },
+  reactionmute: { usage: ",reactionmute <user>", args: ["user"] },
+  reactionunmute: { usage: ",reactionunmute <user>", args: ["user"] },
+  strip: { usage: ",strip <user>", args: ["user"] },
+  purge: { usage: ",purge <amount>", args: [] },
+  clear: { usage: ",clear <amount>", args: [] },
+  lock: { usage: ",lock [#channel]", args: [] },
+  unlock: { usage: ",unlock [#channel]", args: [] },
+  hide: { usage: ",hide [#channel]", args: [] },
+  unhide: { usage: ",unhide [#channel]", args: [] },
+  lockall: { usage: ",lockall", args: [] },
+  unlockall: { usage: ",unlockall", args: [] },
+  hideall: { usage: ",hideall", args: [] },
+  unhideall: { usage: ",unhideall", args: [] },
+  lockdown: { usage: ",lockdown [reason]", args: [] },
+  unlockdown: { usage: ",unlockdown", args: [] },
+  slowmode: { usage: ",slowmode <seconds>", args: ["seconds"] },
+  slowmodeall: { usage: ",slowmodeall <seconds>", args: ["seconds"] },
+  nick: { usage: ",nick <user> <nickname>", args: ["user"] },
+  nickname: { usage: ",nick <user> <nickname>", args: ["user"] },
+  resetnick: { usage: ",resetnick <user>", args: ["user"] },
+  resetallnicks: { usage: ",resetallnicks", args: [] },
+  dehoist: { usage: ",dehoist", args: [] },
+  dehoistall: { usage: ",dehoistall", args: [] },
+  decancer: { usage: ",decancer <user>", args: ["user"] },
+  nuke: { usage: ",nuke", args: [] },
+  role: { usage: ",role <add|remove> <user> <role>", args: ["action"] },
+  giverole: { usage: ",giverole <user> <role>", args: ["user", "role"] },
+  addrole: { usage: ",addrole <user> <role>", args: ["user", "role"] },
+  takerole: { usage: ",takerole <user> <role>", args: ["user", "role"] },
+  removerole: { usage: ",removerole <user> <role>", args: ["user", "role"] },
+  temprole: { usage: ",temprole <user> <role> <time>", args: ["user", "role", "time"] },
+  massrole: { usage: ",massrole <add|remove> <role>", args: ["action", "role"] },
+  massnick: { usage: ",massnick <nickname>", args: ["nickname"] },
+  banwave: { usage: ",banwave [reason]", args: [] },
+  prune: { usage: ",prune <days>", args: ["days"] },
+  prunedry: { usage: ",prunedry <days>", args: ["days"] },
+  note: { usage: ",note <user> <text>", args: ["user", "text"] },
+  notes: { usage: ",notes <user>", args: ["user"] },
+  clearnotes: { usage: ",clearnotes <user>", args: ["user"] },
+  move: { usage: ",move <user> #channel", args: ["user"] },
+  report: { usage: ",report <user> <reason>", args: ["user", "reason"] },
+  history: { usage: ",history <user>", args: ["user"] },
+  clearhistory: { usage: ",clearhistory <user>", args: ["user"] },
+  case: { usage: ",case <id>", args: ["id"] },
+  cases: { usage: ",cases <user>", args: [] },
+  editcase: { usage: ",editcase <id> <reason>", args: ["id", "reason"] },
+  deletecase: { usage: ",deletecase <id>", args: ["id"] },
+  modlogs: { usage: ",modlogs [user]", args: [] },
+  mutehistory: { usage: ",mutehistory <user>", args: ["user"] },
+  baninfo: { usage: ",baninfo <userId>", args: ["userId"] },
+  banreason: { usage: ",banreason <userId> <reason>", args: ["userId", "reason"] },
+  hackban2: { usage: ",hackban2 <id1> <id2> ...", args: ["id1"] },
+  modnick: { usage: ",modnick <user> <nick>", args: ["user", "nick"] },
+  // Info
+  userinfo: { usage: ",userinfo [user]", args: [] }, ui: { usage: ",userinfo [user]", args: [] },
+  serverinfo: { usage: ",serverinfo", args: [] }, si: { usage: ",serverinfo", args: [] },
+  avatar: { usage: ",avatar [user]", args: [] }, av: { usage: ",avatar [user]", args: [] },
+  banner: { usage: ",banner [user]", args: [] },
+  roleinfo: { usage: ",roleinfo <role>", args: [] }, ri: { usage: ",roleinfo <role>", args: [] },
+  channelinfo: { usage: ",channelinfo [#channel]", args: [] }, ci: { usage: ",channelinfo [#channel]", args: [] },
+  memberinfo: { usage: ",memberinfo [user]", args: [] }, mi: { usage: ",memberinfo [user]", args: [] },
+  whois: { usage: ",whois [user]", args: [] },
+  botinfo: { usage: ",botinfo", args: [] },
+  ping: { usage: ",ping", args: [] },
+  uptime: { usage: ",uptime", args: [] },
+  membercount: { usage: ",membercount", args: [] }, mc: { usage: ",membercount", args: [] },
+  bans: { usage: ",bans", args: [] },
+  banlist: { usage: ",banlist", args: [] },
+  inviteinfo: { usage: ",inviteinfo <code>", args: ["code"] },
+  invites: { usage: ",invites [user]", args: [] },
+  listinvites: { usage: ",listinvites", args: [] },
+  createinvite: { usage: ",createinvite [maxUses] [hours]", args: [] },
+  deleteinvite: { usage: ",deleteinvite <code>", args: ["code"] },
+  deleteallinvites: { usage: ",deleteallinvites", args: [] },
+  invitecheck: { usage: ",invitecheck", args: [] },
+  newmembers: { usage: ",newmembers [count]", args: [] },
+  oldmembers: { usage: ",oldmembers [count]", args: [] },
+  inrole: { usage: ",inrole <role>", args: [] },
+  boosters: { usage: ",boosters", args: [] }, boostinfo: { usage: ",boosters", args: [] },
+  serverstats: { usage: ",serverstats", args: [] },
+  servericon: { usage: ",servericon", args: [] }, sicon: { usage: ",servericon", args: [] },
+  serverbanner: { usage: ",serverbanner", args: [] },
+  boostgoal: { usage: ",boostgoal", args: [] },
+  serverfeatures: { usage: ",serverfeatures", args: [] },
+  serverrules: { usage: ",serverrules rule1 | rule2", args: ["rules"] },
+  identify: { usage: ",identify <userId>", args: ["userId"] }, lookup: { usage: ",identify <userId>", args: ["userId"] },
+  find: { usage: ",find <name>", args: ["name"] }, search: { usage: ",find <name>", args: ["name"] },
+  admins: { usage: ",admins", args: [] },
+  mods: { usage: ",mods", args: [] },
+  bots: { usage: ",bots", args: [] },
+  stafflist: { usage: ",stafflist", args: [] },
+  rolecount: { usage: ",rolecount <role>", args: [] },
+  snowflake: { usage: ",snowflake <id>", args: ["id"] },
+  discrim: { usage: ",discrim <0000>", args: ["discriminator"] },
+  permissions: { usage: ",permissions [user]", args: [] }, perms: { usage: ",permissions [user]", args: [] },
+  id: { usage: ",id [user/role/channel]", args: [] },
+  icon: { usage: ",icon [user]", args: [] },
+  shared: { usage: ",shared [userId]", args: [] },
+  joined: { usage: ",joined [user]", args: [] },
+  created: { usage: ",created [user]", args: [] },
+  mutual: { usage: ",mutual <user>", args: [] },
+  accountage: { usage: ",accountage [user]", args: [] },
+  serverage: { usage: ",serverage", args: [] },
+  memberpos: { usage: ",memberpos [user]", args: [] },
+  firstmessage: { usage: ",firstmessage [#channel]", args: [] },
+  // Config
+  setup: { usage: ",setup", args: [] },
+  setupmute: { usage: ",setupmute", args: [] },
+  autorole: { usage: ",autorole <@role|off>", args: [] },
+  welcome: { usage: ",welcome <#channel> <message>", args: [] },
+  goodbye: { usage: ",goodbye <#channel> <message>", args: [] },
+  starboard: { usage: ",starboard <#channel> [threshold]", args: [] },
+  bumpchannel: { usage: ",bumpchannel <#channel>", args: [] },
+  jointocreate: { usage: ",jointocreate <#vc>", args: [] }, jtc: { usage: ",jointocreate <#vc>", args: [] },
+  confessions: { usage: ",confessions <#channel|off>", args: [] },
+  confess: { usage: ",confess <message>", args: ["message"] },
+  modlog: { usage: ",modlog <#channel|off>", args: [] },
+  messagelog: { usage: ",messagelog <#channel|off>", args: [] },
+  joinlog: { usage: ",joinlog <#channel|off>", args: [] },
+  voicelog: { usage: ",voicelog <#channel|off>", args: [] },
+  log: { usage: ",log <event> <#channel|off>", args: [] },
+  logging: { usage: ",logging <#channel|off>", args: [] },
+  verification: { usage: ",verification <none|low|medium|high|highest>", args: ["level"] },
+  contentfilter: { usage: ",contentfilter <disabled|members|all>", args: ["level"] },
+  setname: { usage: ",setname <name>", args: ["name"] },
+  setdesc: { usage: ",setdesc <text>", args: [] }, setdescription: { usage: ",setdesc <text>", args: [] },
+  vanity: { usage: ",vanity", args: [] },
+  vanitylock: { usage: ",vanitylock <on|off|status>", args: [] },
+  vanitytransfer: { usage: ",vanitytransfer <code>", args: ["code"] },
+  muterole: { usage: ",muterole <@role>", args: [] },
+  pingrole: { usage: ",pingrole <@role>", args: [] },
+  rolecreate: { usage: ",rolecreate <name> [color]", args: ["name"] },
+  roledelete: { usage: ",roledelete <@role>", args: [] },
+  rolecolor: { usage: ",rolecolor <@role> <#hex>", args: [] },
+  rolehoist: { usage: ",rolehoist <@role>", args: [] },
+  rolemention: { usage: ",rolemention <@role>", args: [] },
+  roleicon: { usage: ",roleicon <@role> <emoji>", args: [] },
+  roleperms: { usage: ",roleperms <@role>", args: [] },
+  rolepos: { usage: ",rolepos <@role> <position>", args: [] },
+  roleall: { usage: ",roleall", args: [] }, roles: { usage: ",roles", args: [] }, rolelist: { usage: ",roles", args: [] },
+  channelcreate: { usage: ",channelcreate <name> [text|voice]", args: ["name"] },
+  channeldelete: { usage: ",channeldelete [#channel]", args: [] },
+  channelclone: { usage: ",channelclone [#channel]", args: [] },
+  channelpos: { usage: ",channelpos [#channel] <position>", args: [] },
+  categorycreate: { usage: ",categorycreate <name>", args: ["name"] },
+  ticket: { usage: ",ticket <setup|create|close|add|remove>", args: [] },
+  cc: { usage: ",cc <add|remove|list>", args: [] },
+  alias: { usage: ",alias <add|remove|list>", args: [] },
+  disable: { usage: ",disable <command>", args: ["command"] },
+  enable: { usage: ",enable <command>", args: ["command"] },
+  disabled: { usage: ",disabled", args: [] },
+  autorespond: { usage: ",ar <add|remove|list>", args: [] }, ar: { usage: ",ar <add|remove|list>", args: [] },
+  reactiontrigger: { usage: ",rt <add|remove|list>", args: [] }, rt: { usage: ",rt <add|remove|list>", args: [] },
+  reactionrole: { usage: ",rr <msgId> <emoji> <@role>", args: [] }, rr: { usage: ",rr <msgId> <emoji> <@role>", args: [] },
+  sticky: { usage: ",sticky <message|off>", args: [] },
+  counter: { usage: ",counter <create|delete|list>", args: [] },
+  warnthreshold: { usage: ",warnthreshold <count> <mute|kick|ban>", args: ["count", "action"] },
+  warnthresholds: { usage: ",warnthresholds", args: [] },
+  birthday: { usage: ",birthday <set|remove|channel|list|today>", args: [] },
+  fakeperm: { usage: ",fakeperm <add|remove|list> <@role> <perm>", args: [] },
+  ignore: { usage: ",ignore <@user>", args: [] },
+  unignore: { usage: ",unignore <@user>", args: [] },
+  ignorelist: { usage: ",ignorelist", args: [] },
+  staffrole: { usage: ",staffrole <@role>", args: [] },
+  blacklist: { usage: ",blacklist <add|remove|list|clear>", args: [] },
+  censor: { usage: ",censor <add|remove|list>", args: [] },
+  filter: { usage: ",filter <on|off|add|remove|list|...>", args: [] },
+  filterexempt: { usage: ",filterexempt <add|remove> <@role|#channel>", args: [] },
+  antilinks: { usage: ",antilinks", args: [] },
+  antiinvites: { usage: ",antiinvites", args: [] },
+  antispam: { usage: ",antispam", args: [] },
+  anticaps: { usage: ",anticaps", args: [] },
+  antinuke: { usage: ",antinuke <on|off|punishment|threshold|whitelist|status>", args: [] },
+  antiraid: { usage: ",antiraid <on|off|action|threshold|window|unlock|status>", args: [] },
+  bind: { usage: ",bind staff <@role>", args: [] },
+  whitelistcheck: { usage: ",whitelistcheck", args: [] },
+  modconfig: { usage: ",modconfig", args: [] },
+  // Security
+  vcmute: { usage: ",vcmute <user>", args: ["user"] },
+  vcunmute: { usage: ",vcunmute <user>", args: ["user"] },
+  vcdeafen: { usage: ",vcdeafen <user>", args: ["user"] },
+  vcundeafen: { usage: ",vcundeafen <user>", args: ["user"] },
+  vckick: { usage: ",vckick <user>", args: ["user"] },
+  vcmove: { usage: ",vcmove <user> #channel", args: ["user"] },
+  vcmuteall: { usage: ",vcmuteall", args: [] },
+  vcunmuteall: { usage: ",vcunmuteall", args: [] },
+  vclimit: { usage: ",vclimit #channel <limit>", args: [] },
+  vcname: { usage: ",vcname #channel <name>", args: [] },
+  vclock: { usage: ",vclock [#channel]", args: [] },
+  vcunlock: { usage: ",vcunlock [#channel]", args: [] },
+  vcrename: { usage: ",vcrename <name>", args: ["name"] },
+  vcinfo: { usage: ",vcinfo [#channel]", args: [] },
+  voicelist: { usage: ",voicelist", args: [] }, vc: { usage: ",voicelist", args: [] },
+  setbitrate: { usage: ",setbitrate #channel <kbps>", args: [] },
+  // Messaging
+  say: { usage: ",say <text>", args: ["text"] },
+  say2: { usage: ",say2 #channel <text>", args: [] },
+  embed: { usage: ",embed <title> | <description>", args: ["title"] },
+  announce: { usage: ",announce #channel <message>", args: [] },
+  dm: { usage: ",dm <user> <message>", args: ["user", "message"] },
+  topic: { usage: ",topic [text]", args: [] },
+  rename: { usage: ",rename [#channel] <name>", args: ["name"] },
+  pin: { usage: ",pin <messageId>", args: ["messageId"] },
+  unpin: { usage: ",unpin <messageId>", args: ["messageId"] },
+  pins: { usage: ",pins", args: [] },
+  movepin: { usage: ",movepin <messageId> #channel", args: ["messageId"] },
+  react: { usage: ",react <messageId> <emoji>", args: ["messageId", "emoji"] },
+  unreact: { usage: ",unreact <messageId>", args: ["messageId"] },
+  clearreactions: { usage: ",clearreactions <messageId>", args: ["messageId"] },
+  editbot: { usage: ",editbot <text>", args: ["text"] },
+  deletebot: { usage: ",deletebot", args: [] },
+  cleanup: { usage: ",cleanup", args: [] },
+  export: { usage: ",export", args: [] },
+  copycat: { usage: ",copycat <user> <message>", args: ["user", "message"] },
+  nsfw: { usage: ",nsfw", args: [] }, nsfwcheck: { usage: ",nsfwcheck", args: [] },
+  archive: { usage: ",archive", args: [] }, unarchive: { usage: ",unarchive", args: [] },
+  thread: { usage: ",thread <create|close|open|lock|unlock|rename|add|remove>", args: [] },
+  // Fun
+  coinflip: { usage: ",coinflip", args: [] }, cf: { usage: ",coinflip", args: [] }, toss: { usage: ",toss", args: [] },
+  "8ball": { usage: ",8ball <question>", args: ["question"] },
+  roll: { usage: ",roll [sides]", args: [] },
+  dice: { usage: ",dice <NdN>", args: [] },
+  choose: { usage: ",choose opt1 | opt2 | ...", args: [] },
+  decide: { usage: ",decide opt1 | opt2 | ...", args: [] },
+  number: { usage: ",number [min] [max]", args: [] },
+  yesno: { usage: ",yesno", args: [] },
+  poll: { usage: ",poll <question>", args: [] },
+  rps: { usage: ",rps <rock|paper|scissors>", args: ["choice"] },
+  tictactoe: { usage: ",ttt <@user>", args: [] }, ttt: { usage: ",ttt <@user>", args: [] },
+  slots: { usage: ",slots", args: [] },
+  numberguess: { usage: ",numberguess", args: [] }, guess: { usage: ",numberguess", args: [] },
+  ship: { usage: ",ship [@user1] [@user2]", args: [] },
+  rate: { usage: ",rate <thing>", args: ["thing"] },
+  pp: { usage: ",pp [user]", args: [] },
+  howgay: { usage: ",howgay [user]", args: [] },
+  howdumb: { usage: ",howdumb [user]", args: [] },
+  hack: { usage: ",hack <user>", args: ["user"] },
+  wanted: { usage: ",wanted [user]", args: [] },
+  wyr: { usage: ",wyr", args: [] },
+  nhie: { usage: ",nhie", args: [] }, neverhaveiever: { usage: ",nhie", args: [] },
+  tod: { usage: ",tod", args: [] }, truthordare: { usage: ",tod", args: [] },
+  compliment: { usage: ",compliment [user]", args: [] },
+  insult: { usage: ",insult [user]", args: [] },
+  meme: { usage: ",meme", args: [] },
+  joke: { usage: ",joke", args: [] },
+  fact: { usage: ",fact", args: [] },
+  quote: { usage: ",quote", args: [] },
+  catfact: { usage: ",catfact", args: [] }, dogfact: { usage: ",dogfact", args: [] },
+  cat: { usage: ",cat", args: [] }, dog: { usage: ",dog", args: [] },
+  fox: { usage: ",fox", args: [] }, duck: { usage: ",duck", args: [] }, panda: { usage: ",panda", args: [] },
+  team: { usage: ",team <size> @u1 @u2 ...", args: ["size"] },
+  shuffle: { usage: ",shuffle item1 | item2 | ...", args: ["items"] },
+  countdown: { usage: ",countdown <1-10>", args: ["number"] },
+  ascii: { usage: ",ascii <text>", args: ["text"] },
+  emojify: { usage: ",emojify <text>", args: ["text"] },
+  mock: { usage: ",mock <text>", args: ["text"] },
+  leet: { usage: ",leet <text>", args: ["text"] },
+  vaporwave: { usage: ",vaporwave <text>", args: ["text"] },
+  zalgo: { usage: ",zalgo <text>", args: ["text"] },
+  reverse: { usage: ",reverse <text>", args: ["text"] },
+  clap: { usage: ",clap <text>", args: ["text"] },
+  spoiler: { usage: ",spoiler <text>", args: ["text"] },
+  bold: { usage: ",bold <text>", args: ["text"] },
+  italic: { usage: ",italic <text>", args: ["text"] },
+  strikethrough: { usage: ",strikethrough <text>", args: ["text"] },
+  underline: { usage: ",underline <text>", args: ["text"] },
+  codeblock: { usage: ",codeblock <text>", args: ["text"] },
+  repeat: { usage: ",repeat <n> <text>", args: ["n", "text"] },
+  tinytext: { usage: ",tinytext <text>", args: ["text"] },
+  uppercase: { usage: ",uppercase <text>", args: ["text"] },
+  lowercase: { usage: ",lowercase <text>", args: ["text"] },
+  // Economy
+  balance: { usage: ",balance [user]", args: [] }, bal: { usage: ",balance [user]", args: [] },
+  daily: { usage: ",daily", args: [] },
+  weekly: { usage: ",weekly", args: [] },
+  monthly: { usage: ",monthly", args: [] },
+  work: { usage: ",work", args: [] },
+  crime: { usage: ",crime", args: [] },
+  rob: { usage: ",rob <user>", args: ["user"] },
+  pay: { usage: ",pay <user> <amount>", args: ["user", "amount"] },
+  bet: { usage: ",bet <amount>", args: ["amount"] },
+  blackjack: { usage: ",blackjack <amount>", args: ["amount"] }, bj: { usage: ",blackjack <amount>", args: ["amount"] },
+  richlist: { usage: ",richlist", args: [] },
+  give: { usage: ",give <user> <amount>", args: ["user", "amount"] },
+  take: { usage: ",take <user> <amount>", args: ["user", "amount"] },
+  setbal: { usage: ",setbal <user> <amount>", args: ["user", "amount"] },
+  resetbal: { usage: ",resetbal <user>", args: ["user"] },
+  shop: { usage: ",shop", args: [] },
+  // Leveling
+  rank: { usage: ",rank [user]", args: [] },
+  leaderboard: { usage: ",leaderboard", args: [] }, lb: { usage: ",leaderboard", args: [] },
+  setlevel: { usage: ",setlevel <user> <level>", args: ["user", "level"] },
+  resetxp: { usage: ",resetxp <user>", args: ["user"] },
+  // Utility
+  remind: { usage: ",remind <time> <text>", args: ["time", "text"] }, reminder: { usage: ",remind <time> <text>", args: ["time", "text"] },
+  reminders: { usage: ",reminders", args: [] },
+  afk: { usage: ",afk [reason]", args: [] },
+  afklist: { usage: ",afklist", args: [] },
+  removeafk: { usage: ",removeafk <user>", args: ["user"] },
+  todo: { usage: ",todo <add|done|remove|list|clear>", args: [] },
+  tag: { usage: ",tag <name|create|delete|list|edit|info>", args: [] },
+  highlight: { usage: ",hl <add|remove|list|clear>", args: [] }, hl: { usage: ",hl <add|remove|list|clear>", args: [] },
+  snipe: { usage: ",snipe", args: [] },
+  editsnipe: { usage: ",editsnipe", args: [] }, esnipe: { usage: ",editsnipe", args: [] },
+  clearsnipe: { usage: ",clearsnipe", args: [] },
+  weather: { usage: ",weather <city>", args: ["city"] },
+  math: { usage: ",math <expression>", args: ["expression"] }, calc: { usage: ",calc <expression>", args: ["expression"] },
+  urban: { usage: ",urban <word>", args: ["word"] },
+  define: { usage: ",define <word>", args: ["word"] },
+  translate: { usage: ",translate <lang> <text>", args: ["lang", "text"] },
+  qr: { usage: ",qr <text>", args: ["text"] },
+  color: { usage: ",color <#hex>", args: ["hex"] },
+  hex: { usage: ",hex <color>", args: ["color"] },
+  encode: { usage: ",encode <text>", args: ["text"] },
+  decode: { usage: ",decode <base64>", args: ["base64"] },
+  binary: { usage: ",binary <text>", args: ["text"] },
+  timestamp: { usage: ",timestamp [date]", args: [] },
+  charinfo: { usage: ",charinfo <text>", args: ["text"] },
+  google: { usage: ",google <query>", args: ["query"] },
+  youtube: { usage: ",youtube <query>", args: ["query"] }, yt: { usage: ",youtube <query>", args: ["query"] },
+  spotify: { usage: ",spotify <query>", args: ["query"] },
+  screenshot: { usage: ",screenshot <url>", args: ["url"] },
+  password: { usage: ",password [length]", args: [] },
+  token: { usage: ",token", args: [] },
+  invitebot: { usage: ",invitebot", args: [] },
+  support: { usage: ",support", args: [] },
+  source: { usage: ",source", args: [] },
+  shards: { usage: ",shards", args: [] },
+  news: { usage: ",news", args: [] },
+  // Last.fm
+  np: { usage: ",np [user]", args: [] }, nowplaying: { usage: ",np [user]", args: [] },
+  fm: { usage: ",fm <set|unset>", args: [] },
+  fmprofile: { usage: ",fmprofile [user]", args: [] }, fmp: { usage: ",fmprofile [user]", args: [] },
+  topartists: { usage: ",topartists", args: [] }, ta: { usage: ",topartists", args: [] },
+  toptracks: { usage: ",toptracks", args: [] }, tt: { usage: ",toptracks", args: [] },
+  topalbums: { usage: ",topalbums", args: [] }, tal: { usage: ",topalbums", args: [] },
+  // Booster roles
+  boosterrole: { usage: ",boosterrole <create|color|rename|delete|icon>", args: [] },
+  // Giveaway
+  gcreate: { usage: ",gcreate <time> <prize>", args: ["time", "prize"] }, gstart: { usage: ",gcreate <time> <prize>", args: ["time", "prize"] },
+  gend: { usage: ",gend <messageId>", args: ["messageId"] },
+  greroll: { usage: ",greroll <messageId>", args: ["messageId"] },
+  giveaway: { usage: ",giveaway <list>", args: [] },
+  // Webhook
+  webhook: { usage: ",webhook <create|delete|list>", args: [] },
+  // Emoji
+  emojis: { usage: ",emojis", args: [] },
+  emoji: { usage: ",emoji <add|remove|rename|list>", args: [] },
+  emojiinfo: { usage: ",emojiinfo <emoji>", args: [] },
+  stealemoji: { usage: ",stealemoji <emoji> <name>", args: [] },
+  deleteemoji: { usage: ",deleteemoji <emoji>", args: [] },
+  stickers: { usage: ",stickers", args: [] },
+  stickerinfo: { usage: ",stickerinfo <name>", args: [] },
+  jumbo: { usage: ",jumbo <emoji>", args: ["emoji"] },
+  // Misc
+  modstats: { usage: ",modstats", args: [] },
+  help: { usage: ",help", args: [] },
+  botperms: { usage: ",botperms", args: [] },
+  channellist: { usage: ",channellist", args: [] },
+  serverage: { usage: ",serverage", args: [] },
+  joincount: { usage: ",joincount", args: [] },
+  boostcount: { usage: ",boostcount", args: [] },
+  onlinecount: { usage: ",onlinecount", args: [] },
+  userperms: { usage: ",userperms [user]", args: [] },
+  permissions2: { usage: ",permissions2 [user]", args: [] },
+  channelpermissions: { usage: ",channelpermissions [user] [#channel]", args: [] },
+  guildicon: { usage: ",guildicon", args: [] },
+  guildbanner: { usage: ",guildbanner", args: [] },
+  guildsplash: { usage: ",guildsplash", args: [] },
+  audit: { usage: ",audit", args: [] },
+  appeal: { usage: ",appeal <reason>", args: ["reason"] },
+  roleaddall: { usage: ",roleaddall <@role>", args: [] },
+  roleremoveall: { usage: ",roleremoveall <@role>", args: [] },
+  tempchannel: { usage: ",tempchannel <mins> <name>", args: ["mins"] },
+  staffrole: { usage: ",staffrole <@role>", args: [] },
+  // Owner
+  eval: { usage: ",eval <code>", args: ["code"] },
+  status: { usage: ",status <online|idle|dnd|invisible>", args: ["status"] },
+  activity: { usage: ",activity <type> <text>", args: ["type", "text"] },
+  guilds: { usage: ",guilds", args: [] },
+  leave: { usage: ",leave", args: [] },
+  setmsg: { usage: ",setmsg <boost|unboost|ping> <text>", args: ["type", "text"] },
+  viewmsg: { usage: ",viewmsg", args: [] },
+  resetvanity: { usage: ",resetvanity <name|all>", args: [] },
+  checkall: { usage: ",checkall", args: [] },
+  fixuser: { usage: ",fixuser <userId|@user>", args: [] },
+  stats: { usage: ",stats", args: [] },
+};
+
+// ===== GLOBAL INTERACTION ERROR HANDLER =====
+// Catches ALL failed/expired interactions automatically
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isMessageComponent()) return;
+  // If the interaction wasn't handled by a collector (timed out), dismiss it gracefully
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferUpdate();
+    }
+  } catch {}
+});
+
 // ===== 50 MOST USED COMMANDS =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -938,23 +1385,42 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
+
   // ── MODERATION ──────────────────────────────────────────
 
   // ,ban <user> [reason]
   if (command === "ban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "You don't have permission to ban.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const reason = args.slice(2).join(" ") || "No reason provided";
-    await target.ban({ reason }).catch(() => null);
-    return ok(message, `Banned **${target.user.tag}** | ${reason}`);
+
+    // Block banning boosters (unless owner)
+    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const sourceMember = sourceGuild ? await sourceGuild.members.fetch(target.id).catch(() => null) : null;
+    if (sourceMember && isBoosting(sourceMember) && message.author.id !== OWNER_ID) {
+      return err(message, `**${target.user.tag}** is a booster and cannot be banned.`);
+    }
+
+    const banSuccess = await target.ban({ reason }).catch(() => null);
+    if (!banSuccess) return err(message, `Failed to ban **${target.user.tag}** — check my role permissions.`);
+    addCase(message.guild.id, "ban", target.id, message.author.id, reason);
+    return ok(message, `banned **${target.user.tag}** | ${reason}`);
   }
 
   // ,unban <userId>
   if (command === "unban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
-    if (!userId) return err(message, "usage: ``");
+    if (!userId) return err(message, "missing required argument: **userId**");
 
     await message.guild.bans.remove(userId).catch(() => null);
     return ok(message, `unbanned user **${userId}**`);
@@ -964,17 +1430,27 @@ client.on("messageCreate", async (message) => {
   if (command === "kick") {
     if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason provided";
-    await target.kick(reason).catch(() => null);
-    return ok(message, `Kicked **${target.user.tag}** | ${reason}`);
+    const kickSuccess = await target.kick(reason).catch(() => null);
+    if (!kickSuccess) return err(message, `Failed to kick **${target.user.tag}**`);
+    addCase(message.guild.id, 'kick', target.id, message.author.id, reason);
+    return ok(message, `kicked **${target.user.tag}** | ${reason}`);
   }
 
   // ,mute <user> [duration in minutes] [reason]
   if (command === "mute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 10;
     const reason = args.slice(3).join(" ") || "No reason provided";
     await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
@@ -985,7 +1461,7 @@ client.on("messageCreate", async (message) => {
   if (command === "unmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.timeout(null).catch(() => null);
     return ok(message, `Unmuted **${target.user.tag}**`);
   }
@@ -1002,9 +1478,11 @@ client.on("messageCreate", async (message) => {
   // ,slowmode <seconds>
   if (command === "slowmode") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
-    const seconds = parseInt(args[1]) ?? 0;
-    await message.channel.setRateLimitPerUser(seconds).catch(() => null);
-    return message.reply(seconds === 0 ? "✅ Slowmode disabled." : `✅ Slowmode set to **${seconds}s**.`);
+    const seconds = parseInt(args[1]);
+    if (isNaN(seconds) && args[1] !== undefined) return err(message, 'invalid slowmode value');
+    const secs = isNaN(seconds) ? 0 : seconds;
+    await message.channel.setRateLimitPerUser(secs).catch(() => null);
+    return ok(message, secs === 0 ? 'slowmode disabled' : `slowmode set to **${secs}s**`);
   }
 
   // ,lock [channel]
@@ -1043,7 +1521,7 @@ client.on("messageCreate", async (message) => {
   if (command === "warn") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const reason = args.slice(2).join(" ") || "No reason provided";
     try { await target.send(`⚠️ You have been warned in **${message.guild.name}**: ${reason}`); } catch {}
     return info(message, `Warned **${target.tag}** | ${reason}`);
@@ -1053,7 +1531,7 @@ client.on("messageCreate", async (message) => {
   if (command === "nickname" || command === "nick") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const nick = args.slice(2).join(" ") || null;
     await target.setNickname(nick).catch(() => null);
     return ok(message, `nickname ${nick ? `set to **${nick}**` : "removed"} for **${target.user.tag}**`);
@@ -1136,7 +1614,7 @@ client.on("messageCreate", async (message) => {
   // ,roleinfo <role>
   if (command === "roleinfo" || command === "ri") {
     const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
-    if (!role) return err(message, "Role not found.");
+    if (!role) return err(message, "missing required argument: **role**");
     const embed = {
       color: role.color || PINK,
       title: role.name,
@@ -1272,7 +1750,7 @@ client.on("messageCreate", async (message) => {
   if (command === "dm") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const text = args.slice(2).join(" ");
     if (!text) return err(message, "Please provide a message.");
     await target.send(`📨 Message from **${message.guild.name}**:\n${text}`).catch(() => null);
@@ -1736,58 +2214,72 @@ client.on("messageCreate", async (message) => {
 
     const msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
 
+    // Single collector handles BOTH select menu and nav buttons
+    let currentCategory = null;
+    let currentPage = 0;
+    let currentPages = [];
+
+    function buildCatEmbed(cat, p) {
+      return {
+        color: PINK,
+        author: { name: `${cat.emoji} ${cat.label}`, icon_url: message.guild.iconURL() },
+        description: currentPages[p].map(([cmd, desc]) => `\`${cmd}\`\n${desc}`).join("\n\n"),
+        footer: { text: `Page ${p + 1}/${currentPages.length} • ${cat.commands.length} commands` }
+      };
+    }
+
+    function buildNavRow(p) {
+      return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
+        new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= currentPages.length - 1)
+      );
+    }
+
     const collector = msg.createMessageComponentCollector({
       filter: i => i.user.id === message.author.id,
       time: 120000
     });
 
     collector.on("collect", async i => {
-      const cat = categories[i.values[0]];
-      if (!cat) return;
-
-      const PER_PAGE = 10;
-      const pages = [];
-      for (let p = 0; p < cat.commands.length; p += PER_PAGE) {
-        pages.push(cat.commands.slice(p, p + PER_PAGE));
-      }
-
-      let page = 0;
-      function buildCatEmbed(p) {
-        return {
-          color: PINK,
-          author: { name: `${cat.emoji} ${cat.label}`, icon_url: message.guild.iconURL() },
-          description: pages[p].map(([cmd, desc]) => `\`${cmd}\`\n${desc}`).join("\n\n"),
-          footer: { text: `Page ${p + 1}/${pages.length} • ${cat.commands.length} commands` }
-        };
-      }
-
-      function buildNavRow(p) {
-        return new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
-          new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= pages.length - 1)
-        );
-      }
-
-      await i.update({
-        embeds: [buildCatEmbed(0)],
-        components: pages.length > 1 ? [buildNavRow(0), selectMenu] : [selectMenu]
-      });
-
-      // Sub-collector for nav buttons
-      const navCollector = msg.createMessageComponentCollector({
-        filter: i2 => i2.user.id === message.author.id && ["help_back","help_next","help_home"].includes(i2.customId),
-        time: 60000
-      });
-      navCollector.on("collect", async i2 => {
-        if (i2.customId === "help_home") {
-          navCollector.stop();
-          return i2.update({ embeds: [mainEmbed], components: [selectMenu] });
+      try {
+        // Handle select menu
+        if (i.isStringSelectMenu()) {
+          const cat = categories[i.values[0]];
+          if (!cat) return i.deferUpdate().catch(() => {});
+          currentCategory = cat;
+          currentPage = 0;
+          currentPages = [];
+          const PER_PAGE = 10;
+          for (let p = 0; p < cat.commands.length; p += PER_PAGE) {
+            currentPages.push(cat.commands.slice(p, p + PER_PAGE));
+          }
+          await i.update({
+            embeds: [buildCatEmbed(cat, 0)],
+            components: currentPages.length > 1 ? [buildNavRow(0), selectMenu] : [selectMenu]
+          });
+          return;
         }
-        if (i2.customId === "help_back" && page > 0) page--;
-        if (i2.customId === "help_next" && page < pages.length - 1) page++;
-        await i2.update({ embeds: [buildCatEmbed(page)], components: [buildNavRow(page), selectMenu] });
-      });
+
+        // Handle buttons
+        if (i.isButton()) {
+          if (i.customId === "help_home") {
+            currentCategory = null;
+            currentPage = 0;
+            currentPages = [];
+            return await i.update({ embeds: [mainEmbed], components: [selectMenu] });
+          }
+          if (!currentCategory) return i.deferUpdate().catch(() => {});
+          if (i.customId === "help_back" && currentPage > 0) currentPage--;
+          if (i.customId === "help_next" && currentPage < currentPages.length - 1) currentPage++;
+          await i.update({
+            embeds: [buildCatEmbed(currentCategory, currentPage)],
+            components: [buildNavRow(currentPage), selectMenu]
+          });
+        }
+      } catch (e) {
+        if (!i.replied && !i.deferred) await i.deferUpdate().catch(() => {});
+      }
     });
 
     collector.on("end", () => msg.edit({ components: [] }).catch(() => {}));
@@ -1802,13 +2294,26 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
+
   // ── ADVANCED MODERATION ─────────────────────────────────
 
   // ,tempban <user> <minutes> [reason]
   if (command === "tempban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason }).catch(() => null);
@@ -1823,20 +2328,31 @@ client.on("messageCreate", async (message) => {
   if (command === "softban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Softban";
+    recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    return ok(message, `Softbanned **${target.user.tag}** (messages deleted, not banned) | ${reason}`);
+    return ok(message, `softbanned **${target.user.tag}** (messages deleted) | ${reason}`);
   }
 
   // ,hardban <user> [reason] — ban + blacklist (stored in memory)
   if (command === "hardban") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Hardban";
+    recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
     return ok(message, `hardbanned **${target.user.tag}** | ${reason}`);
   }
 
@@ -1844,7 +2360,11 @@ client.on("messageCreate", async (message) => {
   if (command === "jail") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason";
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
@@ -1857,7 +2377,7 @@ client.on("messageCreate", async (message) => {
   if (command === "unjail") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found.");
     await target.roles.remove(jailRole).catch(() => null);
@@ -1868,7 +2388,7 @@ client.on("messageCreate", async (message) => {
   if (command === "imute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No role named `image muted` found.");
     await target.roles.add(role).catch(() => null);
@@ -1879,7 +2399,7 @@ client.on("messageCreate", async (message) => {
   if (command === "iunmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No role named `image muted` found.");
     await target.roles.remove(role).catch(() => null);
@@ -1890,7 +2410,11 @@ client.on("messageCreate", async (message) => {
   if (command === "strip") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const roles = target.roles.cache.filter(r => r.id !== message.guild.id);
     for (const role of roles.values()) await target.roles.remove(role).catch(() => {});
     return ok(message, `Stripped all roles from **${target.user.tag}**`);
@@ -1914,7 +2438,7 @@ client.on("messageCreate", async (message) => {
   if (command === "clearwarns") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     warns.delete(`${message.guild.id}-${target.id}`);
     return ok(message, `Cleared all warnings for **${target.tag}**`);
   }
@@ -1923,7 +2447,7 @@ client.on("messageCreate", async (message) => {
   if (command === "delwarn") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const index = parseInt(args[2]) - 1;
     const key = `${message.guild.id}-${target.id}`;
     const list = warns.get(key) || [];
@@ -1949,7 +2473,7 @@ client.on("messageCreate", async (message) => {
   if (command === "warn") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const reason = args.slice(2).join(" ") || "No reason provided";
     const key = `${message.guild.id}-${target.id}`;
     const list = warns.get(key) || [];
@@ -1960,6 +2484,22 @@ client.on("messageCreate", async (message) => {
   }
 
   // ── LEVELING ─────────────────────────────────────────────
+
+  // ,leveling <on|off|status>
+  if (command === "leveling" || command === "levels") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "on" || sub === "enable") {
+      levelingEnabled.set(message.guild.id, true);
+      return ok(message, "leveling system **enabled** — XP will now be tracked.");
+    }
+    if (sub === "off" || sub === "disable") {
+      levelingEnabled.set(message.guild.id, false);
+      return ok(message, "leveling system **disabled**.");
+    }
+    const enabled = levelingEnabled.get(message.guild.id) || false;
+    return info(message, `leveling is currently **${enabled ? "enabled" : "disabled"}** — use \`,leveling on/off\` to toggle.`);
+  }
 
   // ,rank [user]
   if (command === "rank") {
@@ -1997,7 +2537,7 @@ client.on("messageCreate", async (message) => {
   if (command === "setlevel") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const level = parseInt(args[2]);
     if (isNaN(level)) return err(message, "Invalid level.");
     const key = `${message.guild.id}-${target.id}`;
@@ -2009,7 +2549,7 @@ client.on("messageCreate", async (message) => {
   if (command === "resetxp") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     xpData.delete(`${message.guild.id}-${target.id}`);
     return ok(message, `Reset XP for **${target.user.tag}**`);
   }
@@ -2349,7 +2889,7 @@ client.on("messageCreate", async (message) => {
       const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getinfo&user=${username}&api_key=YOUR_LASTFM_KEY&format=json`);
       const data = await res.json();
       const user = data.user;
-      if (!user) return err(message, "User not found.");
+      if (!user) return err(message, "missing required argument: **user**");
       return message.reply({ embeds: [{ color: PINK, title: user.name, url: user.url, thumbnail: { url: user.image?.[2]?.["#text"] || "" }, fields: [{ name: "Scrobbles", value: user.playcount, inline: true }, { name: "Artists", value: user.artist_count || "N/A", inline: true }, { name: "Registered", value: `<t:${user.registered?.unixtime}:R>`, inline: true }] }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
@@ -2873,6 +3413,15 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
+
   // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
   if (command === "antinuke") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator) && message.author.id !== message.guild.ownerId) return err(message, "Only the server owner or admins can configure antinuke.");
@@ -3138,7 +3687,11 @@ client.on("messageCreate", async (message) => {
   if (command === "timeout") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters
+    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
+    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
+    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
     return err(message, "usage: ``");
@@ -3155,7 +3708,7 @@ client.on("messageCreate", async (message) => {
   if (command === "untimeout") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.timeout(null).catch(() => null);
     return ok(message, `Removed timeout from **${target.user.tag}**`);
   }
@@ -3164,7 +3717,7 @@ client.on("messageCreate", async (message) => {
   if (command === "baninfo") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
-    if (!userId) return err(message, "usage: ``");
+    if (!userId) return err(message, "missing required argument: **userId**");
 
     const ban = await message.guild.bans.fetch(userId).catch(() => null);
     if (!ban) return err(message, "User is not banned.");
@@ -3204,7 +3757,7 @@ client.on("messageCreate", async (message) => {
   // ,inrole <@role> — list members with a role
   if (command === "inrole") {
     const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
-    if (!role) return err(message, "Role not found.");
+    if (!role) return err(message, "missing required argument: **role**");
     const members = role.members;
     if (members.size === 0) return info(message, `no members have **${role.name}**.`);
     const list = members.map(m => m.user.tag).slice(0, 30).join(", ");
@@ -3260,10 +3813,10 @@ client.on("messageCreate", async (message) => {
   // ,identify <userId> — look up a user by ID
   if (command === "identify" || command === "lookup") {
     const userId = args[1];
-    if (!userId) return err(message, "usage: ``");
+    if (!userId) return err(message, "missing required argument: **userId**");
 
     const user = await client.users.fetch(userId).catch(() => null);
-    if (!user) return err(message, "User not found.");
+    if (!user) return err(message, "missing required argument: **user**");
     return message.reply({ embeds: [{ color: PINK, title: user.tag, thumbnail: { url: user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: user.id, inline: true }, { name: "Bot", value: user.bot ? "Yes" : "No", inline: true }, { name: "Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true }] }] });
   }
 });
@@ -3342,6 +3895,15 @@ client.on("messageCreate", async (message) => {
   if (!message.content.startsWith(",")) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
 
   // ── PURGE FILTERS ───────────────────────────────────
 
@@ -3519,9 +4081,10 @@ client.on("messageCreate", async (message) => {
   if (command === "hackban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
-    if (!userId) return err(message, "usage: ``");
+    if (!userId) return err(message, "missing required argument: **userId**");
 
     const reason = args.slice(2).join(" ") || "Hackban";
+    recentBoosters.delete(userId);
     await message.guild.members.ban(userId, { reason }).catch(() => null);
     return ok(message, `hackbanned user **${userId}** | ${reason}`);
   }
@@ -3557,7 +4120,7 @@ client.on("messageCreate", async (message) => {
   if (command === "history") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const key = `${message.guild.id}-${target.id}`;
     const warnList = warns.get(key) || [];
     const isBanned = await message.guild.bans.fetch(target.id).catch(() => null);
@@ -3572,7 +4135,7 @@ client.on("messageCreate", async (message) => {
   if (command === "clearhistory") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     warns.delete(`${message.guild.id}-${target.id}`);
     return ok(message, `Cleared history for **${target.tag}**`);
   }
@@ -3699,7 +4262,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vcmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     if (!target.voice.channel) return err(message, "User is not in a voice channel.");
     await target.voice.setMute(true).catch(() => null);
     return ok(message, `Voice muted **${target.user.tag}**`);
@@ -3709,7 +4272,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vcunmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setMute(false).catch(() => null);
     return ok(message, `Voice unmuted **${target.user.tag}**`);
   }
@@ -3718,7 +4281,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vcdeafen") {
     if (!message.member.permissions.has(PermissionFlagsBits.DeafenMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setDeaf(true).catch(() => null);
     return ok(message, `Deafened **${target.user.tag}**`);
   }
@@ -3727,7 +4290,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vcundeafen") {
     if (!message.member.permissions.has(PermissionFlagsBits.DeafenMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setDeaf(false).catch(() => null);
     return ok(message, `Undeafened **${target.user.tag}**`);
   }
@@ -3736,7 +4299,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vckick") {
     if (!message.member.permissions.has(PermissionFlagsBits.MoveMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     if (!target.voice.channel) return err(message, "User is not in a voice channel.");
     await target.voice.disconnect().catch(() => null);
     return ok(message, `Kicked **${target.user.tag}** from voice`);
@@ -3879,6 +4442,7 @@ client.on("messageCreate", async (message) => {
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${ids.length}** users...` }] });
     let count = 0;
     for (const id of ids) {
+      recentBoosters.delete(id);
       await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.tag}` }).catch(() => {});
       count++;
     }
@@ -3944,7 +4508,7 @@ client.on("messageCreate", async (message) => {
   if (command === "notes") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const list = notes.get(`${message.guild.id}-${target.id}`) || [];
     if (list.length === 0) return info(message, `no notes for **${target.tag}**.`);
     return message.reply({ embeds: [{ color: PINK, title: `📋 Notes: ${target.tag}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
@@ -3954,7 +4518,7 @@ client.on("messageCreate", async (message) => {
   if (command === "clearnotes") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     notes.delete(`${message.guild.id}-${target.id}`);
     return ok(message, `Cleared notes for **${target.tag}**`);
   }
@@ -4174,6 +4738,15 @@ client.on("messageCreate", async (message) => {
   if (!message.content.startsWith(",")) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
   const guildId = message.guild.id;
 
   // Check disabled commands
@@ -4248,7 +4821,7 @@ client.on("messageCreate", async (message) => {
   if (command === "cases") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const userCases = [...cases.entries()].filter(([k, v]) => k.startsWith(guildId) && v.userId === target.id).map(([, v]) => v);
     if (userCases.length === 0) return ok(message, `**${target.tag}** has no cases.`);
     const lines = userCases.map(c => `**#${c.id}** ${c.type} — ${c.reason} (${c.date.split("T")[0]})`).join("\n");
@@ -5269,6 +5842,15 @@ client.on("messageCreate", async (message) => {
   if (!message.content.startsWith(",")) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
   const guildId = message.guild.id;
 
   // ── POLL SYSTEM (advanced) ───────────────────────────
@@ -5484,7 +6066,7 @@ client.on("messageCreate", async (message) => {
   // ,rolecount <@role>
   if (command === "rolecount") {
     const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
-    if (!role) return err(message, "Role not found.");
+    if (!role) return err(message, "missing required argument: **role**");
     return info(message, `**${role.name}** has **${role.members.size}** members`);
   }
 
@@ -5748,7 +6330,7 @@ client.on("messageCreate", async (message) => {
   if (command === "mutehistory") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const hist = muteHistory.get(`${guildId}-${target.id}`) || [];
     if (hist.length === 0) return ok(message, `**${target.tag}** has no mute history.`);
     return message.reply({ embeds: [{ color: PINK, title: `Mute History: ${target.tag}`, description: hist.map((h, i) => `**${i+1}.** ${h.duration} — ${h.reason} (${h.mod})`).join("\n") }] });
@@ -5818,7 +6400,7 @@ client.on("messageCreate", async (message) => {
   if (command === "decancer") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const clean = (target.nickname || target.user.username).replace(/[^\x20-\x7E]/g, "").trim() || "Cleaned Nick";
     await target.setNickname(clean).catch(() => null);
     return ok(message, `Cleaned nickname: **${clean}**`);
@@ -5845,7 +6427,7 @@ client.on("messageCreate", async (message) => {
   if (command === "resetnick") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     await target.setNickname(null).catch(() => null);
     return ok(message, `Reset nickname for **${target.user.tag}**`);
   }
@@ -5939,7 +6521,7 @@ client.on("messageCreate", async (message) => {
   // ,banner [user]
   if (command === "banner") {
     const target = await client.users.fetch(message.mentions.users.first()?.id || message.author.id, { force: true }).catch(() => null);
-    if (!target) return err(message, "User not found.");
+    if (!target) return err(message, "missing required argument: **user**");
     const url = target.bannerURL({ size: 1024 });
     if (!url) return err(message, "No banner found.");
     return message.reply({ embeds: [{ color: PINK, title: `${target.tag}'s Banner`, image: { url } }] });
@@ -6485,6 +7067,15 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
+
   if (command === "whitelistcheck") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const cfg = getAntiNuke(message.guild.id);
@@ -6775,6 +7366,15 @@ client.on("messageCreate", async (message) => {
   if (!message.content.startsWith(",")) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+
+  // ── GLOBAL: check ignore list + show usage if command known ──
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
+    const schema = CMD_SCHEMA[command];
+    if (schema.args.length > 0) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
+  }
   if (command === "hackban2") { if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return; const ids = args.slice(1); for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.tag}` }).catch(() => {}); return ok(message, `Banned ${ids.length} users.`); }
   if (command === "modnick") { if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return; const t = message.mentions.members.first(); const nick = args.slice(2).join(" "); if (!t || !nick) return err(message, "usage: ``");
  await t.setNickname(nick); return ok(message, `Set nick to **${nick}**`); }
