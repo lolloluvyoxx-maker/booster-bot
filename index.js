@@ -63,14 +63,13 @@ async function confirm(message, text, onConfirm) {
   collector.on("collect", async i => {
     try {
       if (i.customId === "confirm_yes") {
-        await i.deferUpdate();
-        await msg.edit({ components: [] }).catch(() => {});
+        await i.update({ embeds: [{ color: PINK, description: "🌸 Executing..." }], components: [] });
         await onConfirm();
       } else {
         await i.update({ embeds: [{ color: PINK, description: "✖ Action cancelled." }], components: [] });
       }
     } catch (e) {
-      if (!i.replied && !i.deferred) await i.update({ components: [] }).catch(() => {});
+      msg.edit({ components: [] }).catch(() => {});
     }
   });
   collector.on("end", (collected) => {
@@ -746,7 +745,7 @@ client.on("messageCreate", async (message) => {
       else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
       await i.update({ embeds: [buildEmbed(page)], components: [buildRow(page)] });
     } catch (e) {
-      if (!i.replied && !i.deferred) await i.update({ components: [] }).catch(() => {});
+      msg.edit({ components: [] }).catch(() => {});
     }
   });
 
@@ -1363,18 +1362,6 @@ const CMD_SCHEMA = {
   fixuser: { usage: ",fixuser <userId|@user>", args: [] },
   stats: { usage: ",stats", args: [] },
 };
-
-// ===== GLOBAL INTERACTION ERROR HANDLER =====
-// Catches ALL failed/expired interactions automatically
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isMessageComponent()) return;
-  // If the interaction wasn't handled by a collector (timed out), dismiss it gracefully
-  try {
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.deferUpdate();
-    }
-  } catch {}
-});
 
 // ===== 50 MOST USED COMMANDS =====
 client.on("messageCreate", async (message) => {
@@ -2246,7 +2233,7 @@ client.on("messageCreate", async (message) => {
         // Handle select menu
         if (i.isStringSelectMenu()) {
           const cat = categories[i.values[0]];
-          if (!cat) return i.deferUpdate().catch(() => {});
+          if (!cat) return;
           currentCategory = cat;
           currentPage = 0;
           currentPages = [];
@@ -2269,7 +2256,7 @@ client.on("messageCreate", async (message) => {
             currentPages = [];
             return await i.update({ embeds: [mainEmbed], components: [selectMenu] });
           }
-          if (!currentCategory) return i.deferUpdate().catch(() => {});
+          if (!currentCategory) return;
           if (i.customId === "help_back" && currentPage > 0) currentPage--;
           if (i.customId === "help_next" && currentPage < currentPages.length - 1) currentPage++;
           await i.update({
@@ -2278,7 +2265,7 @@ client.on("messageCreate", async (message) => {
           });
         }
       } catch (e) {
-        if (!i.replied && !i.deferred) await i.deferUpdate().catch(() => {});
+        msg.edit({ components: [] }).catch(() => {});
       }
     });
 
