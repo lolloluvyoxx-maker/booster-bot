@@ -509,7 +509,7 @@ client.on("messageCreate", async (message) => {
     const arg = args[1];
 
     if (!arg) {
-      return err(message, "usage: ``");
+      return err(message, "missing required argument");
 
     }
 
@@ -559,7 +559,7 @@ client.on("messageCreate", async (message) => {
     const userId = args[1] || message.mentions.users.first()?.id;
 
     if (!userId) {
-      return err(message, "usage: ``");
+      return err(message, "missing required argument");
 
     }
 
@@ -1473,7 +1473,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const amount = Math.min(parseInt(args[1]) || 10, 100);
     await message.channel.bulkDelete(amount + 1, true).catch(() => null);
-    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 Deleted **${amount}** messages.` }] });
+    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 deleted **${amount}** messages` }] });
     setTimeout(() => msg.delete().catch(() => {}), 3000);
   }
 
@@ -1540,7 +1540,7 @@ client.on("messageCreate", async (message) => {
     const action = args[1]?.toLowerCase();
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[2]).catch(() => null);
     const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(3).join(" ").toLowerCase());
-    if (!target || !role) return err(message, "usage: ``");
+    if (!target || !role) return err(message, "missing required argument");
 
     if (action === "add") {
       await target.roles.add(role).catch(() => null);
@@ -1549,7 +1549,7 @@ client.on("messageCreate", async (message) => {
       await target.roles.remove(role).catch(() => null);
       return ok(message, `Removed **${role.name}** from **${target.user.tag}**`);
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -1687,7 +1687,7 @@ client.on("messageCreate", async (message) => {
   // ,choose <option1> | <option2> | ...
   if (command === "choose") {
     const options = args.slice(1).join(" ").split("|").map(o => o.trim()).filter(Boolean);
-    if (options.length < 2) return err(message, "usage: ``");
+    if (options.length < 2) return err(message, "missing required argument");
 
     return info(message, `I choose: **${options[Math.floor(Math.random() * options.length)]}**`);
   }
@@ -1695,7 +1695,7 @@ client.on("messageCreate", async (message) => {
   // ,poll <question>
   if (command === "poll") {
     const question = args.slice(1).join(" ");
-    if (!question) return err(message, "usage: ``");
+    if (!question) return err(message, "missing required argument");
 
     const embed = { color: PINK, title: "📊 Poll", description: question, footer: { text: `Asked by ${message.author.tag}` } };
     const msg = await message.channel.send({ embeds: [embed] });
@@ -1708,7 +1708,7 @@ client.on("messageCreate", async (message) => {
   if (command === "say") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     message.delete().catch(() => {});
     return message.channel.send(text);
@@ -1720,7 +1720,7 @@ client.on("messageCreate", async (message) => {
     const parts = args.slice(1).join(" ").split("|");
     const title = parts[0]?.trim();
     const description = parts[1]?.trim();
-    if (!title) return err(message, "usage: ``");
+    if (!title) return err(message, "missing required argument");
 
     message.delete().catch(() => {});
     return message.channel.send({ embeds: [{ color: PINK, title, description }] });
@@ -1732,7 +1732,7 @@ client.on("messageCreate", async (message) => {
   if (command === "announce") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const channel = message.mentions.channels.first();
-    if (!channel) return err(message, "usage: ``");
+    if (!channel) return err(message, "missing required argument");
 
     const text = args.slice(2).join(" ");
     if (!text) return err(message, "Please provide a message.");
@@ -1764,7 +1764,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const channel = message.mentions.channels.first() || message.channel;
     const name = args.slice(message.mentions.channels.first() ? 2 : 1).join("-").toLowerCase();
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     await channel.setName(name).catch(() => null);
     return ok(message, `Renamed channel to **${name}**`);
@@ -1795,7 +1795,7 @@ client.on("messageCreate", async (message) => {
   // ,inviteinfo <invite code>
   if (command === "inviteinfo") {
     const code = args[1];
-    if (!code) return err(message, "usage: ``");
+    if (!code) return err(message, "missing required argument");
 
     const invite = await client.fetchInvite(code).catch(() => null);
     if (!invite) return err(message, "Invalid invite.");
@@ -2546,7 +2546,7 @@ client.on("messageCreate", async (message) => {
   // ,pay <user> <amount>
   if (command === "pay") {
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const amount = parseInt(args[2]);
     if (isNaN(amount) || amount <= 0) return err(message, "Invalid amount.");
@@ -2560,7 +2560,7 @@ client.on("messageCreate", async (message) => {
   // ,coinflip bet <amount>
   if (command === "bet") {
     const amount = parseInt(args[1]);
-    if (isNaN(amount) || amount <= 0) return err(message, "usage: ``");
+    if (isNaN(amount) || amount <= 0) return err(message, "missing required argument");
 
     const bal = economy.get(message.author.id) || 0;
     if (bal < amount) return err(message, "Insufficient funds.");
@@ -2572,7 +2572,7 @@ client.on("messageCreate", async (message) => {
   // ,blackjack / ,bj <amount>
   if (command === "blackjack" || command === "bj") {
     const amount = parseInt(args[1]);
-    if (isNaN(amount) || amount <= 0) return err(message, "usage: ``");
+    if (isNaN(amount) || amount <= 0) return err(message, "missing required argument");
 
     const bal = economy.get(message.author.id) || 0;
     if (bal < amount) return err(message, "Insufficient funds.");
@@ -2602,7 +2602,7 @@ client.on("messageCreate", async (message) => {
   if (command === "remind" || command === "reminder") {
     const timeStr = args[1];
     const text = args.slice(2).join(" ");
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
 
     const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
@@ -2630,7 +2630,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const timeStr = args[1];
     const prize = args.slice(2).join(" ");
-    if (!timeStr || !prize) return err(message, "usage: ``");
+    if (!timeStr || !prize) return err(message, "missing required argument");
 
     const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
     if (!match) return err(message, "Invalid time.");
@@ -2648,7 +2648,7 @@ client.on("messageCreate", async (message) => {
   if (command === "gend") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const msgId = args[1];
-    if (!msgId) return err(message, "usage: ``");
+    if (!msgId) return err(message, "missing required argument");
 
     const gw = giveaways.get(msgId);
     if (!gw) return err(message, "Giveaway not found.");
@@ -2661,7 +2661,7 @@ client.on("messageCreate", async (message) => {
   if (command === "greroll") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const msgId = args[1];
-    if (!msgId) return err(message, "usage: ``");
+    if (!msgId) return err(message, "missing required argument");
 
     const gw = giveaways.get(msgId);
     if (!gw || !gw.ended || gw.entries.length === 0) return err(message, "Giveaway not found or no entries.");
@@ -2679,7 +2679,7 @@ client.on("messageCreate", async (message) => {
       return ok(message, "Autorole disabled.");
     }
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     autoroles.set(message.guild.id, role.id);
     return ok(message, `Autorole set to **${role.name}**`);
@@ -2690,7 +2690,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { welcomeConfig.delete(message.guild.id); return ok(message, "Welcome messages disabled."); }
     const channel = message.mentions.channels.first();
-    if (!channel) return err(message, "usage: ``");
+    if (!channel) return err(message, "missing required argument");
 
     const msg = args.slice(2).join(" ");
     if (!msg) return err(message, "Please provide a message. Use `{user}`, `{server}`, `{count}`");
@@ -2703,7 +2703,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { goodbyeConfig.delete(message.guild.id); return ok(message, "Goodbye messages disabled."); }
     const channel = message.mentions.channels.first();
-    if (!channel) return err(message, "usage: ``");
+    if (!channel) return err(message, "missing required argument");
 
     const msg = args.slice(2).join(" ");
     if (!msg) return err(message, "Please provide a message.");
@@ -2716,7 +2716,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { starboardConfig.delete(message.guild.id); return ok(message, "Starboard disabled."); }
     const channel = message.mentions.channels.first();
-    if (!channel) return err(message, "usage: ``");
+    if (!channel) return err(message, "missing required argument");
 
     const threshold = parseInt(args[2]) || 3;
     starboardConfig.set(message.guild.id, { channelId: channel.id, threshold });
@@ -2773,7 +2773,7 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "set") {
       const username = args[2];
-      if (!username) return err(message, "usage: ``");
+      if (!username) return err(message, "missing required argument");
 
       lastfmUsers.set(message.author.id, username);
       return ok(message, `Last.fm username set to **${username}**`);
@@ -2782,7 +2782,7 @@ client.on("messageCreate", async (message) => {
       lastfmUsers.delete(message.author.id);
       return ok(message, "Last.fm username removed.");
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -2867,7 +2867,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "setup") {
       if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
       const logCh = message.mentions.channels.first();
-      if (!logCh) return err(message, "usage: ``");
+      if (!logCh) return err(message, "missing required argument");
 
       ticketConfig.set(message.guild.id, { logChannelId: logCh.id });
       return ok(message, `Ticket system set up. Logs → ${logCh}`);
@@ -2903,7 +2903,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
       const target = message.mentions.members.first();
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       await message.channel.permissionOverwrites.edit(target, { ViewChannel: true, SendMessages: true }).catch(() => null);
       return ok(message, `Added ${target} to the ticket.`);
@@ -2911,7 +2911,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "remove") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
       const target = message.mentions.members.first();
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       await message.channel.permissionOverwrites.delete(target).catch(() => null);
       return ok(message, `Removed ${target} from the ticket.`);
@@ -2924,7 +2924,7 @@ client.on("messageCreate", async (message) => {
   if (command === "rps") {
     const choices = ["rock", "paper", "scissors"];
     const userChoice = args[1]?.toLowerCase();
-    if (!choices.includes(userChoice)) return err(message, "usage: ``");
+    if (!choices.includes(userChoice)) return err(message, "missing required argument");
 
     const botChoice = choices[Math.floor(Math.random() * 3)];
     let result;
@@ -2937,7 +2937,7 @@ client.on("messageCreate", async (message) => {
   // ,tictactoe / ,ttt <@user>
   if (command === "tictactoe" || command === "ttt") {
     const target = message.mentions.users.first();
-    if (!target || target.bot || target.id === message.author.id) return err(message, "usage: ``");
+    if (!target || target.bot || target.id === message.author.id) return err(message, "missing required argument");
 
     const board = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
     const players = [message.author.id, target.id];
@@ -2966,12 +2966,22 @@ client.on("messageCreate", async (message) => {
   // ,hack <@user> — joke command
   if (command === "hack") {
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
-    const steps = [`🔍 Finding IP of **${target.tag}**...`, `💻 Accessing mainframe...`, `🔓 Bypassing firewall...`, `📁 Stealing data...`, `✅ Successfully hacked **${target.tag}**!\nPassword: \`password123\`\nEmail: \`${target.username}@gmail.com\``];
+    const steps = [
+      { color: PINK, description: `🔍 Finding IP of **${target.tag}**...` },
+      { color: PINK, description: `💻 Accessing mainframe...` },
+      { color: PINK, description: `🔓 Bypassing firewall...` },
+      { color: PINK, description: `📁 Stealing data...` },
+      { color: PINK, description: `✅ Successfully hacked **${target.tag}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
+    ];
     let i = 0;
-    const m = await message.reply(steps[0]);
-    const interval = setInterval(() => { i++; if (i >= steps.length) { clearInterval(interval); } m.edit(steps[Math.min(i, steps.length - 1)]); }, 1500);
+    const m = await message.reply({ embeds: [steps[0]] });
+    const interval = setInterval(() => {
+      i++;
+      if (i >= steps.length) { clearInterval(interval); return; }
+      m.edit({ embeds: [steps[i]] }).catch(() => clearInterval(interval));
+    }, 1500);
   }
 
   // ,ship <@user1> [@user2]
@@ -2993,7 +3003,7 @@ client.on("messageCreate", async (message) => {
   // ,rate <thing>
   if (command === "rate") {
     const thing = args.slice(1).join(" ");
-    if (!thing) return err(message, "usage: ``");
+    if (!thing) return err(message, "missing required argument");
 
     const score = Math.floor(Math.random() * 11);
     return info(message, `I rate **${thing}** a **${score}/10**`);
@@ -3025,7 +3035,7 @@ client.on("messageCreate", async (message) => {
   if (command === "uptime") {
     const s = Math.floor(process.uptime());
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    return info(message, `uptime: **${d}d ${h}h ${m}m ${sec}s**`);
+    return info(message, `uptime **${d}d ${h}h ${m}m ${sec}s**`);
   }
 
   // ,firstmessage [#channel]
@@ -3040,7 +3050,7 @@ client.on("messageCreate", async (message) => {
   // ,jumbo <emoji>
   if (command === "jumbo") {
     const emoji = args[1];
-    if (!emoji) return err(message, "usage: ``");
+    if (!emoji) return err(message, "missing required argument");
 
     const match = emoji.match(/<a?:[^:]+:(\d+)>/);
     if (match) return message.reply({ embeds: [{ image: { url: `https://cdn.discordapp.com/emojis/${match[1]}.${emoji.startsWith("<a:") ? "gif" : "png"}?size=256` } }] });
@@ -3052,7 +3062,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
     const emoji = args[1];
     const name = args[2];
-    if (!emoji || !name) return err(message, "usage: ``");
+    if (!emoji || !name) return err(message, "missing required argument");
 
     const match = emoji.match(/<a?:[^:]+:(\d+)>/);
     if (!match) return err(message, "Invalid emoji.");
@@ -3110,7 +3120,7 @@ client.on("messageCreate", async (message) => {
   // ,weather <city> — requires no API key, uses wttr.in
   if (command === "weather") {
     const city = args.slice(1).join("+");
-    if (!city) return err(message, "usage: ``");
+    if (!city) return err(message, "missing required argument");
 
     try {
       const res = await fetch(`https://wttr.in/${city}?format=j1`);
@@ -3125,7 +3135,7 @@ client.on("messageCreate", async (message) => {
   // ,math <expression>
   if (command === "math") {
     const expr = args.slice(1).join(" ");
-    if (!expr) return err(message, "usage: ``");
+    if (!expr) return err(message, "missing required argument");
 
     try {
       const result = Function(`"use strict"; return (${expr.replace(/[^0-9+\-*/().\s%]/g, "")})`)();
@@ -3136,7 +3146,7 @@ client.on("messageCreate", async (message) => {
   // ,urban <word>
   if (command === "urban") {
     const word = args.slice(1).join(" ");
-    if (!word) return err(message, "usage: ``");
+    if (!word) return err(message, "missing required argument");
 
     try {
       const res = await fetch(`https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(word)}`);
@@ -3396,14 +3406,14 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "punishment") {
       const p = args[2]?.toLowerCase();
-      if (!["ban", "kick", "strip"].includes(p)) return err(message, "usage: ``");
+      if (!["ban", "kick", "strip"].includes(p)) return err(message, "missing required argument");
 
       cfg.punishment = p;
       return ok(message, `AntiNuke punishment set to **${p}**`);
     }
     if (sub === "threshold") {
       const n = parseInt(args[2]);
-      return err(message, "usage: ``");
+      return err(message, "missing required argument");
 
 
       cfg.threshold = n;
@@ -3411,14 +3421,14 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "whitelist") {
       const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.add(target.id);
       return ok(message, `**${target.tag}** whitelisted from AntiNuke`);
     }
     if (sub === "unwhitelist") {
       const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.delete(target.id);
       return ok(message, `**${target.tag}** removed from AntiNuke whitelist`);
@@ -3427,7 +3437,7 @@ client.on("messageCreate", async (message) => {
       const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
       return message.reply({ embeds: [{ color: PINK, title: "🛡️ AntiNuke Status", fields: [{ name: "Status", value: cfg.enabled ? "✅ Enabled" : "❌ Disabled", inline: true }, { name: "Punishment", value: cfg.punishment, inline: true }, { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true }, { name: "Whitelist", value: wl }] }] });
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -3447,14 +3457,14 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "action") {
       const a = args[2]?.toLowerCase();
-      if (!["ban", "kick", "mute"].includes(a)) return err(message, "usage: ``");
+      if (!["ban", "kick", "mute"].includes(a)) return err(message, "missing required argument");
 
       cfg.action = a;
       return ok(message, `AntiRaid action set to **${a}**`);
     }
     if (sub === "threshold") {
       const n = parseInt(args[2]);
-      return err(message, "usage: ``");
+      return err(message, "missing required argument");
 
 
       cfg.joinThreshold = n;
@@ -3462,7 +3472,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "window") {
       const n = parseInt(args[2]);
-      if (isNaN(n) || n < 1) return err(message, "usage: ``");
+      if (isNaN(n) || n < 1) return err(message, "missing required argument");
 
       cfg.joinWindow = n * 1000;
       return ok(message, `AntiRaid window set to **${n}** seconds`);
@@ -3478,7 +3488,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "status" || !sub) {
       return message.reply({ embeds: [{ color: PINK, title: "🚨 AntiRaid Status", fields: [{ name: "Status", value: cfg.enabled ? "✅ Enabled" : "❌ Disabled", inline: true }, { name: "Action", value: cfg.action, inline: true }, { name: "Threshold", value: `${cfg.joinThreshold} joins`, inline: true }, { name: "Window", value: `${cfg.joinWindow / 1000}s`, inline: true }, { name: "Lockdown Active", value: lockedGuilds.has(message.guild.id) ? "🔒 Yes" : "✅ No", inline: true }] }] });
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -3529,7 +3539,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const action = args[1]?.toLowerCase();
     const role = message.mentions.roles.first();
-    if (!role || !["add", "remove"].includes(action)) return err(message, "usage: ``");
+    if (!role || !["add", "remove"].includes(action)) return err(message, "missing required argument");
 
     const members = await message.guild.members.fetch();
     message.reply({ embeds: [{ color: PINK, description: `🌸 Processing **${members.size}** members...` }] });
@@ -3551,7 +3561,7 @@ client.on("messageCreate", async (message) => {
       return ok(message, "Logging disabled.");
     }
     const channel = message.mentions.channels.first();
-    if (!channel) return err(message, "usage: ``");
+    if (!channel) return err(message, "missing required argument");
 
     welcomeConfig.set(`log-${message.guild.id}`, { channelId: channel.id });
     return ok(message, `Mod logs will be sent to ${channel}`);
@@ -3562,7 +3572,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const name = args[1];
     const color = args[2] || "#000000";
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     const role = await message.guild.roles.create({ name, color }).catch(() => null);
     if (!role) return err(message, "Could not create role.");
@@ -3573,7 +3583,7 @@ client.on("messageCreate", async (message) => {
   if (command === "roledelete") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     await role.delete().catch(() => null);
     return ok(message, `Deleted role **${role.name}**`);
@@ -3584,7 +3594,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
     const color = args[2];
-    if (!role || !color) return err(message, "usage: ``");
+    if (!role || !color) return err(message, "missing required argument");
 
     await role.setColor(color).catch(() => null);
     return ok(message, `Changed **${role.name}** color to **${color}**`);
@@ -3602,7 +3612,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const name = args[1];
     const type = args[2]?.toLowerCase() === "voice" ? 2 : 0;
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     const ch = await message.guild.channels.create({ name, type }).catch(() => null);
     if (!ch) return err(message, "Could not create channel.");
@@ -3621,7 +3631,7 @@ client.on("messageCreate", async (message) => {
   if (command === "categorycreate") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const name = args.slice(1).join(" ");
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     const cat = await message.guild.channels.create({ name, type: 4 }).catch(() => null);
     if (!cat) return err(message, "Could not create category.");
@@ -3650,7 +3660,7 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
 
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
@@ -3748,13 +3758,13 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "staff") {
       const role = message.mentions.roles.first();
-      if (!role) return err(message, "usage: ``");
+      if (!role) return err(message, "missing required argument");
 
       const cfg = getAntiNuke(message.guild.id);
       cfg.whitelist.add(role.id);
       return ok(message, `**${role.name}** marked as staff role (whitelisted in AntiNuke)`);
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -3900,7 +3910,7 @@ client.on("messageCreate", async (message) => {
   if (command === "purge" && args[1] === "user") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.author.id === target.id).first(parseInt(args[3]) || 100);
@@ -3913,7 +3923,7 @@ client.on("messageCreate", async (message) => {
   if (command === "purge" && args[1] === "contains") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const text = args[2];
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.content.toLowerCase().includes(text.toLowerCase())).first(parseInt(args[3]) || 100);
@@ -3926,7 +3936,7 @@ client.on("messageCreate", async (message) => {
   if (command === "purge" && args[1] === "startswith") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const text = args[2];
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.content.toLowerCase().startsWith(text.toLowerCase())).first(100);
@@ -3966,7 +3976,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "off") { cfg.enabled = false; return ok(message, "AutoMod filter disabled."); }
     if (sub === "add") {
       const word = args.slice(2).join(" ");
-      if (!word) return err(message, "usage: ``");
+      if (!word) return err(message, "missing required argument");
 
       cfg.words.push(word.toLowerCase());
       return ok(message, `Added **${word}** to filter.`);
@@ -3988,7 +3998,7 @@ client.on("messageCreate", async (message) => {
       return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
     }
     if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "🤖 AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "✅ On" : "❌ Off", inline: true }, { name: "Links", value: cfg.links ? "✅" : "❌", inline: true }, { name: "Invites", value: cfg.invites ? "✅" : "❌", inline: true }, { name: "Caps", value: cfg.caps ? "✅" : "❌", inline: true }, { name: "Spam", value: cfg.spam ? "✅" : "❌", inline: true }, { name: "Mentions", value: cfg.mentions ? `✅ (max ${cfg.maxMentions})` : "❌", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -3999,7 +4009,7 @@ client.on("messageCreate", async (message) => {
     const action = command === "filterexempt" ? args[1] : args[2];
     const role = message.mentions.roles.first();
     const channel = message.mentions.channels.first();
-    if (!role && !channel) return err(message, "usage: ``");
+    if (!role && !channel) return err(message, "missing required argument");
 
     if (action === "add") {
       if (role) { exempt.roles.add(role.id); return ok(message, `**${role.name}** exempted from filter.`); }
@@ -4018,7 +4028,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { modlogChannel.delete(message.guild.id); return ok(message, "Mod logs disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     modlogChannel.set(message.guild.id, ch.id);
     return ok(message, `Mod logs → ${ch}`);
@@ -4054,7 +4064,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
     const reason = args.slice(2).join(" ");
-    if (!userId || !reason) return err(message, "usage: ``");
+    if (!userId || !reason) return err(message, "missing required argument");
 
     const ban = await message.guild.bans.fetch(userId).catch(() => null);
     if (!ban) return err(message, "User is not banned.");
@@ -4096,7 +4106,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
     const emoji = args[2];
-    if (!role || !emoji) return err(message, "usage: ``");
+    if (!role || !emoji) return err(message, "missing required argument");
 
     await role.setUnicodeEmoji(emoji).catch(() => null);
     return ok(message, `Set icon for **${role.name}**`);
@@ -4106,7 +4116,7 @@ client.on("messageCreate", async (message) => {
   if (command === "rolehoist") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     await role.setHoist(!role.hoist).catch(() => null);
     return ok(message, `**${role.name}** hoist: **${!role.hoist}**`);
@@ -4116,7 +4126,7 @@ client.on("messageCreate", async (message) => {
   if (command === "rolemention") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     await role.setMentionable(!role.mentionable).catch(() => null);
     return ok(message, `**${role.name}** mentionable: **${!role.mentionable}**`);
@@ -4127,7 +4137,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
     const role = message.mentions.roles.first();
-    if (!target || !role) return err(message, "usage: ``");
+    if (!target || !role) return err(message, "missing required argument");
 
     await target.roles.add(role).catch(() => null);
     return ok(message, `Added **${role.name}** to **${target.user.tag}**`);
@@ -4138,7 +4148,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
     const role = message.mentions.roles.first();
-    if (!target || !role) return err(message, "usage: ``");
+    if (!target || !role) return err(message, "missing required argument");
 
     await target.roles.remove(role).catch(() => null);
     return ok(message, `Removed **${role.name}** from **${target.user.tag}**`);
@@ -4147,7 +4157,7 @@ client.on("messageCreate", async (message) => {
   // ,roleperms <@role> — show role permissions
   if (command === "roleperms") {
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     const perms = role.permissions.toArray();
     return message.reply({ embeds: [{ color: role.color || PINK, title: `Permissions: ${role.name}`, description: perms.length > 0 ? perms.join(", ") : "No permissions" }] });
@@ -4259,7 +4269,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.MoveMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
     const channel = message.mentions.channels.first();
-    if (!target || !channel) return err(message, "usage: ``");
+    if (!target || !channel) return err(message, "missing required argument");
 
     await target.voice.setChannel(channel).catch(() => null);
     return ok(message, `Moved **${target.user.tag}** to ${channel}`);
@@ -4289,7 +4299,7 @@ client.on("messageCreate", async (message) => {
   if (command === "setname") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const name = args.slice(1).join(" ");
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     await message.guild.setName(name).catch(() => null);
     return ok(message, `Server renamed to **${name}**`);
@@ -4315,7 +4325,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const levels = { none: 0, low: 1, medium: 2, high: 3, highest: 4 };
     const level = levels[args[1]?.toLowerCase()];
-    if (level === undefined) return err(message, "usage: ``");
+    if (level === undefined) return err(message, "missing required argument");
 
     await message.guild.setVerificationLevel(level).catch(() => null);
     return ok(message, `Verification level set to **${args[1]}**`);
@@ -4326,7 +4336,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const levels = { disabled: 0, members: 1, all: 2 };
     const level = levels[args[1]?.toLowerCase()];
-    if (level === undefined) return err(message, "usage: ``");
+    if (level === undefined) return err(message, "missing required argument");
 
     await message.guild.setExplicitContentFilter(level).catch(() => null);
     return ok(message, `Content filter set to **${args[1]}**`);
@@ -4346,7 +4356,7 @@ client.on("messageCreate", async (message) => {
   if (command === "deleteinvite") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const code = args[1];
-    if (!code) return err(message, "usage: ``");
+    if (!code) return err(message, "missing required argument");
 
     await client.fetchInvite(code).then(inv => inv.delete()).catch(() => null);
     return ok(message, `Deleted invite **${code}**`);
@@ -4362,15 +4372,13 @@ client.on("messageCreate", async (message) => {
   }
 
   // ── REACTION ROLES ────────────────────────────────────
-  const reactionRoles = new Map(); // msgId-emoji => roleId (per-session)
-
   // ,reactionrole <messageId> <emoji> <@role>
   if (command === "reactionrole" || command === "rr") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const msgId = args[1];
     const emoji = args[2];
     const role = message.mentions.roles.first();
-    if (!msgId || !emoji || !role) return err(message, "usage: ``");
+    if (!msgId || !emoji || !role) return err(message, "missing required argument");
 
     reactionRoles.set(`${msgId}-${emoji}`, role.id);
     try {
@@ -4386,7 +4394,7 @@ client.on("messageCreate", async (message) => {
   if (command === "massban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
-    if (ids.length === 0) return err(message, "usage: ``");
+    if (ids.length === 0) return err(message, "missing required argument");
 
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${ids.length}** users...` }] });
     let count = 0;
@@ -4402,7 +4410,7 @@ client.on("messageCreate", async (message) => {
   if (command === "masskick") {
     if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
     const targets = [...message.mentions.members.values()];
-    if (targets.length === 0) return err(message, "usage: ``");
+    if (targets.length === 0) return err(message, "missing required argument");
 
     message.reply({ embeds: [{ color: PINK, description: `🌸 Kicking **${targets.length}** users...` }] });
     for (const t of targets) await t.kick(`[Masskick] by ${message.author.tag}`).catch(() => {});
@@ -4414,7 +4422,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const timeStr = args[1];
     const match = timeStr?.match(/^(\d+)(s|m|h)$/);
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
 
     const units = { s: 1000, m: 60000, h: 3600000 };
@@ -4439,12 +4447,11 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,note <@user> <text> — add a private note to a user
-  const notes = new Map();
   if (command === "note") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const text = args.slice(2).join(" ");
-    if (!target || !text) return err(message, "usage: ``");
+    if (!target || !text) return err(message, "missing required argument");
 
     const key = `${message.guild.id}-${target.id}`;
     const list = notes.get(key) || [];
@@ -4477,7 +4484,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const channel = message.mentions.channels.first();
-    if (!target || !channel) return err(message, "usage: ``");
+    if (!target || !channel) return err(message, "missing required argument");
 
     return info(message, `**${target.tag}** please continue in ${channel}`);
   }
@@ -4486,7 +4493,7 @@ client.on("messageCreate", async (message) => {
   if (command === "report") {
     const target = message.mentions.users.first();
     const reason = args.slice(2).join(" ");
-    if (!target || !reason) return err(message, "usage: ``");
+    if (!target || !reason) return err(message, "missing required argument");
 
     const logChId = modlogChannel.get(message.guild.id);
     if (logChId) {
@@ -4501,7 +4508,7 @@ client.on("messageCreate", async (message) => {
 client.on("messageReactionAdd", async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
-  const roleId = (client._reactionRoles || new Map()).get(`${reaction.message.id}-${reaction.emoji.name}`);
+  const roleId = reactionRoles.get(`${reaction.message.id}-${reaction.emoji.name}`);
   if (!roleId) return;
   const member = await reaction.message.guild?.members.fetch(user.id).catch(() => null);
   if (member) await member.roles.add(roleId).catch(() => {});
@@ -4510,7 +4517,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
 client.on("messageReactionRemove", async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
-  const roleId = (client._reactionRoles || new Map()).get(`${reaction.message.id}-${reaction.emoji.name}`);
+  const roleId = reactionRoles.get(`${reaction.message.id}-${reaction.emoji.name}`);
   if (!roleId) return;
   const member = await reaction.message.guild?.members.fetch(user.id).catch(() => null);
   if (member) await member.roles.remove(roleId).catch(() => {});
@@ -4740,7 +4747,7 @@ client.on("messageCreate", async (message) => {
   if (command === "vanitytransfer") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const code = args[1];
-    if (!code) return err(message, "usage: ``");
+    if (!code) return err(message, "missing required argument");
 
     await message.guild.setVanityCode(code).catch(e => err(message, `Failed: ${e.message}`));
     return ok(message, `Vanity URL set to **discord.gg/${code}**`);
@@ -4752,7 +4759,7 @@ client.on("messageCreate", async (message) => {
   if (command === "case") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const id = parseInt(args[1]);
-    if (isNaN(id)) return err(message, "usage: ``");
+    if (isNaN(id)) return err(message, "missing required argument");
 
     const c = cases.get(`${guildId}-${id}`);
     if (!c) return err(message, `Case #${id} not found.`);
@@ -4775,7 +4782,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const id = parseInt(args[1]);
     const reason = args.slice(2).join(" ");
-    if (isNaN(id) || !reason) return err(message, "usage: ``");
+    if (isNaN(id) || !reason) return err(message, "missing required argument");
 
     const c = cases.get(`${guildId}-${id}`);
     if (!c) return err(message, `Case #${id} not found.`);
@@ -4788,7 +4795,7 @@ client.on("messageCreate", async (message) => {
   if (command === "deletecase") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const id = parseInt(args[1]);
-    if (isNaN(id)) return err(message, "usage: ``");
+    if (isNaN(id)) return err(message, "missing required argument");
 
     cases.delete(`${guildId}-${id}`);
     return ok(message, `Case #${id} deleted.`);
@@ -4801,7 +4808,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const count = parseInt(args[1]);
     const action = args[2]?.toLowerCase();
-    if (isNaN(count) || !["mute", "kick", "ban"].includes(action)) return err(message, "usage: ``");
+    if (isNaN(count) || !["mute", "kick", "ban"].includes(action)) return err(message, "missing required argument");
 
     const list = warnThresholds.get(guildId) || [];
     list.push({ count, action });
@@ -4826,14 +4833,14 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       const name = args[2]?.toLowerCase();
       const response = args.slice(3).join(" ");
-      if (!name || !response) return err(message, "usage: ``");
+      if (!name || !response) return err(message, "missing required argument");
 
       customCommands.set(`${guildId}-${name}`, response);
       return ok(message, `Custom command **,${name}** created.`);
     }
     if (sub === "remove" || sub === "delete") {
       const name = args[2]?.toLowerCase();
-      if (!name) return err(message, "usage: ``");
+      if (!name) return err(message, "missing required argument");
 
       customCommands.delete(`${guildId}-${name}`);
       return ok(message, `Custom command **,${name}** removed.`);
@@ -4843,7 +4850,7 @@ client.on("messageCreate", async (message) => {
       if (cmds.length === 0) return message.reply("No custom commands.");
       return message.reply({ embeds: [{ color: PINK, title: "Custom Commands", description: cmds.map(c => `\`,${c}\``).join(", ") }] });
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -4856,7 +4863,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       const alias = args[2]?.toLowerCase();
       const target = args[3]?.toLowerCase();
-      if (!alias || !target) return err(message, "usage: ``");
+      if (!alias || !target) return err(message, "missing required argument");
 
       aliases.set(`${guildId}-${alias}`, target);
       return ok(message, `\`,${alias}\` is now an alias for \`,${target}\``);
@@ -4879,7 +4886,7 @@ client.on("messageCreate", async (message) => {
   if (command === "disable") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const cmd = args[1]?.toLowerCase();
-    if (!cmd) return err(message, "usage: ``");
+    if (!cmd) return err(message, "missing required argument");
 
     const set = disabledCommands.get(guildId) || new Set();
     set.add(cmd);
@@ -4912,7 +4919,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       const text = args.slice(2).join(" ");
       const parts = text.split("|");
-      if (parts.length < 2) return err(message, "usage: ``");
+      if (parts.length < 2) return err(message, "missing required argument");
 
       const trigger = parts[0].trim();
       const response = parts.slice(1).join("|").trim();
@@ -4944,7 +4951,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       const trigger = args[2];
       const emoji = args[3];
-      if (!trigger || !emoji) return err(message, "usage: ``");
+      if (!trigger || !emoji) return err(message, "missing required argument");
 
       const list = reactionTriggers.get(guildId) || [];
       list.push({ trigger, emoji });
@@ -4985,7 +4992,7 @@ client.on("messageCreate", async (message) => {
       return ok(message, "Sticky message removed.");
     }
     const content = args.slice(1).join(" ");
-    if (!content) return err(message, "usage: ``");
+    if (!content) return err(message, "missing required argument");
 
     const msg = await message.channel.send(content);
     stickyMessages.set(message.channel.id, { content, msgId: msg.id });
@@ -5002,7 +5009,7 @@ client.on("messageCreate", async (message) => {
       const name = args[2];
       const channel = message.mentions.channels.first();
       const type = args[4]?.toLowerCase() || "custom";
-      if (!name || !channel) return err(message, "usage: ``");
+      if (!name || !channel) return err(message, "missing required argument");
 
       let count = 0;
       if (type === "members") count = message.guild.memberCount;
@@ -5044,7 +5051,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { confessions.delete(guildId); return ok(message, "Confessions disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     confessions.set(guildId, ch.id);
     return ok(message, `Confessions channel set to ${ch}`);
@@ -5055,7 +5062,7 @@ client.on("messageCreate", async (message) => {
     const chId = confessions.get(guildId);
     if (!chId) return err(message, "Confessions are not set up.");
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const ch = message.guild.channels.cache.get(chId);
     if (!ch) return err(message, "Confession channel not found.");
@@ -5070,7 +5077,7 @@ client.on("messageCreate", async (message) => {
   if (command === "bumpchannel") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     const existing = bumpReminder.get(guildId) || {};
     existing.channelId = ch.id;
@@ -5086,7 +5093,7 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "off") { joinToCreate.delete(guildId); return ok(message, "Join to Create disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     joinToCreate.set(guildId, { triggerVcId: ch.id, categoryId: ch.parentId });
     return ok(message, `Join **${ch.name}** to create your own voice channel.`);
@@ -5111,7 +5118,7 @@ client.on("messageCreate", async (message) => {
       const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
       if (!roleId) return err(message, "You don't have a custom booster role.");
       const color = args[2];
-      if (!color) return err(message, "usage: ``");
+      if (!color) return err(message, "missing required argument");
 
       const role = message.guild.roles.cache.get(roleId);
       await role?.setColor(color).catch(() => {});
@@ -5121,7 +5128,7 @@ client.on("messageCreate", async (message) => {
       const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
       if (!roleId) return err(message, "You don't have a custom booster role.");
       const name = args.slice(2).join(" ");
-      if (!name) return err(message, "usage: ``");
+      if (!name) return err(message, "missing required argument");
 
       const role = message.guild.roles.cache.get(roleId);
       await role?.setName(name).catch(() => {});
@@ -5143,7 +5150,7 @@ client.on("messageCreate", async (message) => {
       await role?.setUnicodeEmoji(emoji).catch(() => {});
       return ok(message, `Role icon set to ${emoji}`);
     }
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
 
@@ -5155,7 +5162,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "set") {
       const day = parseInt(args[2]);
       const month = parseInt(args[3]);
-      if (isNaN(day) || isNaN(month) || day < 1 || day > 31 || month < 1 || month > 12) return err(message, "usage: ``");
+      if (isNaN(day) || isNaN(month) || day < 1 || day > 31 || month < 1 || month > 12) return err(message, "missing required argument");
 
       birthdayData.set(message.author.id, { day, month });
       return ok(message, `Birthday set to **${day}/${month}** 🎂`);
@@ -5167,7 +5174,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "channel") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
       const ch = message.mentions.channels.first();
-      if (!ch) return err(message, "usage: ``");
+      if (!ch) return err(message, "missing required argument");
 
       birthdayChannel.set(guildId, ch.id);
       return ok(message, `Birthday announcements in ${ch}`);
@@ -5206,7 +5213,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       const role = message.mentions.roles.first();
       const perm = args[3];
-      if (!role || !perm) return err(message, "usage: ``");
+      if (!role || !perm) return err(message, "missing required argument");
 
       const key = `${guildId}-${role.id}`;
       const perms = fakePerms.get(key) || [];
@@ -5217,7 +5224,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "remove") {
       const role = message.mentions.roles.first();
       const perm = args[3];
-      if (!role || !perm) return err(message, "usage: ``");
+      if (!role || !perm) return err(message, "missing required argument");
 
       const key = `${guildId}-${role.id}`;
       const perms = (fakePerms.get(key) || []).filter(p => p !== perm);
@@ -5226,7 +5233,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "list") {
       const role = message.mentions.roles.first();
-      if (!role) return err(message, "usage: ``");
+      if (!role) return err(message, "missing required argument");
 
       const perms = fakePerms.get(`${guildId}-${role.id}`) || [];
     return info(message, `fake perms for **${role.name}**: ${perms.join(", ") || "None"}`);
@@ -5239,7 +5246,7 @@ client.on("messageCreate", async (message) => {
   if (command === "ignore") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const set = ignoreList.get(guildId) || new Set();
     if (set.has(target.id)) {
@@ -5261,7 +5268,6 @@ client.on("messageCreate", async (message) => {
   // ── LOGGING EVENTS ────────────────────────────────────
 
   // ,log <event> <#channel> — configure what to log where
-  const logEvents = new Map(); // guildId-event => channelId
   if (command === "log") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const events = ["ban", "kick", "mute", "warn", "join", "leave", "message", "voice", "role", "channel", "nickname", "invite"];
@@ -5270,7 +5276,7 @@ client.on("messageCreate", async (message) => {
     if (!events.includes(sub)) return err(message, `invalid event. Valid events: ${events.join(", ")}`);
     if (args[2] === "off") { logEvents.delete(`${guildId}-${sub}`); return ok(message, `**${sub}** log disabled.`); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     logEvents.set(`${guildId}-${sub}`, ch.id);
     return ok(message, `**${sub}** events logged to ${ch}`);
@@ -5284,7 +5290,7 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     const word = args.slice(2).join(" ").toLowerCase();
     if (sub === "add") {
-      if (!word) return err(message, "usage: ``");
+      if (!word) return err(message, "missing required argument");
 
       const set = blacklistWords.get(guildId) || new Set();
       set.add(word);
@@ -5379,7 +5385,7 @@ client.on("messageCreate", async (message) => {
   // ,mutual — check mutual servers with a user
   if (command === "mutual") {
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const mutual = client.guilds.cache.filter(g => g.members.cache.has(target.id));
     if (mutual.size === 0) return message.reply("No mutual servers.");
@@ -5400,7 +5406,7 @@ client.on("messageCreate", async (message) => {
   // ,charinfo <text> — unicode info
   if (command === "charinfo") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const chars = [...text].slice(0, 10).map(c => `\`${c}\` — U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} — ${c.codePointAt(0)}`);
     return message.reply(chars.join("\n"));
@@ -5409,7 +5415,7 @@ client.on("messageCreate", async (message) => {
   // ,color <#hex> — show color info
   if (command === "color") {
     const hex = args[1]?.replace("#", "");
-    if (!hex || !/^[0-9A-Fa-f]{6}$/.test(hex)) return err(message, "usage: ``");
+    if (!hex || !/^[0-9A-Fa-f]{6}$/.test(hex)) return err(message, "missing required argument");
 
     const r = parseInt(hex.substring(0, 2), 16);
     const g = parseInt(hex.substring(2, 4), 16);
@@ -5420,7 +5426,7 @@ client.on("messageCreate", async (message) => {
   // ,encode <text> — base64 encode
   if (command === "encode") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return info(message, `encoded: \`${Buffer.from(text).toString("base64")}\``);
   }
@@ -5428,7 +5434,7 @@ client.on("messageCreate", async (message) => {
   // ,decode <base64> — base64 decode
   if (command === "decode") {
     const text = args[1];
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     try {
       return info(message, `decoded: \`${Buffer.from(text, "base64").toString("utf8")}\``);
@@ -5438,7 +5444,7 @@ client.on("messageCreate", async (message) => {
   // ,binary <text> — text to binary
   if (command === "binary") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const bin = text.split("").map(c => c.charCodeAt(0).toString(2).padStart(8, "0")).join(" ");
     return info(message, `\`${bin.substring(0, 1900)}\``);
@@ -5447,7 +5453,7 @@ client.on("messageCreate", async (message) => {
   // ,reverse <text>
   if (command === "reverse") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.reply([...text].reverse().join(""));
   }
@@ -5465,7 +5471,7 @@ client.on("messageCreate", async (message) => {
   // ,mock <text> — SpOnGeBoB mOcKiNg
   if (command === "mock") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.reply(text.split("").map((c, i) => i % 2 === 0 ? c.toLowerCase() : c.toUpperCase()).join(""));
   }
@@ -5473,7 +5479,7 @@ client.on("messageCreate", async (message) => {
   // ,clap <text> — add 👏 between words
   if (command === "clap") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.reply(text.split(" ").join(" 👏 "));
   }
@@ -5481,7 +5487,7 @@ client.on("messageCreate", async (message) => {
   // ,google <query>
   if (command === "google") {
     const query = args.slice(1).join(" ");
-    if (!query) return err(message, "usage: ``");
+    if (!query) return err(message, "missing required argument");
 
     return info(message, `https://www.google.com/search?q=${encodeURIComponent(query)}`);
   }
@@ -5489,7 +5495,7 @@ client.on("messageCreate", async (message) => {
   // ,youtube <query>
   if (command === "youtube" || command === "yt") {
     const query = args.slice(1).join(" ");
-    if (!query) return err(message, "usage: ``");
+    if (!query) return err(message, "missing required argument");
 
     return info(message, `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`);
   }
@@ -5497,7 +5503,7 @@ client.on("messageCreate", async (message) => {
   // ,spotify <query>
   if (command === "spotify") {
     const query = args.slice(1).join(" ");
-    if (!query) return err(message, "usage: ``");
+    if (!query) return err(message, "missing required argument");
 
     return info(message, `https://open.spotify.com/search/${encodeURIComponent(query)}`);
   }
@@ -5505,7 +5511,7 @@ client.on("messageCreate", async (message) => {
   // ,define <word>
   if (command === "define") {
     const word = args[1];
-    if (!word) return err(message, "usage: ``");
+    if (!word) return err(message, "missing required argument");
 
     try {
       const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
@@ -5522,7 +5528,7 @@ client.on("messageCreate", async (message) => {
   if (command === "translate") {
     const lang = args[1];
     const text = args.slice(2).join(" ");
-    if (!lang || !text) return err(message, "usage: ``");
+    if (!lang || !text) return err(message, "missing required argument");
 
     try {
       const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${lang}`);
@@ -5534,7 +5540,7 @@ client.on("messageCreate", async (message) => {
   // ,qr <text> — generate QR code
   if (command === "qr") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.reply({ embeds: [{ color: PINK, title: "QR Code", image: { url: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(text)}` } }] });
   }
@@ -5542,7 +5548,7 @@ client.on("messageCreate", async (message) => {
   // ,screenshot <url>
   if (command === "screenshot") {
     const url = args[1];
-    if (!url) return err(message, "usage: ``");
+    if (!url) return err(message, "missing required argument");
 
     return message.reply({ embeds: [{ color: PINK, title: "📸 Screenshot", image: { url: `https://api.apiflash.com/v1/urltoimage?access_key=free&url=${encodeURIComponent(url)}&width=1280&height=720` } }] });
   }
@@ -5703,7 +5709,7 @@ client.on("messageCreate", async (message) => {
   // ,ascii <text>
   if (command === "ascii") {
     const text = args.slice(1).join(" ").toUpperCase().substring(0, 10);
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return info(message, `\`\`\`\n${text}\n\`\`\``);
   }
@@ -5721,7 +5727,7 @@ client.on("messageCreate", async (message) => {
   if (command === "dice") {
     const notation = args[1] || "1d6";
     const match = notation.match(/^(\d+)d(\d+)$/i);
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
 
     const count = Math.min(parseInt(match[1]), 20);
@@ -5751,7 +5757,7 @@ client.on("messageCreate", async (message) => {
   // ,appeal <reason> — submit ban appeal via DM
   if (command === "appeal") {
     const reason = args.slice(1).join(" ");
-    if (!reason) return err(message, "usage: ``");
+    if (!reason) return err(message, "missing required argument");
 
     const guildId2 = args[0]; // not used here, but for structure
     // Notify owner
@@ -5778,6 +5784,9 @@ const pingRoles = new Map();         // guildId => Set<roleId> — roles allowed
 const slowmodeHistory = new Map();   // channelId => previous slowmode
 const memberSearch = new Map();      // cache
 const voiceLogs = new Map();         // guildId => channelId for voice logs
+const notes = new Map();              // guildId-userId => [{ text, mod, date }]
+const reactionRoles = new Map();      // msgId-emoji => roleId
+const logEvents = new Map();          // guildId-event => channelId
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -5796,7 +5805,7 @@ client.on("messageCreate", async (message) => {
     const parts = text.split("|").map(p => p.trim());
     const question = parts[0];
     const options = parts.slice(1);
-    if (!question || options.length < 2) return err(message, "usage: ``");
+    if (!question || options.length < 2) return err(message, "missing required argument");
 
     const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
     const desc = options.map((o, i) => `${emojis[i]} ${o}`).join("\n");
@@ -5810,7 +5819,7 @@ client.on("messageCreate", async (message) => {
   if (command === "poll" && args[1] === "end") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[2];
-    if (!msgId) return err(message, "usage: ``");
+    if (!msgId) return err(message, "missing required argument");
 
     const poll = pollData.get(msgId);
     if (!poll) return err(message, "Poll not found.");
@@ -5836,7 +5845,7 @@ client.on("messageCreate", async (message) => {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
       const name = args[2]?.toLowerCase();
       const content = args.slice(3).join(" ");
-      if (!name || !content) return err(message, "usage: ``");
+      if (!name || !content) return err(message, "missing required argument");
 
       tagData.set(`${guildId}-${name}`, { content, author: message.author.tag });
       return ok(message, `Tag **${name}** created.`);
@@ -5881,7 +5890,7 @@ client.on("messageCreate", async (message) => {
     const list = todoLists.get(message.author.id) || [];
     if (sub === "add") {
       const text = args.slice(2).join(" ");
-      if (!text) return err(message, "usage: ``");
+      if (!text) return err(message, "missing required argument");
 
       list.push({ text, done: false });
       todoLists.set(message.author.id, list);
@@ -5916,7 +5925,7 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "add") {
       const word = args.slice(2).join(" ").toLowerCase();
-      if (!word) return err(message, "usage: ``");
+      if (!word) return err(message, "missing required argument");
 
       const set = highlights.get(message.author.id) || new Set();
       set.add(word);
@@ -5987,7 +5996,7 @@ client.on("messageCreate", async (message) => {
   // ,find <query> — search members by name
   if (command === "find" || command === "search") {
     const query = args.slice(1).join(" ").toLowerCase();
-    if (!query) return err(message, "usage: ``");
+    if (!query) return err(message, "missing required argument");
 
     const members = message.guild.members.cache.filter(m =>
       m.user.tag.toLowerCase().includes(query) ||
@@ -6039,7 +6048,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first() || message.member.voice.channel;
     const limit = parseInt(args[ch ? 2 : 1]);
-    if (!ch || isNaN(limit)) return err(message, "usage: ``");
+    if (!ch || isNaN(limit)) return err(message, "missing required argument");
 
     await ch.setUserLimit(limit).catch(() => null);
     return ok(message, `User limit for **${ch.name}** set to **${limit}**`);
@@ -6050,7 +6059,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first() || message.member.voice.channel;
     const name = args.slice(ch ? 2 : 1).join(" ");
-    if (!ch || !name) return err(message, "usage: ``");
+    if (!ch || !name) return err(message, "missing required argument");
 
     await ch.setName(name).catch(() => null);
     return ok(message, `Voice channel renamed to **${name}**`);
@@ -6080,7 +6089,7 @@ client.on("messageCreate", async (message) => {
   if (command === "pin") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[1];
-    if (!msgId) return err(message, "usage: ``");
+    if (!msgId) return err(message, "missing required argument");
 
     const msg = await message.channel.messages.fetch(msgId).catch(() => null);
     if (!msg) return err(message, "Message not found.");
@@ -6092,7 +6101,7 @@ client.on("messageCreate", async (message) => {
   if (command === "unpin") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[1];
-    if (!msgId) return err(message, "usage: ``");
+    if (!msgId) return err(message, "missing required argument");
 
     const msg = await message.channel.messages.fetch(msgId).catch(() => null);
     if (!msg) return err(message, "Message not found.");
@@ -6112,7 +6121,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[1];
     const ch = message.mentions.channels.first();
-    if (!msgId || !ch) return err(message, "usage: ``");
+    if (!msgId || !ch) return err(message, "missing required argument");
 
     const msg = await message.channel.messages.fetch(msgId).catch(() => null);
     if (!msg) return err(message, "Message not found.");
@@ -6163,7 +6172,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "add") {
       const target = message.mentions.members.first();
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       if (!message.channel.isThread()) return err(message, "Not in a thread.");
       await message.channel.members.add(target.id).catch(() => null);
@@ -6171,7 +6180,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "remove") {
       const target = message.mentions.members.first();
-      if (!target) return err(message, "usage: ``");
+      if (!target) return err(message, "missing required argument");
 
       if (!message.channel.isThread()) return err(message, "Not in a thread.");
       await message.channel.members.remove(target.id).catch(() => null);
@@ -6188,7 +6197,7 @@ client.on("messageCreate", async (message) => {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
       const name = args[2];
       const url = args[3];
-      if (!name || !url) return err(message, "usage: ``");
+      if (!name || !url) return err(message, "missing required argument");
 
       const emoji = await message.guild.emojis.create({ attachment: url, name }).catch(() => null);
       if (!emoji) return err(message, "Could not add emoji.");
@@ -6205,7 +6214,7 @@ client.on("messageCreate", async (message) => {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
       const emoji = message.guild.emojis.cache.find(e => e.name === args[2] || args[2]?.includes(e.id));
       const newName = args[3];
-      if (!emoji || !newName) return err(message, "usage: ``");
+      if (!emoji || !newName) return err(message, "missing required argument");
 
       await emoji.setName(newName).catch(() => null);
       return ok(message, `Emoji renamed to **${newName}**`);
@@ -6225,7 +6234,7 @@ client.on("messageCreate", async (message) => {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
       const name = args[2];
       const ch = message.mentions.channels.first() || message.channel;
-      if (!name) return err(message, "usage: ``");
+      if (!name) return err(message, "missing required argument");
 
       const wh = await ch.createWebhook({ name }).catch(() => null);
       if (!wh) return err(message, "Could not create webhook.");
@@ -6282,7 +6291,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first();
     const seconds = parseInt(args[2]) ?? 0;
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     await ch.setRateLimitPerUser(seconds).catch(() => null);
     return ok(message, `Slowmode in ${ch}: **${seconds}s**`);
@@ -6386,7 +6395,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { modlogChannel.delete(`msg-${guildId}`); return ok(message, "Message log disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     modlogChannel.set(`msg-${guildId}`, ch.id);
     return ok(message, `Message logs → ${ch}`);
@@ -6397,7 +6406,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { modlogChannel.delete(`join-${guildId}`); return ok(message, "Join log disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     modlogChannel.set(`join-${guildId}`, ch.id);
     return ok(message, `Join/leave logs → ${ch}`);
@@ -6408,7 +6417,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { voiceLogs.delete(guildId); return ok(message, "Voice log disabled."); }
     const ch = message.mentions.channels.first();
-    if (!ch) return err(message, "usage: ``");
+    if (!ch) return err(message, "missing required argument");
 
     voiceLogs.set(guildId, ch.id);
     return ok(message, `Voice logs → ${ch}`);
@@ -6420,7 +6429,7 @@ client.on("messageCreate", async (message) => {
   if (command === "pingrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     const set = pingRoles.get(guildId) || new Set();
     if (set.has(role.id)) {
@@ -6465,7 +6474,7 @@ client.on("messageCreate", async (message) => {
   // ,hex <color> — convert color name to hex
   if (command === "hex") {
     const color = args.slice(1).join(" ");
-    if (!color) return err(message, "usage: ``");
+    if (!color) return err(message, "missing required argument");
 
     const colors = { red: "#FF0000", blue: "#0000FF", green: "#00FF00", yellow: "#FFFF00", purple: "#800080", orange: "#FFA500", pink: "#FFC0CB", white: "#FFFFFF", black: "#000000", cyan: "#00FFFF", gold: "#FFD700", silver: "#C0C0C0" };
     const hex = colors[color.toLowerCase()];
@@ -6477,7 +6486,7 @@ client.on("messageCreate", async (message) => {
   // ,snowflake <id> — decode Discord snowflake
   if (command === "snowflake") {
     const id = args[1];
-    if (!id || !/^\d+$/.test(id)) return err(message, "usage: ``");
+    if (!id || !/^\d+$/.test(id)) return err(message, "missing required argument");
 
     const timestamp = BigInt(id) >> 22n;
     const date = new Date(Number(timestamp) + 1420070400000);
@@ -6487,7 +6496,7 @@ client.on("messageCreate", async (message) => {
   // ,discrim <discriminator> — find users with same discriminator
   if (command === "discrim") {
     const discrim = args[1];
-    if (!discrim) return err(message, "usage: ``");
+    if (!discrim) return err(message, "missing required argument");
 
     const members = message.guild.members.cache.filter(m => m.user.discriminator === discrim);
     if (members.size === 0) return info(message, `no members with discriminator **#${discrim}**`);
@@ -6499,7 +6508,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const text = args.slice(2).join(" ");
-    if (!target || !text) return err(message, "usage: ``");
+    if (!target || !text) return err(message, "missing required argument");
 
     const wh = await message.channel.createWebhook({ name: target.username, avatar: target.displayAvatarURL() }).catch(() => null);
     if (!wh) return err(message, "Could not create webhook.");
@@ -6545,7 +6554,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const amount = parseInt(args[2]);
-    if (!target || isNaN(amount)) return err(message, "usage: ``");
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
 
     economy.set(target.id, (economy.get(target.id) || 0) + amount);
     return ok(message, `Gave **${amount} coins** to **${target.tag}**`);
@@ -6556,7 +6565,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const amount = parseInt(args[2]);
-    if (!target || isNaN(amount)) return err(message, "usage: ``");
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
 
     const bal = economy.get(target.id) || 0;
     economy.set(target.id, Math.max(0, bal - amount));
@@ -6567,7 +6576,7 @@ client.on("messageCreate", async (message) => {
   if (command === "resetbal") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     economy.set(target.id, 0);
     return ok(message, `Reset **${target.tag}**'s balance.`);
@@ -6578,7 +6587,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
     const amount = parseInt(args[2]);
-    if (!target || isNaN(amount)) return err(message, "usage: ``");
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
 
     economy.set(target.id, amount);
     return ok(message, `Set **${target.tag}**'s balance to **${amount}**`);
@@ -6623,8 +6632,7 @@ client.on("messageCreate", async (message) => {
   // ,rob <@user>
   if (command === "rob") {
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
-
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,rob @user`");
     if (target.id === message.author.id) return err(message, "You can't rob yourself.");
     const key = `rob-${message.author.id}`;
     const last = economy.get(key);
@@ -6656,7 +6664,7 @@ client.on("messageCreate", async (message) => {
   // ,emojify <text>
   if (command === "emojify") {
     const text = args.slice(1).join(" ").toLowerCase();
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const result = text.split("").map(c => {
       if (/[a-z]/.test(c)) return `:regional_indicator_${c}: `;
@@ -6669,7 +6677,7 @@ client.on("messageCreate", async (message) => {
   // ,spoiler <text>
   if (command === "spoiler") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.channel.send(`||${text}||`);
   }
@@ -6677,7 +6685,7 @@ client.on("messageCreate", async (message) => {
   // ,zalgo <text>
   if (command === "zalgo") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const zalgoChars = ["̴","̵","̶","̷","̸","̡","̢","̧","̨","͜","͝","͞","͟","͠","͡"];
     const result = text.split("").map(c => c + zalgoChars[Math.floor(Math.random() * zalgoChars.length)].repeat(3)).join("");
@@ -6687,7 +6695,7 @@ client.on("messageCreate", async (message) => {
   // ,leet <text>
   if (command === "leet") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const map = { a: "4", e: "3", i: "1", o: "0", s: "5", t: "7", b: "8", g: "9" };
     return message.reply(text.toLowerCase().split("").map(c => map[c] || c).join(""));
@@ -6696,7 +6704,7 @@ client.on("messageCreate", async (message) => {
   // ,vaporwave <text>
   if (command === "vaporwave") {
     const text = args.slice(1).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     const result = text.split("").map(c => {
       const code = c.charCodeAt(0);
@@ -6710,7 +6718,7 @@ client.on("messageCreate", async (message) => {
   if (command === "countdown") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const n = Math.min(parseInt(args[1]) || 5, 10);
-    if (isNaN(n) || n < 1) return err(message, "usage: ``");
+    if (isNaN(n) || n < 1) return err(message, "missing required argument");
 
     const msg = await message.channel.send(`⏳ **${n}**`);
     let current = n - 1;
@@ -6724,7 +6732,7 @@ client.on("messageCreate", async (message) => {
   // ,math advanced
   if (command === "calc") {
     const expr = args.slice(1).join(" ");
-    if (!expr) return err(message, "usage: ``");
+    if (!expr) return err(message, "missing required argument");
 
     try {
       const result = Function(`"use strict"; return (${expr.replace(/[^0-9+\-*/().\s%^]/g, "")})`)();
@@ -6773,7 +6781,7 @@ client.on("messageCreate", async (message) => {
   if (command === "repeat") {
     const n = Math.min(parseInt(args[1]) || 1, 10);
     const text = args.slice(2).join(" ");
-    if (!text) return err(message, "usage: ``");
+    if (!text) return err(message, "missing required argument");
 
     return message.reply(Array(n).fill(text).join("\n").substring(0, 2000));
   }
@@ -6791,7 +6799,7 @@ client.on("messageCreate", async (message) => {
   // ,decide <option1> | <option2> | ...
   if (command === "decide") {
     const options = args.slice(1).join(" ").split("|").map(o => o.trim()).filter(Boolean);
-    if (options.length < 2) return err(message, "usage: ``");
+    if (options.length < 2) return err(message, "missing required argument");
 
     return info(message, `I pick: **${options[Math.floor(Math.random() * options.length)]}**`);
   }
@@ -6807,7 +6815,7 @@ client.on("messageCreate", async (message) => {
   if (command === "team") {
     const size = parseInt(args[1]);
     const members = [...message.mentions.users.values()];
-    if (isNaN(size) || members.length < size) return err(message, "usage: ``");
+    if (isNaN(size) || members.length < size) return err(message, "missing required argument");
 
     const shuffled = members.sort(() => Math.random() - 0.5);
     const teams = [];
@@ -6819,7 +6827,7 @@ client.on("messageCreate", async (message) => {
   // ,shuffle <item1> | <item2> | ...
   if (command === "shuffle") {
     const items = args.slice(1).join(" ").split("|").map(i => i.trim()).filter(Boolean);
-    if (items.length < 2) return err(message, "usage: ``");
+    if (items.length < 2) return err(message, "missing required argument");
 
     const shuffled = items.sort(() => Math.random() - 0.5);
     return info(message, `${shuffled.join(", ")}`);
@@ -6921,7 +6929,7 @@ client.on("messageCreate", async (message) => {
   if (command === "status") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     const status = args[1];
-    if (!["online","idle","dnd","invisible"].includes(status)) return err(message, "usage: ``");
+    if (!["online","idle","dnd","invisible"].includes(status)) return err(message, "missing required argument");
 
     client.user.setStatus(status);
     return ok(message, `Status set to **${status}**`);
@@ -6933,7 +6941,7 @@ client.on("messageCreate", async (message) => {
     const types = { playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 };
     const type = args[1]?.toLowerCase();
     const text = args.slice(2).join(" ");
-    if (!types[type] && types[type] !== 0 || !text) return err(message, "usage: ``");
+    if (!types[type] && types[type] !== 0 || !text) return err(message, "missing required argument");
 
     client.user.setActivity(text, { type: types[type] });
     return ok(message, `Activity set to **${type} ${text}**`);
@@ -6944,7 +6952,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first();
     const text = args.slice(2).join(" ");
-    if (!ch || !text) return err(message, "usage: ``");
+    if (!ch || !text) return err(message, "missing required argument");
 
     await ch.send(text);
     return ok(message, `Sent to ${ch}`);
@@ -6955,7 +6963,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[1];
     const emoji = args[2];
-    if (!msgId || !emoji) return err(message, "usage: ``");
+    if (!msgId || !emoji) return err(message, "missing required argument");
 
     const msg = await message.channel.messages.fetch(msgId).catch(() => null);
     if (!msg) return err(message, "Message not found.");
@@ -7015,7 +7023,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first();
     const role = message.mentions.roles.first();
     const timeStr = args[3];
-    if (!target || !role || !timeStr) return err(message, "usage: ``");
+    if (!target || !role || !timeStr) return err(message, "missing required argument");
 
     const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
     if (!match) return err(message, "Invalid time.");
@@ -7028,7 +7036,7 @@ client.on("messageCreate", async (message) => {
   if (command === "muterole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
-    if (!role) return err(message, "usage: ``");
+    if (!role) return err(message, "missing required argument");
 
     muteRole.set(message.guild.id, role.id);
     return ok(message, `Mute role set to **${role.name}**`);
@@ -7036,7 +7044,7 @@ client.on("messageCreate", async (message) => {
   if (command === "imagemute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No 'Image Muted' role. Run `,setupmute` first.");
@@ -7046,7 +7054,7 @@ client.on("messageCreate", async (message) => {
   if (command === "reactionmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "reaction muted");
     if (!role) return err(message, "No 'Reaction Muted' role. Run `,setupmute` first.");
@@ -7070,13 +7078,13 @@ client.on("messageCreate", async (message) => {
   if (command === "serverrules") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const rules = args.slice(1).join(" ").split("|").map((r, i) => `**${i+1}.** ${r.trim()}`).filter(Boolean);
-    if (rules.length === 0) return err(message, "usage: ``");
+    if (rules.length === 0) return err(message, "missing required argument");
 
     return message.channel.send({ embeds: [{ color: PINK, title: `📜 ${message.guild.name} Rules`, description: rules.join("\n") }] });
   }
   if (command === "inviteinfo2") {
     const code = args[1];
-    if (!code) return err(message, "usage: ``");
+    if (!code) return err(message, "missing required argument");
 
     const invite = await client.fetchInvite(code).catch(() => null);
     if (!invite) return err(message, "Invite not found.");
@@ -7132,7 +7140,7 @@ client.on("messageCreate", async (message) => {
     const vc = message.member.voice.channel;
     if (!vc) return err(message, "Join a voice channel first.");
     const name = args.slice(1).join(" ");
-    if (!name) return err(message, "usage: ``");
+    if (!name) return err(message, "missing required argument");
 
     await vc.setName(name).catch(() => null);
     return ok(message, `Renamed to **${name}**`);
@@ -7150,7 +7158,7 @@ client.on("messageCreate", async (message) => {
   if (command === "removeafk") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
-    if (!target) return err(message, "usage: ``");
+    if (!target) return err(message, "missing required argument");
 
     afkUsers.delete(`${message.guild.id}-${target.id}`);
     return ok(message, `Removed AFK from **${target.tag}**`);
@@ -7161,7 +7169,7 @@ client.on("messageCreate", async (message) => {
     const cfg = getFilter(message.guild.id);
     if (sub === "add") {
       const word = args.slice(2).join(" ");
-      if (!word) return err(message, "usage: ``");
+      if (!word) return err(message, "missing required argument");
 
       cfg.words.push(word.toLowerCase());
       cfg.enabled = true;
@@ -7173,7 +7181,7 @@ client.on("messageCreate", async (message) => {
       return ok(message, `Word **${word}** removed from censor.`);
     }
     if (sub === "list") return info(message, `censored words: ${cfg.words.join(", ") || "None"}`);
-    return err(message, "usage: ``");
+    return err(message, "missing required argument");
 
   }
   if (command === "unmutechat") {
@@ -7216,7 +7224,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first() || message.member.voice.channel;
     const bitrate = parseInt(args[ch ? 2 : 1]) * 1000;
-    if (!ch || isNaN(bitrate)) return err(message, "usage: ``");
+    if (!ch || isNaN(bitrate)) return err(message, "missing required argument");
 
     await ch.setBitrate(bitrate).catch(() => null);
     return ok(message, `Bitrate set to **${bitrate/1000}kbps**`);
@@ -7296,24 +7304,104 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  if (command === "hackban2") { if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return; const ids = args.slice(1); for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.tag}` }).catch(() => {}); return ok(message, `Banned ${ids.length} users.`); }
-  if (command === "modnick") { if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return; const t = message.mentions.members.first(); const nick = args.slice(2).join(" "); if (!t || !nick) return err(message, "usage: ``");
- await t.setNickname(nick); return ok(message, `Set nick to **${nick}**`); }
-  if (command === "roleaddall") { if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return; const role = message.mentions.roles.first(); if (!role) return err(message, "usage: ``");
- const members = await message.guild.members.fetch(); for (const m of members.values()) await m.roles.add(role).catch(() => {}); return ok(message, `Added **${role.name}** to all members.`); }
-  if (command === "roleremoveall") { if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return; const role = message.mentions.roles.first(); if (!role) return err(message, "usage: ``");
- const members = await message.guild.members.fetch(); for (const m of members.values()) await m.roles.remove(role).catch(() => {}); return ok(message, `Removed **${role.name}** from all members.`); }
-  if (command === "tempchannel") { if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return; const name = args.slice(2).join(" ") || "temp-channel"; const mins = parseInt(args[1]) || 60; const ch = await message.guild.channels.create({ name, type: 0 }).catch(() => null); if (!ch) return err(message, "Failed."); ok(message, `✅ Temp channel ${ch} — deletes in **${mins} min**`); setTimeout(() => ch.delete().catch(() => {}), mins * 60000); }
-  if (command === "channelpos") { if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return; const ch = message.mentions.channels.first() || message.channel; const pos = parseInt(args[ch === message.channel ? 1 : 2]); if (isNaN(pos)) return err(message, "usage: ``");
- await ch.setPosition(pos).catch(() => null); return ok(message, `Moved **${ch.name}** to position **${pos}**`); }
-  if (command === "rolepos") { if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return; const role = message.mentions.roles.first(); const pos = parseInt(args[2]); if (!role || isNaN(pos)) return err(message, "usage: ``");
- await role.setPosition(pos).catch(() => null); return ok(message, `Moved **${role.name}** to position **${pos}**`); }
-  if (command === "unignore") { if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return; const t = message.mentions.users.first(); if (!t) return; const set = ignoreList.get(message.guild.id); set?.delete(t.id); return ok(message, `Unignored **${t.tag}**`); }
-  if (command === "staffrole") { if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return; const role = message.mentions.roles.first(); if (!role) return err(message, "usage: ``");
- getAntiNuke(message.guild.id).whitelist.add(role.id); return ok(message, `**${role.name}** set as staff role.`); }
-  if (command === "modconfig") { if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return; const an = getAntiNuke(message.guild.id); const ar = getAntiRaid(message.guild.id); const fl = getFilter(message.guild.id); return message.reply({ embeds: [{ color: PINK, title: "⚙️ Mod Config", fields: [{ name: "AntiNuke", value: an.enabled ? "✅" : "❌", inline: true }, { name: "AntiRaid", value: ar.enabled ? "✅" : "❌", inline: true }, { name: "AutoMod", value: fl.enabled ? "✅" : "❌", inline: true }, { name: "AN Punishment", value: an.punishment, inline: true }, { name: "AR Action", value: ar.action, inline: true }, { name: "AR Threshold", value: `${ar.joinThreshold}`, inline: true }] }] }); }
-  if (command === "botperms") { const perms = message.guild.members.me?.permissions.toArray() || []; return message.reply({ embeds: [{ color: PINK, title: "🤖 My Permissions", description: perms.join(", ").substring(0, 4096) }] }); }
-  if (command === "cleanup") { if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return; const msgs = await message.channel.messages.fetch({ limit: 100 }); const botMsgs = msgs.filter(m => m.author.id === client.user.id); await message.channel.bulkDelete(botMsgs, true).catch(() => null); const m = await message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Deleted **${botMsgs.size}** bot messages.` }] }); setTimeout(() => m.delete().catch(() => {}), 3000); }
+  if (command === "hackban2") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const ids = args.slice(1).filter(id => /^\d+$/.test(id));
+    if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
+    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.tag}` }).catch(() => {});
+    return ok(message, `hackbanned **${ids.length}** users`);
+  }
+  if (command === "modnick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const t = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!t) return err(message, "missing required argument: **user**\nusage: `,modnick @user <nick>`");
+    const nick = args.slice(2).join(" ");
+    if (!nick) return err(message, "missing required argument: **nick**\nusage: `,modnick @user <nick>`");
+    await t.setNickname(nick).catch(() => null);
+    return ok(message, `nickname set to **${nick}** for **${t.user.tag}**`);
+  }
+  if (command === "roleaddall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,roleaddall @role`");
+    const members = await message.guild.members.fetch();
+    for (const m of members.values()) await m.roles.add(role).catch(() => {});
+    return ok(message, `added **${role.name}** to **${members.size}** members`);
+  }
+  if (command === "roleremoveall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,roleremoveall @role`");
+    const members = await message.guild.members.fetch();
+    for (const m of members.values()) await m.roles.remove(role).catch(() => {});
+    return ok(message, `removed **${role.name}** from **${members.size}** members`);
+  }
+  if (command === "tempchannel") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const mins = parseInt(args[1]) || 60;
+    const name = args.slice(2).join(" ") || "temp-channel";
+    const ch = await message.guild.channels.create({ name, type: 0 }).catch(() => null);
+    if (!ch) return err(message, "Failed to create channel.");
+    setTimeout(() => ch.delete().catch(() => {}), mins * 60000);
+    return ok(message, `temp channel ${ch} created — deletes in **${mins} min**`);
+  }
+  if (command === "channelpos") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    const pos = parseInt(args[message.mentions.channels.first() ? 2 : 1]);
+    if (isNaN(pos)) return err(message, "missing required argument: **position**\nusage: `,channelpos [#channel] <position>`");
+    await ch.setPosition(pos).catch(() => null);
+    return ok(message, `moved **${ch.name}** to position **${pos}**`);
+  }
+  if (command === "rolepos") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    const pos = parseInt(args[2]);
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,rolepos @role <position>`");
+    if (isNaN(pos)) return err(message, "missing required argument: **position**\nusage: `,rolepos @role <position>`");
+    await role.setPosition(pos).catch(() => null);
+    return ok(message, `moved **${role.name}** to position **${pos}**`);
+  }
+  if (command === "unignore") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const t = message.mentions.users.first();
+    if (!t) return err(message, "missing required argument: **user**\nusage: `,unignore @user`");
+    ignoreList.get(message.guild.id)?.delete(t.id);
+    return ok(message, `unignored **${t.tag}**`);
+  }
+  if (command === "staffrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,staffrole @role`");
+    getAntiNuke(message.guild.id).whitelist.add(role.id);
+    return ok(message, `**${role.name}** set as staff role`);
+  }
+  if (command === "modconfig") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const an = getAntiNuke(message.guild.id);
+    const ar = getAntiRaid(message.guild.id);
+    const fl = getFilter(message.guild.id);
+    return message.reply({ embeds: [{ color: PINK, title: "⚙️ Mod Config", fields: [
+      { name: "AntiNuke", value: an.enabled ? "✅ On" : "❌ Off", inline: true },
+      { name: "AntiRaid", value: ar.enabled ? "✅ On" : "❌ Off", inline: true },
+      { name: "AutoMod", value: fl.enabled ? "✅ On" : "❌ Off", inline: true },
+      { name: "AN Punishment", value: an.punishment, inline: true },
+      { name: "AR Action", value: ar.action, inline: true },
+      { name: "AR Threshold", value: `${ar.joinThreshold} joins`, inline: true }
+    ] }] });
+  }
+  if (command === "botperms") {
+    const perms = message.guild.members.me?.permissions.toArray() || [];
+    return message.reply({ embeds: [{ color: PINK, title: "🤖 My Permissions", description: perms.length > 0 ? perms.join(", ") : "None" }] });
+  }
+  if (command === "cleanup") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const botMsgs = msgs.filter(m => m.author.id === client.user.id);
+    await message.channel.bulkDelete(botMsgs, true).catch(() => null);
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 deleted **${botMsgs.size}** bot messages` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
 });
 
 // ===== ERROR HANDLING =====
