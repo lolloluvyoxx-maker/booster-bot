@@ -463,14 +463,6 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).split(" ");
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   // !setmsg boost/unboost/ping <text>
   if (command === "setmsg") {
@@ -1363,23 +1355,40 @@ const CMD_SCHEMA = {
   stats: { usage: ",stats", args: [] },
 };
 
+// Track which messages have already been replied to (prevents duplicate responses)
+const _handledMessages = new Set();
+
+// ===== GLOBAL COMMAND HANDLER (runs first — arg check + ignore list) =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (!command) return;
+
+  // Ignore list check
+  if (ignoreList.get(message.guild.id)?.has(message.author.id)) return;
+
+  // Only check if command exists in schema AND has required args AND no args were given
+  const schema = CMD_SCHEMA[command];
+  if (schema && schema.args.length > 0 && args.length === 1) {
+    _handledMessages.add(message.id);
+    return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+  }
+});
+
 // ===== 50 MOST USED COMMANDS =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return; // Already replied
 
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   // ── MODERATION ──────────────────────────────────────────
 
@@ -2278,17 +2287,10 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   // ── ADVANCED MODERATION ─────────────────────────────────
 
@@ -3397,17 +3399,10 @@ async function notifyOwner(guild, message) {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
   if (command === "antinuke") {
@@ -3880,17 +3875,10 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   // ── PURGE FILTERS ───────────────────────────────────
 
@@ -4723,17 +4711,10 @@ setInterval(async () => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
   const guildId = message.guild.id;
 
   // Check disabled commands
@@ -5827,17 +5808,10 @@ const voiceLogs = new Map();         // guildId => channelId for voice logs
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
   const guildId = message.guild.id;
 
   // ── POLL SYSTEM (advanced) ───────────────────────────
@@ -7051,17 +7025,10 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
 
   if (command === "whitelistcheck") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
@@ -7351,17 +7318,10 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
+  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ── GLOBAL: check ignore list + show usage if command known ──
-  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  if (CMD_SCHEMA[command] && !message.content.slice(1).trim().split(/ +/)[1]) {
-    const schema = CMD_SCHEMA[command];
-    if (schema.args.length > 0) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
   if (command === "hackban2") { if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return; const ids = args.slice(1); for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.tag}` }).catch(() => {}); return ok(message, `Banned ${ids.length} users.`); }
   if (command === "modnick") { if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return; const t = message.mentions.members.first(); const nick = args.slice(2).join(" "); if (!t || !nick) return err(message, "usage: ``");
  await t.setNickname(nick); return ok(message, `Set nick to **${nick}**`); }
@@ -7386,5 +7346,8 @@ client.on("messageCreate", async (message) => {
 client.on("error", (error) => {
   log(`Client error: ${error.message}`, "error");
 });
+
+// Clean up handled messages cache every 30 seconds
+setInterval(() => _handledMessages.clear(), 30000);
 
 client.login(process.env.TOKEN);
