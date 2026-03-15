@@ -400,6 +400,16 @@ client.once("ready", async () => {
   }
 
   startVanityMonitor();
+
+  // Set Twitch streaming status (purple dot)
+  client.user.setPresence({
+    status: "online",
+    activities: [{
+      name: "ugh, this is so /sensational",
+      type: 1, // STREAMING
+      url: "https://www.twitch.tv/greed"
+    }]
+  });
 });
 
 // ===== MEMBER JOINS TARGET SERVER =====
@@ -7913,17 +7923,66 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.customId.startsWith("am_")) return;
 
   const [, action, userId] = interaction.customId.split("_");
+  const guild = interaction.guild;
+  const mod = interaction.user;
 
   try {
     if (action === "ban") {
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      const updatedEmbed = { ...interaction.message.embeds[0].data, footer: { text: `banned by ${interaction.user.username}` }, color: PINK };
-      if (member) {
-        await member.ban({ reason: `[Anti-Minors] banned by ${interaction.user.username}` }).catch(() => {});
+      // Try to ban — works even if user already left (hackban)
+      const banResult = await guild.members.ban(userId, {
+        reason: `[Anti-Minors] underage — banned by ${mod.username}`,
+        deleteMessageSeconds: 604800 // delete 7 days of messages
+      }).catch(() => null);
+
+      const updatedEmbed = {
+        ...interaction.message.embeds[0].data,
+        color: PINK,
+        footer: { text: `banned by ${mod.username} • ${new Date().toLocaleString()}` }
+      };
+
+      if (banResult) {
+        // Track in modstats
+        const guildId = guild.id;
+        const modId = mod.id;
+        if (!banStats[guildId]) banStats[guildId] = {};
+        if (!banStats[guildId][modId]) {
+          banStats[guildId][modId] = { username: mod.username, actions: 0, bans: 0, ignores: 0 };
+        }
+        banStats[guildId][modId].username = mod.username;
+        banStats[guildId][modId].actions += 1;
+        banStats[guildId][modId].bans += 1;
+
+        // Add case to mod cases
+        addCase(guildId, "ban", userId, modId, "[Anti-Minors] underage");
+
+        await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+      } else {
+        // Ban failed — user may already be banned
+        const failEmbed = {
+          ...interaction.message.embeds[0].data,
+          color: PINK,
+          footer: { text: `ban failed (already banned or left?) • attempted by ${mod.username}` }
+        };
+        await interaction.update({ embeds: [failEmbed], components: [] }).catch(() => {});
       }
-      await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+
     } else if (action === "ignore") {
-      const updatedEmbed = { ...interaction.message.embeds[0].data, footer: { text: `ignored by ${interaction.user.username}` }, color: 0x808080 };
+      // Track ignore in modstats
+      const guildId = guild.id;
+      const modId = mod.id;
+      if (!banStats[guildId]) banStats[guildId] = {};
+      if (!banStats[guildId][modId]) {
+        banStats[guildId][modId] = { username: mod.username, actions: 0, bans: 0, ignores: 0 };
+      }
+      banStats[guildId][modId].username = mod.username;
+      banStats[guildId][modId].actions += 1;
+      banStats[guildId][modId].ignores += 1;
+
+      const updatedEmbed = {
+        ...interaction.message.embeds[0].data,
+        color: 0x808080,
+        footer: { text: `ignored by ${mod.username} • ${new Date().toLocaleString()}` }
+      };
       await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
     }
   } catch (e) {
