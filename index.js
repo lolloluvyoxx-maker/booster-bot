@@ -11,7 +11,7 @@ function ok(message, text) {
   return message.reply({
     embeds: [{
       color: PINK,
-      description: `🌸 ${message.author} **${text}**`
+      description: `🌸 ${message.author} ${text}`
     }]
   });
 }
@@ -20,7 +20,7 @@ function ok(message, text) {
 function err(message, text) {
   return message.reply({
     embeds: [{
-      color: 0x2b2d31,
+      color: PINK,
       description: `✖ ${message.author} ${text}`
     }]
   });
@@ -59,9 +59,12 @@ async function confirm(message, text, onConfirm) {
     embeds: [{ color: PINK, description: `🌸 ${text}` }],
     components: [row]
   });
-  const collector = msg.createMessageComponentCollector({ filter: i => i.user.id === message.author.id, time: 15000, max: 1 });
+  const collector = msg.createMessageComponentCollector({ filter: () => true });
   collector.on("collect", async i => {
     try {
+      if (i.user.id !== message.author.id) {
+        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+      }
       if (i.customId === "confirm_yes") {
         await i.update({ embeds: [{ color: PINK, description: "🌸 Executing..." }], components: [] });
         await onConfirm();
@@ -71,9 +74,6 @@ async function confirm(message, text, onConfirm) {
     } catch (e) {
       msg.edit({ components: [] }).catch(() => {});
     }
-  });
-  collector.on("end", (collected) => {
-    if (collected.size === 0) msg.edit({ components: [] }).catch(() => {});
   });
 }
 
@@ -133,6 +133,18 @@ const TARGET_GUILD_ID = "1425102156125442140";
 
 // Role IDs
 const DISCORD_BOOSTER_ROLE_ID = "1475164627808813158";
+
+// ===== BOOSTER PROTECTION (by role ID) =====
+const PROTECTED_ROLE_IDS = new Set([
+  "1475164627808813158", // Discord booster role
+  "1474900074185097358", // Custom booster server role
+]);
+
+function isProtectedBooster(member) {
+  if (!member) return false;
+  return member.roles.cache.some(r => PROTECTED_ROLE_IDS.has(r.id));
+}
+
 const CUSTOM_BOOSTER_ROLE_ID = "1474900074185097358";
 const ACCESS_ROLE_ID = "1475167075789181122";
 const DENIED_ROLE_ID = "1426874194263805992";
@@ -726,23 +738,19 @@ client.on("messageCreate", async (message) => {
 
   if (totalPages <= 1) return;
 
-  const collector = msg.createMessageComponentCollector({
-    filter: i => i.user.id === message.author.id,
-    time: 60000
-  });
+  const collector = msg.createMessageComponentCollector({ filter: () => true });
 
   collector.on("collect", async i => {
     try {
+      if (i.user.id !== message.author.id) {
+        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+      }
       if (i.customId === "modstats_prev" && page > 0) page--;
       else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
       await i.update({ embeds: [buildEmbed(page)], components: [buildRow(page)] });
     } catch (e) {
       msg.edit({ components: [] }).catch(() => {});
     }
-  });
-
-  collector.on("end", () => {
-    msg.edit({ components: [] }).catch(() => {});
   });
 });
 
@@ -1371,11 +1379,15 @@ client.on("messageCreate", async (message) => {
   // Ignore list check
   if (ignoreList.get(message.guild.id)?.has(message.author.id)) return;
 
-  // Only check if command exists in schema AND has required args AND no args were given
+  // If command is known, mark as handled immediately so no other handler fires twice
   const schema = CMD_SCHEMA[command];
-  if (schema && schema.args.length > 0 && args.length === 1) {
+  if (schema) {
+    // Mark as handled - prevents other handlers from firing on same message
     _handledMessages.add(message.id);
-    return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    // If required args missing, reply with usage and stop
+    if (schema.args.length > 0 && args.length === 1) {
+      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
+    }
   }
 });
 
@@ -1399,10 +1411,8 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     const reason = args.slice(2).join(" ") || "No reason provided";
 
-    // Block banning boosters (unless owner)
-    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const sourceMember = sourceGuild ? await sourceGuild.members.fetch(target.id).catch(() => null) : null;
-    if (sourceMember && isBoosting(sourceMember) && message.author.id !== OWNER_ID) {
+    // Block banning boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) {
       return err(message, `**${target.user.tag}** is a booster and cannot be banned.`);
     }
 
@@ -1427,10 +1437,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason provided";
     const kickSuccess = await target.kick(reason).catch(() => null);
     if (!kickSuccess) return err(message, `Failed to kick **${target.user.tag}**`);
@@ -1443,14 +1451,12 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 10;
     const reason = args.slice(3).join(" ") || "No reason provided";
     await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
-    return ok(message, `Muted **${target.user.tag}** for ${minutes} minutes | ${reason}`);
+    return ok(message, `muted **${target.user.tag}** for ${minutes} minutes | ${reason}`);
   }
 
   // ,unmute <user>
@@ -1459,7 +1465,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.timeout(null).catch(() => null);
-    return ok(message, `Unmuted **${target.user.tag}**`);
+    return ok(message, `unmuted **${target.user.tag}**`);
   }
 
   // ,purge <amount>
@@ -1486,7 +1492,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const channel = message.mentions.channels.first() || message.channel;
     await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => null);
-    return ok(message, `Locked ${channel}`);
+    return ok(message, `locked ${channel}`);
   }
 
   // ,unlock [channel]
@@ -1494,7 +1500,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const channel = message.mentions.channels.first() || message.channel;
     await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => null);
-    return ok(message, `Unlocked ${channel}`);
+    return ok(message, `unlocked ${channel}`);
   }
 
   // ,hide [channel]
@@ -1514,14 +1520,6 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,warn <user> <reason>
-  if (command === "warn") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
-    const target = message.mentions.users.first();
-    if (!target) return err(message, "missing required argument: **user**");
-    const reason = args.slice(2).join(" ") || "No reason provided";
-    try { await target.send(`⚠️ You have been warned in **${message.guild.name}**: ${reason}`); } catch {}
-    return info(message, `Warned **${target.tag}** | ${reason}`);
-  }
 
   // ,nickname <user> <nick>
   if (command === "nickname" || command === "nick") {
@@ -2232,13 +2230,13 @@ client.on("messageCreate", async (message) => {
       );
     }
 
-    const collector = msg.createMessageComponentCollector({
-      filter: i => i.user.id === message.author.id,
-      time: 120000
-    });
+    const collector = msg.createMessageComponentCollector({ filter: () => true });
 
     collector.on("collect", async i => {
       try {
+        if (i.user.id !== message.author.id) {
+          return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+        }
         // Handle select menu
         if (i.isStringSelectMenu()) {
           const cat = categories[i.values[0]];
@@ -2256,7 +2254,6 @@ client.on("messageCreate", async (message) => {
           });
           return;
         }
-
         // Handle buttons
         if (i.isButton()) {
           if (i.customId === "help_home") {
@@ -2277,8 +2274,6 @@ client.on("messageCreate", async (message) => {
         msg.edit({ components: [] }).catch(() => {});
       }
     });
-
-    collector.on("end", () => msg.edit({ components: [] }).catch(() => {}));
     return;
   }
 });
@@ -2299,10 +2294,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason }).catch(() => null);
@@ -2318,10 +2311,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Softban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
@@ -2334,10 +2325,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Hardban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
@@ -2350,16 +2339,14 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason";
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
     await target.roles.add(jailRole).catch(() => null);
     try { await target.user.send(`🔒 You have been jailed in **${message.guild.name}**: ${reason}`); } catch {}
-    return ok(message, `Jailed **${target.user.tag}** | ${reason}`);
+    return ok(message, `jailed **${target.user.tag}** | ${reason}`);
   }
 
   // ,unjail <user>
@@ -2370,7 +2357,7 @@ client.on("messageCreate", async (message) => {
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found.");
     await target.roles.remove(jailRole).catch(() => null);
-    return ok(message, `Unjailed **${target.user.tag}**`);
+    return ok(message, `unjailed **${target.user.tag}**`);
   }
 
   // ,imute <user> [reason] — image mute
@@ -2400,10 +2387,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const roles = target.roles.cache.filter(r => r.id !== message.guild.id);
     for (const role of roles.values()) await target.roles.remove(role).catch(() => {});
     return ok(message, `Stripped all roles from **${target.user.tag}**`);
@@ -2447,15 +2432,6 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,case <number> — show a moderation case from audit logs
-  if (command === "case") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
-    const logs = await message.guild.fetchAuditLogs({ limit: 20 }).catch(() => null);
-    if (!logs) return err(message, "Could not fetch audit logs.");
-    const n = parseInt(args[1]) || 1;
-    const entry = [...logs.entries.values()][n - 1];
-    if (!entry) return err(message, "Case not found.");
-    return message.reply({ embeds: [{ color: PINK, title: `Case #${n}`, fields: [{ name: "Action", value: `${entry.action}`, inline: true }, { name: "Moderator", value: entry.executor?.tag || "Unknown", inline: true }, { name: "Target", value: entry.target?.tag || entry.target?.id || "Unknown", inline: true }, { name: "Reason", value: entry.reason || "No reason" }] }] });
-  }
 
   // ── WARN (update existing to store) ─────────────────────
   // (overrides the one in 50 commands to actually store warns)
@@ -3670,10 +3646,8 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
-    // Block action on boosters
-    const _sg = await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
-    const _sm = _sg ? await _sg.members.fetch(target.id).catch(() => null) : null;
-    if (_sm && isBoosting(_sm) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
     return err(message, "usage: ``");
@@ -4277,7 +4251,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     if (!target.voice.channel) return err(message, "User is not in a voice channel.");
     await target.voice.disconnect().catch(() => null);
-    return ok(message, `Kicked **${target.user.tag}** from voice`);
+    return ok(message, `kicked **${target.user.tag}** from voice`);
   }
 
   // ,vcmove <@user> <#channel>
