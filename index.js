@@ -1363,6 +1363,12 @@ const CMD_SCHEMA = {
   checkall: { usage: ",checkall", args: [] },
   fixuser: { usage: ",fixuser <userId|@user>", args: [] },
   stats: { usage: ",stats", args: [] },
+  s: { usage: ",s", args: [] },
+  cs: { usage: ",cs", args: [] },
+  es: { usage: ",es", args: [] },
+  tz: { usage: ",tz [user]", args: [] },
+  settz: { usage: ",settz <timezone>", args: ["timezone"] },
+  tzlist: { usage: ",tzlist", args: [] },
 };
 
 // Track which messages have already been replied to (prevents duplicate responses)
@@ -2716,35 +2722,116 @@ client.on("messageCreate", async (message) => {
   // ,setup — creates jail-log channel and jailed role
   if (command === "setup") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
-    const jailLog = await message.guild.channels.create({ name: "jail-log", type: 0 }).catch(() => null);
-    const jailChannel = await message.guild.channels.create({ name: "jail", type: 0 }).catch(() => null);
-    const jailedRole = await message.guild.roles.create({ name: "Jailed", color: "#808080" }).catch(() => null);
-    return ok(message, `setup complete! Jail log, jail channel and jailed role created.`);
+    await message.channel.sendTyping().catch(() => {});
+
+    const results = [];
+
+    // Create Jailed role if it doesn't exist
+    let jailedRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
+    if (!jailedRole) {
+      jailedRole = await message.guild.roles.create({ name: "Jailed", color: "#808080", reason: "Setup by bot" }).catch(() => null);
+      results.push(jailedRole ? `✅ Created role **Jailed**` : `❌ Failed to create Jailed role`);
+    } else {
+      results.push(`ℹ️ Role **Jailed** already exists`);
+    }
+
+    // Create jail-log channel if it doesn't exist
+    let jailLog = message.guild.channels.cache.find(c => c.name === "jail-log");
+    if (!jailLog) {
+      jailLog = await message.guild.channels.create({
+        name: "jail-log", type: 0,
+        permissionOverwrites: [
+          { id: message.guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+        ]
+      }).catch(() => null);
+      results.push(jailLog ? `✅ Created channel **#jail-log**` : `❌ Failed to create jail-log`);
+    } else {
+      results.push(`ℹ️ Channel **#jail-log** already exists`);
+    }
+
+    // Create jail channel if it doesn't exist
+    let jailChannel = message.guild.channels.cache.find(c => c.name === "jail");
+    if (!jailChannel) {
+      jailChannel = await message.guild.channels.create({
+        name: "jail", type: 0,
+        permissionOverwrites: [
+          { id: message.guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          ...(jailedRole ? [{ id: jailedRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
+          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+        ]
+      }).catch(() => null);
+      results.push(jailChannel ? `✅ Created channel **#jail**` : `❌ Failed to create jail channel`);
+    } else {
+      results.push(`ℹ️ Channel **#jail** already exists`);
+    }
+
+    // Apply Jailed role perms to ALL existing channels (deny send + view)
+    if (jailedRole) {
+      let applied = 0;
+      const channels = message.guild.channels.cache.filter(c => c.type === 0 && c.id !== jailChannel?.id);
+      for (const ch of channels.values()) {
+        await ch.permissionOverwrites.edit(jailedRole, {
+          SendMessages: false,
+          AddReactions: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false,
+        }).catch(() => {});
+        applied++;
+      }
+      results.push(`✅ Applied Jailed perms to **${applied}** channels`);
+    }
+
+    return message.reply({ embeds: [{ color: PINK, title: "⚙️ Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ,setupmute — creates muted roles
+  // ,setupmute — creates muted roles with proper channel overwrites
   if (command === "setupmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
-    await message.guild.roles.create({ name: "Muted", color: "#808080" }).catch(() => null);
-    await message.guild.roles.create({ name: "Image Muted", color: "#808080" }).catch(() => null);
-    await message.guild.roles.create({ name: "Reaction Muted", color: "#808080" }).catch(() => null);
-    return ok(message, "Created roles: **Muted**, **Image Muted**, **Reaction Muted**");
+    await message.channel.sendTyping().catch(() => {});
+
+    const results = [];
+    const roleConfigs = [
+      { name: "Muted", deny: { SendMessages: false, CreatePublicThreads: false, CreatePrivateThreads: false } },
+      { name: "Image Muted", deny: { AttachFiles: false, EmbedLinks: false } },
+      { name: "Reaction Muted", deny: { AddReactions: false } },
+    ];
+
+    for (const cfg of roleConfigs) {
+      let role = message.guild.roles.cache.find(r => r.name === cfg.name);
+      if (!role) {
+        role = await message.guild.roles.create({ name: cfg.name, color: "#808080", reason: "Setupmute by bot" }).catch(() => null);
+        if (!role) { results.push(`❌ Failed to create **${cfg.name}** role`); continue; }
+        results.push(`✅ Created role **${cfg.name}**`);
+      } else {
+        results.push(`ℹ️ Role **${cfg.name}** already exists`);
+      }
+      // Apply to all text channels
+      let applied = 0;
+      for (const ch of message.guild.channels.cache.filter(c => c.type === 0).values()) {
+        await ch.permissionOverwrites.edit(role, cfg.deny).catch(() => {});
+        applied++;
+      }
+      results.push(`  └ Applied to **${applied}** channels`);
+    }
+
+    return message.reply({ embeds: [{ color: PINK, title: "⚙️ Mute Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ── SNIPE ────────────────────────────────────────────────
 
   // ,snipe
-  if (command === "snipe") {
+  if (command === "snipe" || command === "s") {
     const s = sniped.get(message.channel.id);
-    if (!s) return message.reply("🔍 Nothing to snipe.");
-    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, description: s.content, footer: { text: `Deleted at ${s.time.toLocaleTimeString()}` } }] });
+    if (!s) return info(message, "nothing to snipe");
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, description: s.content, footer: { text: `🌸 deleted at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
   }
 
   // ,editsnipe
-  if (command === "editsnipe" || command === "esnipe") {
+  if (command === "editsnipe" || command === "esnipe" || command === "es") {
     const s = editSniped.get(message.channel.id);
-    if (!s) return message.reply("🔍 Nothing to snipe.");
-    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `Edited at ${s.time.toLocaleTimeString()}` } }] });
+    if (!s) return info(message, "nothing to snipe");
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `🌸 edited at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
   }
 
   // ── AFK ──────────────────────────────────────────────────
@@ -2852,51 +2939,128 @@ client.on("messageCreate", async (message) => {
   // ── TICKETS ──────────────────────────────────────────────
 
   // ,ticket setup <#log-channel>
+// ===== TICKET INACTIVITY MONITOR =====
+const TICKET_CATEGORY_ID = "1409003502826557560";
+const ticketActivity = new Map();    // channelId => { creatorId, lastActivity, warned }
+const ticketWarnings = new Map();    // channelId => warningMessageId
+
+// Track activity in ticket channels
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const ch = message.channel;
+  if (ch.parentId !== TICKET_CATEGORY_ID) return;
+  const activity = ticketActivity.get(ch.id);
+  if (!activity) return;
+  // Reset timer if the creator sends a message
+  if (message.author.id === activity.creatorId) {
+    activity.lastActivity = Date.now();
+    activity.warned = false;
+    ticketActivity.set(ch.id, activity);
+    // Delete warning if it exists
+    if (ticketWarnings.has(ch.id)) {
+      ch.messages.fetch(ticketWarnings.get(ch.id)).then(m => m.delete().catch(() => {})).catch(() => {});
+      ticketWarnings.delete(ch.id);
+    }
+  }
+});
+
+// Check every 5 minutes for inactive tickets
+setInterval(async () => {
+  const now = Date.now();
+  for (const [channelId, activity] of ticketActivity.entries()) {
+    const elapsed = now - activity.lastActivity;
+
+    // After 1 hour of inactivity — warn once, then delete channel
+    if (elapsed >= 3600000 && !activity.warned) {
+      activity.warned = true;
+      ticketActivity.set(channelId, activity);
+      try {
+        const guild = client.guilds.cache.find(g => g.channels.cache.has(channelId));
+        if (!guild) continue;
+        const ch = guild.channels.cache.get(channelId);
+        if (!ch) continue;
+
+        // DM the creator
+        const creator = await client.users.fetch(activity.creatorId).catch(() => null);
+        if (creator) {
+          creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** has been inactive for **1 hour**.\n\nPlease do not open troll tickets. Your ticket has been closed.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+        }
+
+        // Warn in channel then delete
+        await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **1 hour** and has been closed.\n\nPlease do not open troll tickets.` }] }).catch(() => {});
+
+        // Remove from openTickets
+        ticketActivity.delete(channelId);
+        ticketWarnings.delete(channelId);
+        for (const [key, chId] of openTickets.entries()) {
+          if (chId === channelId) { openTickets.delete(key); break; }
+        }
+
+        // Log
+        for (const [guildId, cfg] of ticketConfig.entries()) {
+          if (guildId === guild.id && cfg.logChannelId) {
+            const logCh = guild.channels.cache.get(cfg.logChannelId);
+            if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Closed — Troll", description: `**${ch.name}** closed after 1h inactivity.\nCreator: <@${activity.creatorId}>`, timestamp: new Date() }] }).catch(() => {});
+          }
+        }
+
+        setTimeout(() => ch.delete().catch(() => {}), 5000);
+      } catch {}
+    }
+  }
+}, 5 * 60 * 1000);
+
+
   if (command === "ticket") {
     const sub = args[1]?.toLowerCase();
     if (sub === "setup") {
       if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
       const logCh = message.mentions.channels.first();
       if (!logCh) return err(message, "missing required argument");
-
       ticketConfig.set(message.guild.id, { logChannelId: logCh.id });
-      return ok(message, `Ticket system set up. Logs → ${logCh}`);
+      return ok(message, `ticket system set up. logs → ${logCh}`);
     }
     if (sub === "create" || !sub) {
       const existing = openTickets.get(`${message.guild.id}-${message.author.id}`);
-      if (existing) return err(message, `You already have an open ticket: <#${existing}>`);
+      if (existing) return err(message, `you already have an open ticket: <#${existing}>`);
       const ticketChannel = await message.guild.channels.create({
         name: `ticket-${message.author.username}`,
         type: 0,
+        parent: TICKET_CATEGORY_ID,
         permissionOverwrites: [
           { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+          { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
         ]
       }).catch(() => null);
-      if (!ticketChannel) return err(message, "Could not create ticket channel.");
+      if (!ticketChannel) return err(message, "could not create ticket channel — check my permissions");
       openTickets.set(`${message.guild.id}-${message.author.id}`, ticketChannel.id);
-      await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\nUse \`,ticket close\` to close this ticket.` }] });
-      return ok(message, `Ticket created: ${ticketChannel}`);
+      // Register inactivity monitoring
+      ticketActivity.set(ticketChannel.id, { creatorId: message.author.id, lastActivity: Date.now(), warned: false });
+      await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n⚠️ This ticket will be **automatically closed** if you don't respond within **1 hour**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
+      return ok(message, `ticket created: ${ticketChannel}`);
     }
     if (sub === "close") {
       const config = ticketConfig.get(message.guild.id);
       if (config?.logChannelId) {
         const logCh = message.guild.channels.cache.get(config.logChannelId);
-        if (logCh) logCh.send(`🎫 Ticket **${message.channel.name}** closed by ${message.author.username}`).catch(() => {});
+        if (logCh) logCh.send({ embeds: [{ color: PINK, description: `🎫 Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
       }
+      ticketActivity.delete(message.channel.id);
+      ticketWarnings.delete(message.channel.id);
       for (const [key, chId] of openTickets.entries()) {
         if (chId === message.channel.id) { openTickets.delete(key); break; }
       }
-      await message.channel.send("🔒 Closing ticket in 3 seconds...");
+      await message.channel.send({ embeds: [{ color: PINK, description: "🔒 Closing ticket in 3 seconds..." }] });
       setTimeout(() => message.channel.delete().catch(() => {}), 3000);
+      return;
     }
     if (sub === "add") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
       const target = message.mentions.members.first();
       if (!target) return err(message, "missing required argument");
-
       await message.channel.permissionOverwrites.edit(target, { ViewChannel: true, SendMessages: true }).catch(() => null);
-      return ok(message, `Added ${target} to the ticket.`);
+      return ok(message, `added ${target} to the ticket`);
     }
     if (sub === "remove") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
@@ -3764,7 +3928,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,clearsnipe
-  if (command === "clearsnipe") {
+  if (command === "clearsnipe" || command === "cs") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     sniped.delete(message.channel.id);
     editSniped.delete(message.channel.id);
@@ -5791,7 +5955,8 @@ const serverStats = new Map();       // guildId => { joins, leaves, bans, kicks 
 const pingRoles = new Map();         // guildId => Set<roleId> — roles allowed to be pinged
 const slowmodeHistory = new Map();   // channelId => previous slowmode
 const memberSearch = new Map();      // cache
-const voiceLogs = new Map();         // guildId => channelId for voice logs
+const voiceLogs = new Map();
+const userTimezones = new Map();  // userId => timezone string         // guildId => channelId for voice logs
 const notes = new Map();              // guildId-userId => [{ text, mod, date }]
 const reactionRoles = new Map();      // msgId-emoji => roleId
 const logEvents = new Map();          // guildId-event => channelId
@@ -7420,6 +7585,58 @@ client.on("messageCreate", async (message) => {
     await message.channel.bulkDelete(botMsgs, true).catch(() => null);
     const m = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 deleted **${botMsgs.size}** bot messages` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+});
+
+
+// ===== TIMEZONE COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  // ,settz <timezone> or ,set tz <timezone>
+  if (command === "settz" || (command === "set" && args[1]?.toLowerCase() === "tz")) {
+    const tz = command === "settz" ? args[1] : args[2];
+    if (!tz) return err(message, "missing required argument: **timezone**\nusage: `,settz <timezone>` (e.g. `,settz America/New_York`, `,settz Europe/Rome`)");
+    // Validate timezone
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      return err(message, `**${tz}** is not a valid timezone\nExamples: \`America/New_York\`, \`Europe/London\`, \`Europe/Rome\`, \`Asia/Tokyo\`, \`UTC\``);
+    }
+    userTimezones.set(message.author.id, tz);
+    const now = new Date().toLocaleString("en-US", { timeZone: tz, weekday: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    return ok(message, `timezone set to **${tz}** — current time: **${now}**`);
+  }
+
+  // ,tz [user]
+  if (command === "tz") {
+    const target = message.mentions.users.first() || message.author;
+    const tz = userTimezones.get(target.id);
+    if (!tz) return info(message, `**${target.username}** hasn't set a timezone — use \`,settz <timezone>\` to set one`);
+    const now = new Date().toLocaleString("en-US", { timeZone: tz, weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, description: `🕐 **${now}**`, footer: { text: `Timezone: ${tz}` } }] });
+  }
+
+  // ,tzlist — list all timezones set in this server
+  if (command === "tzlist") {
+    const members = await message.guild.members.fetch().catch(() => null);
+    if (!members) return err(message, "could not fetch members");
+    const list = [];
+    for (const [userId, tz] of userTimezones.entries()) {
+      if (!members.has(userId)) continue;
+      const member = members.get(userId);
+      const now = new Date().toLocaleString("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+      list.push({ name: member.user.username, tz, now });
+    }
+    if (list.length === 0) return info(message, "no members have set a timezone — use `,settz <timezone>`");
+    list.sort((a, b) => a.tz.localeCompare(b.tz));
+    const desc = list.map(l => `**${l.name}** — ${l.tz} (${l.now})`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: "🌍 Server Timezones", description: desc, footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 });
 
