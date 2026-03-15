@@ -2164,6 +2164,28 @@ client.on("messageCreate", async (message) => {
           [",setlevel <user> <level>", "Admin: set user level"],
           [",resetxp <user>", "Admin: reset user XP"],
         ]
+      },
+      nsfw: {
+        label: "NSFW (Owner Only)",
+        emoji: "🔞",
+        description: "Anti-minors system — owner only",
+        commands: [
+          [",addc #channel", "Add channel to minor monitoring"],
+          [",delc #channel", "Remove channel from monitoring"],
+          [",list", "Show all monitored channels & config"],
+          [",reqattach #channel", "Require media — deletes text-only messages"],
+          [",unreqattach #channel", "Remove media requirement"],
+          [",modr @role", "Role pinged on minor detections"],
+          [",logs #channel", "Channel where minor warnings are sent"],
+          ["", ""],
+          ["Detection:", ""],
+          ["• Ages 10–17", "Deleted + warning logged"],
+          ["• Reversed bypass (61 reversed)", "Deleted + warning logged"],
+          ["• Emoji numbers (1️⃣5️⃣)", "Normalized + detected"],
+          ["• underage / minor / still in hs", "Instant flag"],
+          ["• No 18+ age mentioned", "Silently deleted"],
+          ["• Suspiciously high age (99m)", "Flagged as bypass"],
+        ]
       }
     };
 
@@ -2174,13 +2196,15 @@ client.on("messageCreate", async (message) => {
         .setCustomId("help_category")
         .setPlaceholder("Choose a category...")
         .addOptions(
-          Object.entries(categories).map(([key, cat]) =>
-            new SMOB()
-              .setLabel(cat.label)
-              .setDescription(cat.description)
-              .setValue(key)
-              .setEmoji(cat.emoji)
-          )
+          Object.entries(categories)
+            .filter(([key]) => key !== 'nsfw' || message.author.id === OWNER_ID)
+            .map(([key, cat]) =>
+              new SMOB()
+                .setLabel(cat.label)
+                .setDescription(cat.description)
+                .setValue(key)
+                .setEmoji(cat.emoji)
+            )
         )
     );
 
@@ -2941,74 +2965,81 @@ client.on("messageCreate", async (message) => {
   // ,ticket setup <#log-channel>
 // ===== TICKET INACTIVITY MONITOR =====
 const TICKET_CATEGORY_ID = "1409003502826557560";
-const ticketActivity = new Map();    // channelId => { creatorId, lastActivity, warned }
+const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, warned, closing }
 const ticketWarnings = new Map();    // channelId => warningMessageId
 
-// Track activity in ticket channels
+// Track activity in ticket channels — reset timer on ANY message from creator
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
-  const ch = message.channel;
-  if (ch.parentId !== TICKET_CATEGORY_ID) return;
-  const activity = ticketActivity.get(ch.id);
+  const activity = ticketActivity.get(message.channel.id);
   if (!activity) return;
-  // Reset timer if the creator sends a message
-  if (message.author.id === activity.creatorId) {
-    activity.lastActivity = Date.now();
-    activity.warned = false;
-    ticketActivity.set(ch.id, activity);
-    // Delete warning if it exists
-    if (ticketWarnings.has(ch.id)) {
-      ch.messages.fetch(ticketWarnings.get(ch.id)).then(m => m.delete().catch(() => {})).catch(() => {});
-      ticketWarnings.delete(ch.id);
-    }
+  if (message.author.id !== activity.creatorId) return;
+  if (activity.closing) return; // already closing, ignore
+
+  // Reset timer
+  activity.lastActivity = Date.now();
+  activity.warned = false;
+  ticketActivity.set(message.channel.id, activity);
+
+  // Delete warning message if exists
+  if (ticketWarnings.has(message.channel.id)) {
+    message.channel.messages.fetch(ticketWarnings.get(message.channel.id))
+      .then(m => m.delete().catch(() => {}))
+      .catch(() => {});
+    ticketWarnings.delete(message.channel.id);
   }
 });
 
-// Check every 5 minutes for inactive tickets
+// Check every minute for inactive tickets (more precise than every 5min)
 setInterval(async () => {
   const now = Date.now();
+
   for (const [channelId, activity] of ticketActivity.entries()) {
+    if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
+    if (elapsed < 3600000) continue; // less than 1 hour — skip
 
-    // After 1 hour of inactivity — warn once, then delete channel
-    if (elapsed >= 3600000 && !activity.warned) {
-      activity.warned = true;
-      ticketActivity.set(channelId, activity);
-      try {
-        const guild = client.guilds.cache.find(g => g.channels.cache.has(channelId));
-        if (!guild) continue;
-        const ch = guild.channels.cache.get(channelId);
-        if (!ch) continue;
+    // Mark as closing immediately to prevent double-firing
+    activity.closing = true;
+    ticketActivity.set(channelId, activity);
 
-        // DM the creator
-        const creator = await client.users.fetch(activity.creatorId).catch(() => null);
-        if (creator) {
-          creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** has been inactive for **1 hour**.\n\nPlease do not open troll tickets. Your ticket has been closed.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
-        }
+    try {
+      const guild = client.guilds.cache.get(activity.guildId);
+      if (!guild) { ticketActivity.delete(channelId); continue; }
+      const ch = guild.channels.cache.get(channelId);
+      if (!ch) { ticketActivity.delete(channelId); continue; }
 
-        // Warn in channel then delete
-        await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **1 hour** and has been closed.\n\nPlease do not open troll tickets.` }] }).catch(() => {});
+      // DM the creator
+      const creator = await client.users.fetch(activity.creatorId).catch(() => null);
+      if (creator) {
+        creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** has been inactive for **1 hour** and has been closed.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
 
-        // Remove from openTickets
-        ticketActivity.delete(channelId);
-        ticketWarnings.delete(channelId);
-        for (const [key, chId] of openTickets.entries()) {
-          if (chId === channelId) { openTickets.delete(key); break; }
-        }
+      // Send warning in channel
+      await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **1 hour** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
 
-        // Log
-        for (const [guildId, cfg] of ticketConfig.entries()) {
-          if (guildId === guild.id && cfg.logChannelId) {
-            const logCh = guild.channels.cache.get(cfg.logChannelId);
-            if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Closed — Troll", description: `**${ch.name}** closed after 1h inactivity.\nCreator: <@${activity.creatorId}>`, timestamp: new Date() }] }).catch(() => {});
-          }
-        }
+      // Log to ticket log channel
+      const cfg = ticketConfig.get(guild.id);
+      if (cfg?.logChannelId) {
+        const logCh = guild.channels.cache.get(cfg.logChannelId);
+        if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** closed after **1 hour** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
 
-        setTimeout(() => ch.delete().catch(() => {}), 5000);
-      } catch {}
+      // Clean up maps
+      ticketActivity.delete(channelId);
+      ticketWarnings.delete(channelId);
+      for (const [key, chId] of openTickets.entries()) {
+        if (chId === channelId) { openTickets.delete(key); break; }
+      }
+
+      // Delete after 10 seconds
+      setTimeout(() => ch.delete().catch(() => {}), 10000);
+
+    } catch (e) {
+      ticketActivity.delete(channelId);
     }
   }
-}, 5 * 60 * 1000);
+}, 60 * 1000); // check every minute
 
 
   if (command === "ticket") {
@@ -3035,8 +3066,14 @@ setInterval(async () => {
       }).catch(() => null);
       if (!ticketChannel) return err(message, "could not create ticket channel — check my permissions");
       openTickets.set(`${message.guild.id}-${message.author.id}`, ticketChannel.id);
-      // Register inactivity monitoring
-      ticketActivity.set(ticketChannel.id, { creatorId: message.author.id, lastActivity: Date.now(), warned: false });
+      // Register inactivity monitoring — store guildId for reliable lookup
+      ticketActivity.set(ticketChannel.id, {
+        creatorId: message.author.id,
+        guildId: message.guild.id,
+        lastActivity: Date.now(),
+        warned: false,
+        closing: false
+      });
       await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n⚠️ This ticket will be **automatically closed** if you don't respond within **1 hour**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
       return ok(message, `ticket created: ${ticketChannel}`);
     }
@@ -7637,6 +7674,333 @@ client.on("messageCreate", async (message) => {
     list.sort((a, b) => a.tz.localeCompare(b.tz));
     const desc = list.map(l => `**${l.name}** — ${l.tz} (${l.now})`).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: "🌍 Server Timezones", description: desc, footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+});
+
+// ===================================================
+// ===== ANTI-MINORS SYSTEM ==========================
+// ===================================================
+
+// ── CONFIG (only OWNER_ID can modify) ──────────────
+const antiMinorsConfig = new Map(); // guildId => { logChannelId, modRoleId, channels: Set, requireAttach: Set }
+
+function getAMConfig(guildId) {
+  if (!antiMinorsConfig.has(guildId)) {
+    antiMinorsConfig.set(guildId, { logChannelId: null, modRoleId: null, channels: new Set(), requireAttach: new Set() });
+  }
+  return antiMinorsConfig.get(guildId);
+}
+
+// ── REGEX ENGINE (from old bot, extended) ───────────
+function checkForMinor(text) {
+  if (!text || text.trim().length < 1) return { flag: false };
+
+  // Step 1: normalize emoji numbers
+  const emojiMap = {
+    '0️⃣':'0','1️⃣':'1','2️⃣':'2','3️⃣':'3','4️⃣':'4',
+    '5️⃣':'5','6️⃣':'6','7️⃣':'7','8️⃣':'8','9️⃣':'9',
+    '🔢':'','#️⃣':'',
+  };
+  let t = text;
+  for (const [e, n] of Object.entries(emojiMap)) t = t.replace(new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'), n);
+
+  // Step 2: normalize leet/special bypass chars (digits only, don't touch letters)
+  t = t.replace(/[|!¡](\d)/g, '$1')   // !6 → 6
+       .replace(/(\d)[|!¡]/g, '$1');   // 6! → 6
+  // Note: intentionally NOT replacing o→0 as it breaks "yo", "top", "bottom" etc
+
+  const lower = t.toLowerCase();
+
+  // Step 3: check reversed ages (61 m reversed = 16m)
+  const reversedPatterns = [
+    /(\d{2,3})\s*(reversed?|flip(ped)?|swap(ped)?)/i,
+    /(reversed?|flip(ped)?|swap(ped)?)\s*(\d{2,3})/i,
+    /(\d{2,3})\s*[🔁🔄↩️🔃⤴️⤵️⬆️⬇️↕️]/,
+    /[🔁🔄↩️🔃⤴️⤵️⬆️⬇️↕️]\s*(\d{2,3})/,
+  ];
+  for (const p of reversedPatterns) {
+    const m = t.match(p);
+    if (m) {
+      const raw = (m[1] || m[3] || '').replace(/\D/g,'');
+      if (!raw) continue;
+      const reversed = parseInt(raw.split('').reverse().join('').replace(/^0+/,'') || '0');
+      if (reversed < 18) return { flag: true, reason: `Reversed age bypass: ${raw} → ${reversed} (minor)`, confidence: 'high' };
+      return { flag: true, reason: `Age bypass attempt detected (reversed: ${raw} → ${reversed})`, confidence: 'high' };
+    }
+  }
+
+  // Step 4: suspiciously high ages (bypass with 99, 100, etc.)
+  // Exclude: weights (lbs/kg/pounds), heights (cm after number), years (2014 etc)
+  const highAgeRegex = /\b([7-9]\d|1\d{2,})\s*[mfMF]?\b/g;
+  let highMatch;
+  while ((highMatch = highAgeRegex.exec(t)) !== null) {
+    const age = parseInt(highMatch[1]);
+    if (age < 70) continue;
+    const before = t.substring(Math.max(0, highMatch.index - 15), highMatch.index).toLowerCase();
+    const after = t.substring(highMatch.index + highMatch[0].length, highMatch.index + highMatch[0].length + 15).toLowerCase();
+    // Skip if it's a weight (lbs, kg, pounds, lb)
+    if (/\d$/.test(before) || /^\s*(lbs?|kg|pounds?|lb)/.test(after) || /(lbs?|kg|pounds?|lb)\s*$/.test(before)) continue;
+    // Skip if it's a height in cm
+    if (/^\s*cm/.test(after)) continue;
+    // Skip if it's a year (4 digits starting with 19xx or 20xx)
+    if (/^(19|20)\d{2}$/.test(highMatch[1])) continue;
+    // Skip 3-digit numbers that are clearly body stats (100-180 range as weight)
+    if (age >= 100 && age <= 250) continue;
+    return { flag: true, is_minor: false, reason: `Suspiciously high age: ${age} (possible bypass)`, confidence: 'medium' };
+  }
+
+  // Step 5: direct minor age patterns (10–17) — exact from original script
+  const minorPatterns = [
+    /\b(1[0-7])\s*[mfMF]\b/,
+    /\b[mfMF]\s*(1[0-7])(?!\s*(cm|inch(es)?|in|"|'))\b/,
+    /\b(1[0-7])(?!\s*(cm|inch(es)?|in|"|'|\.\d))\s*(yo|year|yr|male|female|boy|girl|enby|nb|top|bottom|vers|bttm|btm|skinny|chubby|twink|bear)\b/i,
+    /\baged?\s*(1[0-7])\b/i,
+    /\b(1[0-7])\s*aged?\b/i,
+    /\bi'?m\s*(1[0-7])\b/i,
+    /\bturned\s*(1[0-7])\b/i,
+    /\b(1[0-7])\s*today\b/i,
+    /\bunderage\b.*\b(1[0-7])\b/i,
+    /\b(1[0-7])\b.*\bunderage\b/i,
+    /\b(1[0-7])\s*m(?!\s*(cm|inch(es)?))\b/i,
+    /\b(1[0-7])\s*[mfMF]\s+\w+/i,
+    /[mfMF]\s*(1[0-7])\s+\w+/i,
+  ];
+
+  // Check with hasAdultAge logic from original script
+  const adultPreCheck = [
+    /\b(1[8-9]|[2-6]\d)\s*[mfMF]\b/,
+    /\b[mfMF]\s*(1[8-9]|[2-6]\d)\b/,
+    /\b(1[8-9]|[2-6]\d)\s*(yo|year|yr|y\.o|y\/o|male|female|man|woman|lf|lm|top|bottom|vers|masc|femme|here|looking|latino|latina|black|white|asian|mixed|bi|gay|str8|straight|curious)\b/i,
+    /\bi'?m\s*(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*years?\s*old\b/i,
+    /\bturned\s*(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*today\b/i,
+    // standalone number at start of message
+    /^(1[8-9]|[2-9]\d)\s+/,
+    /\bhii?\s+(1[8-9]|[2-9]\d)\b/i,
+    /\bhey\s+(1[8-9]|[2-9]\d)\b/i,
+    /\bim\s+(1[8-9]|[2-9]\d)\b/i,
+  ];
+  let hasAdultAge = false;
+  for (const p of adultPreCheck) {
+    const match = t.match(p);
+    if (match) {
+      const age = parseInt(match[1] || match[2]);
+      if (age >= 18 && age <= 70) { hasAdultAge = true; break; }
+    }
+  }
+
+  if (hasAdultAge) {
+    // With an adult age present, only flag strict minor patterns
+    const strictMinor = [
+      /\b(1[0-7])\s*[mfMF]\b/,
+      /\b[mfMF]\s*(1[0-7])\b/,
+      /\bi'?m\s*(1[0-7])\b/i,
+    ];
+    for (const p of strictMinor) {
+      const m = t.match(p);
+      if (m) {
+        const age = parseInt(m[1] || m[2]);
+        return { flag: true, is_minor: true, reason: `Minor detected: ${age} (despite adult age)`, confidence: 'high' };
+      }
+    }
+  } else {
+    // No adult age — check standalone minor patterns first
+    const standaloneMinor = [
+      /^\s*(1[0-7])\s*$/,
+      // standalone at start, but not followed by measurement words
+      /^\s*(1[0-7])\s+(?!inch(es)?|cm|in\b|'|")/,
+      // standalone at end, but not preceded by measurement context
+      /(?<!inch(es)?\s|cm\s|\d\.\d)\s+(1[0-7])\s*$/,
+    ];
+    for (const p of standaloneMinor) {
+      const m = t.match(p);
+      if (m) return { flag: true, is_minor: true, reason: `Minor detected: ${parseInt(m[1])} years old`, confidence: 'high' };
+    }
+    // Then check full minor patterns with afterMatch exclusion
+    for (const p of minorPatterns) {
+      const m = t.match(p);
+      if (m) {
+        const age = parseInt(m[1] || m[2]);
+        const fullMatch = m[0];
+        const afterMatch = t.substring(m.index + fullMatch.length, m.index + fullMatch.length + 10);
+        if (!/^\s*(cm|inch(es)?|in|"|')/.test(afterMatch) && !isNaN(age) && age < 18) {
+          return { flag: true, is_minor: true, reason: `Minor detected: ${age} years old`, confidence: 'high' };
+        }
+      }
+    }
+  }
+
+  // Step 6: banned bypass keywords
+  const bannedKeywords = [
+    /\breversed?\b/i, /\bswap(ped)?\b/i, /\bflip(ped)?\b/i,
+    /check\s+(my\s+)?bio/i, /in\s+(my\s+)?bio/i, /see\s+(my\s+)?bio/i,
+    /selling\s+content/i, /buy\s+content/i, /dm\s+for\s+content/i,
+    /\bunderage\b/i,
+    /\bminor\b/i,
+    /\bstill\s+in\s+(high\s*school|hs|school)\b/i,
+  ];
+  for (const p of bannedKeywords) {
+    if (p.test(lower)) return { flag: true, reason: `Banned keyword: "${t.match(p)?.[0]}"`, confidence: 'high' };
+  }
+
+  // Step 7: no valid 18+ age mentioned — silent delete
+  if (!hasAdultAge) return { flag: true, noAge: true, reason: 'No valid 18+ age mentioned', confidence: 'low' };
+
+  return { flag: false };
+}
+
+// ── ANTI-MINORS MESSAGE HANDLER ────────────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const cfg = getAMConfig(message.guild.id);
+
+  // Check require-attachment channels
+  if (cfg.requireAttach.has(message.channel.id)) {
+    const hasMedia = message.attachments.size > 0 &&
+      [...message.attachments.values()].some(a => a.contentType?.startsWith('image/') || a.contentType?.startsWith('video/'));
+    if (!hasMedia && message.content) {
+      await message.delete().catch(() => {});
+      return; // silently delete text-only messages
+    }
+  }
+
+  // Check monitored channels
+  if (!cfg.channels.has(message.channel.id)) return;
+  if (!message.content?.trim()) return;
+
+  const result = checkForMinor(message.content);
+  if (!result.flag) return;
+
+  // Delete the message
+  await message.delete().catch(() => {});
+
+  // If just no age mentioned — silent delete, no log
+  if (result.noAge) return;
+
+  // Minor detected — send to log channel
+  const logCh = cfg.logChannelId ? message.guild.channels.cache.get(cfg.logChannelId) : null;
+  if (!logCh) return;
+
+  const modPing = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : '';
+
+  const embed = {
+    color: PINK,
+    author: { name: message.author.username, icon_url: message.author.displayAvatarURL() },
+    title: "🚨 Minor Detected",
+    description: `**Message:**\n\`\`\`${message.content.substring(0, 800)}\`\`\``,
+    fields: [
+      { name: "Reason", value: result.reason, inline: false },
+      { name: "Confidence", value: result.confidence === 'high' ? '🔴 High' : '🟡 Medium', inline: true },
+      { name: "User ID", value: `\`${message.author.id}\``, inline: true },
+      { name: "Channel", value: `<#${message.channel.id}>`, inline: true },
+    ],
+    footer: { text: message.guild.name },
+    timestamp: new Date(),
+  };
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`am_ban_${message.author.id}`).setLabel("ban").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`am_ignore_${message.author.id}`).setLabel("ignore").setStyle(ButtonStyle.Secondary)
+  );
+
+  await logCh.send({ content: modPing || undefined, embeds: [embed], components: [row], allowedMentions: { roles: cfg.modRoleId ? [cfg.modRoleId] : [] } }).catch(() => {});
+});
+
+// ── ANTI-MINORS BUTTON HANDLER ─────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("am_")) return;
+
+  const [, action, userId] = interaction.customId.split("_");
+
+  try {
+    if (action === "ban") {
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      const updatedEmbed = { ...interaction.message.embeds[0].data, footer: { text: `banned by ${interaction.user.username}` }, color: PINK };
+      if (member) {
+        await member.ban({ reason: `[Anti-Minors] banned by ${interaction.user.username}` }).catch(() => {});
+      }
+      await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+    } else if (action === "ignore") {
+      const updatedEmbed = { ...interaction.message.embeds[0].data, footer: { text: `ignored by ${interaction.user.username}` }, color: 0x808080 };
+      await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+    }
+  } catch (e) {
+    interaction.update({ components: [] }).catch(() => {});
+  }
+});
+
+// ── ANTI-MINORS COMMANDS (OWNER ONLY) ─────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (message.author.id !== OWNER_ID) return; // only owner
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  const cfg = getAMConfig(message.guild.id);
+
+  // ,addc #channel — add channel to monitor
+  if (command === "addc") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,addc #channel`");
+    cfg.channels.add(ch.id);
+    return ok(message, `now monitoring **#${ch.name}** for minors`);
+  }
+
+  // ,delc #channel — remove channel from monitor
+  if (command === "delc") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,delc #channel`");
+    cfg.channels.delete(ch.id);
+    return ok(message, `stopped monitoring **#${ch.name}**`);
+  }
+
+  // ,list — show monitored channels
+  if (command === "list" || command === "amlist") {
+    const monitored = [...cfg.channels].map(id => `<#${id}>`).join(", ") || "none";
+    const reqAttach = [...cfg.requireAttach].map(id => `<#${id}>`).join(", ") || "none";
+    const logCh = cfg.logChannelId ? `<#${cfg.logChannelId}>` : "not set";
+    const modRole = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "not set";
+    return message.reply({ embeds: [{ color: PINK, title: "🔞 Anti-Minors Config", fields: [
+      { name: "Monitored Channels", value: monitored, inline: false },
+      { name: "Require Attachment", value: reqAttach, inline: false },
+      { name: "Log Channel", value: logCh, inline: true },
+      { name: "Mod Role", value: modRole, inline: true },
+    ], footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // ,reqattach #channel — require attachments
+  if (command === "reqattach") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,reqattach #channel`");
+    cfg.requireAttach.add(ch.id);
+    return ok(message, `**#${ch.name}** now requires attachments — text-only messages will be deleted`);
+  }
+
+  // ,unreqattach #channel — remove attachment requirement
+  if (command === "unreqattach") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,unreqattach #channel`");
+    cfg.requireAttach.delete(ch.id);
+    return ok(message, `**#${ch.name}** no longer requires attachments`);
+  }
+
+  // ,modr @role — set mod role to ping
+  if (command === "modr") {
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,modr @role`");
+    cfg.modRoleId = role.id;
+    return ok(message, `mod role set to **${role.name}** — will be pinged on minor detections`);
+  }
+
+  // ,logs #channel — set log channel
+  if (command === "logs") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,logs #channel`");
+    cfg.logChannelId = ch.id;
+    return ok(message, `minor warnings will be sent to **#${ch.name}**`);
   }
 });
 
