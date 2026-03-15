@@ -94,12 +94,12 @@ async function loadBanStatsFromAuditLogs(guild) {
       for (const entry of fetched.entries.values()) {
         if (!entry.executor) continue;
         const modId = entry.executor.id;
-        const modTag = entry.executor.tag || entry.executor.username;
+        const modTag = entry.executor.username || entry.executor.username;
 
         if (!stats[modId]) {
           stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
         }
-        stats[modId].tag = modTag;
+        stats[modId].username = modTag;
         stats[modId].actions += 1;
         stats[modId].bans += 1;
       }
@@ -216,7 +216,7 @@ async function giveCustomBoosterRole(member) {
   try {
     if (!member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
       await member.roles.add(CUSTOM_BOOSTER_ROLE_ID);
-      log(`Gave custom booster role to ${member.user.tag}`, "success");
+      log(`Gave custom booster role to ${member.user.username}`, "success");
       return true;
     }
   } catch (error) {
@@ -229,7 +229,7 @@ async function removeCustomBoosterRole(member) {
   try {
     if (member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
       await member.roles.remove(CUSTOM_BOOSTER_ROLE_ID);
-      log(`Removed custom booster role from ${member.user.tag}`, "success");
+      log(`Removed custom booster role from ${member.user.username}`, "success");
       return true;
     }
   } catch (error) {
@@ -244,9 +244,9 @@ async function sendBoostDM(user, boosted) {
     const template = boosted ? customMessages.boost : customMessages.unboost;
     const msg = template.replace("{user}", `<@${user.id}>`);
     await user.send(msg);
-    log(`DM sent to ${user.tag} (boosted: ${boosted})`, "success");
+    log(`DM sent to ${user.username} (boosted: ${boosted})`, "success");
   } catch (error) {
-    log(`Failed to send DM to ${user.tag}: ${error.message}`, "error");
+    log(`Failed to send DM to ${user.username}: ${error.message}`, "error");
   }
 }
 
@@ -262,7 +262,7 @@ async function pingBoosterInPerksChannel(member) {
     const pingText = customMessages.ping.replace("{user}", `<@${member.id}>`);
     const msg = await channel.send(pingText);
     setTimeout(() => { msg.delete().catch(() => {}); }, 5000);
-    log(`Pinged ${member.user.tag} in perks channel`, "success");
+    log(`Pinged ${member.user.username} in perks channel`, "success");
   } catch (error) {
     log(`Failed to ping in perks channel: ${error.message}`, "error");
   }
@@ -282,12 +282,12 @@ async function updateTargetServerAccess(userId, shouldHaveAccess) {
       await targetMember.roles.add(ACCESS_ROLE_ID);
       await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
       recentBoosters.add(userId);
-      log(`Granted access to ${targetMember.user.tag}`, "success");
+      log(`Granted access to ${targetMember.user.username}`, "success");
     } else {
       if (!recentBoosters.has(userId)) {
         await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
         await targetMember.roles.add(DENIED_ROLE_ID);
-        log(`Denied access to ${targetMember.user.tag}`, "success");
+        log(`Denied access to ${targetMember.user.username}`, "success");
       }
     }
 
@@ -334,7 +334,7 @@ async function checkAllTargetMembers() {
             if (!hasAccessRole || hasDeniedRole) {
               await targetMember.roles.add(ACCESS_ROLE_ID);
               await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
-              log(`Fixed: ${targetMember.user.tag} - Added access role (boosting)`, "success");
+              log(`Fixed: ${targetMember.user.username} - Added access role (boosting)`, "success");
               updatedCount++;
             }
             recentBoosters.add(targetMember.id);
@@ -342,7 +342,7 @@ async function checkAllTargetMembers() {
             if (hasAccessRole || !hasDeniedRole) {
               await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
               await targetMember.roles.add(DENIED_ROLE_ID);
-              log(`Fixed: ${targetMember.user.tag} - Added denied role (not boosting)`, "success");
+              log(`Fixed: ${targetMember.user.username} - Added denied role (not boosting)`, "success");
               updatedCount++;
             }
           }
@@ -350,7 +350,7 @@ async function checkAllTargetMembers() {
           if (!targetMember.roles.cache.has(DENIED_ROLE_ID)) {
             await targetMember.roles.add(DENIED_ROLE_ID);
             await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
-            log(`Fixed: ${targetMember.user.tag} - Added denied role (not in source)`, "success");
+            log(`Fixed: ${targetMember.user.username} - Added denied role (not in source)`, "success");
             updatedCount++;
           }
         }
@@ -359,7 +359,7 @@ async function checkAllTargetMembers() {
 
       } catch (memberError) {
         errorCount++;
-        log(`Error processing ${targetMember.user.tag}: ${memberError.message}`, "error");
+        log(`Error processing ${targetMember.user.username}: ${memberError.message}`, "error");
       }
     }
 
@@ -374,7 +374,7 @@ async function checkAllTargetMembers() {
 
 // ===== BOT EVENTS =====
 client.once("ready", async () => {
-  log(`Logged in as ${client.user.tag}`, "success");
+  log(`Logged in as ${client.user.username}`, "success");
 
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
@@ -406,7 +406,7 @@ client.once("ready", async () => {
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id !== TARGET_GUILD_ID) return;
 
-  log(`${member.user.tag} joined TARGET server`, "info");
+  log(`${member.user.username} joined TARGET server`, "info");
 
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
@@ -416,12 +416,12 @@ client.on("guildMemberAdd", async (member) => {
     const sourceMember = await fetchMemberWithRetry(sourceGuild, member.id).catch(() => null);
 
     if (sourceMember && isBoosting(sourceMember)) {
-      log(`${member.user.tag} IS boosting!`, "success");
+      log(`${member.user.username} IS boosting!`, "success");
       recentBoosters.add(member.id);
       await updateTargetServerAccess(member.id, true);
       await giveCustomBoosterRole(sourceMember);
     } else {
-      log(`${member.user.tag} is NOT boosting`, "info");
+      log(`${member.user.username} is NOT boosting`, "info");
       await updateTargetServerAccess(member.id, false);
     }
   } catch (error) {
@@ -443,7 +443,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 
   if (wasBoosting === isNowBoosting) return;
 
-  log(`Boost change: ${newMember.user.tag} - ${wasBoosting ? "Was" : "Not"} -> ${isNowBoosting ? "Now" : "Not"}`, "info");
+  log(`Boost change: ${newMember.user.username} - ${wasBoosting ? "Was" : "Not"} -> ${isNowBoosting ? "Now" : "Not"}`, "info");
 
   try {
     if (isNowBoosting) {
@@ -533,7 +533,7 @@ client.on("messageCreate", async (message) => {
   // !checkall
   if (command === "checkall") {
     log(`Owner requested check of all members`, "info");
-    message.reply("🔍 Checking ALL members in target server... This may take a minute.");
+    ok(message, "checking all members in target server...");
 
     const result = await checkAllTargetMembers();
 
@@ -574,7 +574,7 @@ client.on("messageCreate", async (message) => {
         return err(message, "User not found in target server.");
       }
 
-      let response = `**Fixing roles for ${targetMember.user.tag}**\n`;
+      let response = `**Fixing roles for ${targetMember.user.username}**\n`;
 
       if (sourceMember) {
         const boosting = isBoosting(sourceMember);
@@ -651,7 +651,7 @@ client.on("guildBanAdd", async (ban) => {
     if (!entry) return;
 
     const modId = entry.executor.id;
-    const modTag = entry.executor.tag || entry.executor.username;
+    const modTag = entry.executor.username || entry.executor.username;
     const guildId = guild.id;
 
     if (!banStats[guildId]) banStats[guildId] = {};
@@ -659,12 +659,12 @@ client.on("guildBanAdd", async (ban) => {
       banStats[guildId][modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
     }
 
-    banStats[guildId][modId].tag = modTag;
+    banStats[guildId][modId].username = modTag;
     banStats[guildId][modId].actions += 1;
     banStats[guildId][modId].bans += 1;
-    log(`Ban tracked: ${modTag} banned ${ban.user.tag}`, "info");
+    log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
 
-    log(`Ban tracked: ${modTag} banned ${ban.user.tag}`, "info");
+    log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
   } catch (error) {
     log(`Failed to track ban: ${error.message}`, "error");
   }
@@ -681,6 +681,8 @@ client.on("messageCreate", async (message) => {
   if (!message.guild) return;
   if (!message.member) return;
 
+  // Send typing indicator while loading
+  await message.channel.sendTyping().catch(() => {});
   // Load fresh from audit logs
   const freshStats = await loadBanStatsFromAuditLogs(message.guild);
   banStats[message.guild.id] = freshStats;
@@ -827,7 +829,7 @@ client.on("messageDelete", (message) => {
   if (message.author?.bot || !message.content) return;
   sniped.set(message.channel.id, {
     content: message.content,
-    author: message.author?.tag || "Unknown",
+    author: message.author?.username || "Unknown",
     avatarURL: message.author?.displayAvatarURL(),
     time: new Date()
   });
@@ -837,7 +839,7 @@ client.on("messageUpdate", (oldMsg, newMsg) => {
   editSniped.set(oldMsg.channel.id, {
     before: oldMsg.content,
     after: newMsg.content,
-    author: oldMsg.author?.tag || "Unknown",
+    author: oldMsg.author?.username || "Unknown",
     avatarURL: oldMsg.author?.displayAvatarURL(),
     time: new Date()
   });
@@ -876,7 +878,7 @@ client.on("guildMemberRemove", async (member) => {
   const gc = goodbyeConfig.get(member.guild.id);
   if (gc) {
     const ch = member.guild.channels.cache.get(gc.channelId);
-    if (ch) ch.send(gc.message.replace("{user}", member.user.tag).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
+    if (ch) ch.send(gc.message.replace("{user}", member.user.username).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
   }
 });
 
@@ -891,7 +893,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
     const ch = reaction.message.guild.channels.cache.get(config.channelId);
     if (!ch) return;
     const msg = reaction.message;
-    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.tag, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `⭐ ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
+    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `⭐ ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
     starboardSent.add(reaction.message.id);
   }
 });
@@ -1364,42 +1366,23 @@ const CMD_SCHEMA = {
 };
 
 // Track which messages have already been replied to (prevents duplicate responses)
-const _handledMessages = new Set();
 
-// ===== GLOBAL COMMAND HANDLER (runs first — arg check + ignore list) =====
-client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
-
-  const args = message.content.slice(1).trim().split(/ +/);
-  const command = args[0].toLowerCase();
-  if (!command) return;
-
-  // Ignore list check
-  if (ignoreList.get(message.guild.id)?.has(message.author.id)) return;
-
-  // If command is known, mark as handled immediately so no other handler fires twice
-  const schema = CMD_SCHEMA[command];
-  if (schema) {
-    // Mark as handled - prevents other handlers from firing on same message
-    _handledMessages.add(message.id);
-    // If required args missing, reply with usage and stop
-    if (schema.args.length > 0 && args.length === 1) {
-      return err(message, `missing required argument: **${schema.args[0]}**\nusage: \`${schema.usage}\``);
-    }
-  }
-});
+// (global handler removed — see per-handler arg checks below)
 
 // ===== 50 MOST USED COMMANDS =====
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return; // Already replied
 
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  // Arg check
+  const _s = CMD_SCHEMA[command];
+  if (_s && _s.args.length > 0 && args.length === 1) {
+    return err(message, `missing required argument: **${_s.args[0]}**\nusage: \`${_s.usage}\``);
+  }
 
 
   // ── MODERATION ──────────────────────────────────────────
@@ -1413,13 +1396,14 @@ client.on("messageCreate", async (message) => {
 
     // Block banning boosters by role ID (unless owner)
     if (isProtectedBooster(target) && message.author.id !== OWNER_ID) {
-      return err(message, `**${target.user.tag}** is a booster and cannot be banned.`);
+      return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
 
     const banSuccess = await target.ban({ reason }).catch(() => null);
-    if (!banSuccess) return err(message, `Failed to ban **${target.user.tag}** — check my role permissions.`);
+    if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
-    return ok(message, `banned **${target.user.tag}** | ${reason}`);
+    target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    return ok(message, `banned **${target.user.username}** | ${reason}`);
   }
 
   // ,unban <userId>
@@ -1438,12 +1422,13 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason provided";
+    target.send({ embeds: [{ color: PINK, description: `👢 You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
     const kickSuccess = await target.kick(reason).catch(() => null);
-    if (!kickSuccess) return err(message, `Failed to kick **${target.user.tag}**`);
+    if (!kickSuccess) return err(message, `failed to kick **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, 'kick', target.id, message.author.id, reason);
-    return ok(message, `kicked **${target.user.tag}** | ${reason}`);
+    return ok(message, `kicked **${target.user.username}** | ${reason}`);
   }
 
   // ,mute <user> [duration in minutes] [reason]
@@ -1452,11 +1437,13 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 10;
     const reason = args.slice(3).join(" ") || "No reason provided";
-    await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
-    return ok(message, `muted **${target.user.tag}** for ${minutes} minutes | ${reason}`);
+    const muteResult = await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
+    if (!muteResult) return err(message, `failed to mute **${target.user.username}** — check my role hierarchy`);
+    target.send({ embeds: [{ color: PINK, description: `🔇 You have been muted in **${message.guild.name}** for **${minutes} minutes**\nReason: ${reason}` }] }).catch(() => {});
+    return ok(message, `muted **${target.user.username}** for **${minutes}min** | ${reason}`);
   }
 
   // ,unmute <user>
@@ -1465,15 +1452,16 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.timeout(null).catch(() => null);
-    return ok(message, `unmuted **${target.user.tag}**`);
+    return ok(message, `unmuted **${target.user.username}**`);
   }
 
   // ,purge <amount>
   if (command === "purge" || command === "clear") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const amount = Math.min(parseInt(args[1]) || 10, 100);
-    await message.channel.bulkDelete(amount + 1, true).catch(() => null);
-    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 deleted **${amount}** messages` }] });
+    const deleted = await message.channel.bulkDelete(amount + 1, true).catch(() => null);
+    const actualCount = deleted ? deleted.size - 1 : amount;
+    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 deleted **${actualCount}** messages` }] });
     setTimeout(() => msg.delete().catch(() => {}), 3000);
   }
 
@@ -1528,7 +1516,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     const nick = args.slice(2).join(" ") || null;
     await target.setNickname(nick).catch(() => null);
-    return ok(message, `nickname ${nick ? `set to **${nick}**` : "removed"} for **${target.user.tag}**`);
+    return ok(message, `nickname ${nick ? `set to **${nick}**` : "removed"} for **${target.user.username}**`);
   }
 
   // ── ROLE MANAGEMENT ─────────────────────────────────────
@@ -1544,10 +1532,10 @@ client.on("messageCreate", async (message) => {
 
     if (action === "add") {
       await target.roles.add(role).catch(() => null);
-      return ok(message, `Added **${role.name}** to **${target.user.tag}**`);
+      return ok(message, `Added **${role.name}** to **${target.user.username}**`);
     } else if (action === "remove") {
       await target.roles.remove(role).catch(() => null);
-      return ok(message, `Removed **${role.name}** from **${target.user.tag}**`);
+      return ok(message, `Removed **${role.name}** from **${target.user.username}**`);
     }
     return err(message, "missing required argument");
 
@@ -1561,7 +1549,7 @@ client.on("messageCreate", async (message) => {
     const user = target.user;
     const embed = {
       color: target.displayColor || PINK,
-      title: `${user.tag}`,
+      title: `${user.username}`,
       thumbnail: { url: user.displayAvatarURL({ size: 256 }) },
       fields: [
         { name: "ID", value: user.id, inline: true },
@@ -1599,7 +1587,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null) || message.author;
     const embed = {
       color: PINK,
-      title: `${target.tag}'s Avatar`,
+      title: `${target.username}'s Avatar`,
       image: { url: target.displayAvatarURL({ size: 1024 }) }
     };
     return message.reply({ embeds: [embed] });
@@ -1644,7 +1632,7 @@ client.on("messageCreate", async (message) => {
   if (command === "botinfo") {
     const embed = {
       color: PINK,
-      title: client.user.tag,
+      title: client.user.username,
       thumbnail: { url: client.user.displayAvatarURL() },
       fields: [
         { name: "Servers", value: `${client.guilds.cache.size}`, inline: true },
@@ -1697,7 +1685,7 @@ client.on("messageCreate", async (message) => {
     const question = args.slice(1).join(" ");
     if (!question) return err(message, "missing required argument");
 
-    const embed = { color: PINK, title: "📊 Poll", description: question, footer: { text: `Asked by ${message.author.tag}` } };
+    const embed = { color: PINK, title: "📊 Poll", description: question, footer: { text: `Asked by ${message.author.username}` } };
     const msg = await message.channel.send({ embeds: [embed] });
     await msg.react("👍");
     await msg.react("👎");
@@ -1736,8 +1724,9 @@ client.on("messageCreate", async (message) => {
 
     const text = args.slice(2).join(" ");
     if (!text) return err(message, "Please provide a message.");
-    await channel.send({ embeds: [{ color: PINK, description: text, footer: { text: `Announced by ${message.author.tag}` } }] });
-    return ok(message, `Announced in ${channel}`);
+    const sent = await channel.send({ embeds: [{ color: PINK, description: text, footer: { text: `announced by ${message.author.username}` }, timestamp: new Date() }] }).catch(() => null);
+    if (!sent) return err(message, `failed to send to ${channel}`);
+    return ok(message, `announced in ${channel}`);
   }
 
   // ,dm <user> <message>
@@ -1748,7 +1737,7 @@ client.on("messageCreate", async (message) => {
     const text = args.slice(2).join(" ");
     if (!text) return err(message, "Please provide a message.");
     await target.send(`📨 Message from **${message.guild.name}**:\n${text}`).catch(() => null);
-    return ok(message, `DM sent to **${target.tag}**`);
+    return ok(message, `DM sent to **${target.username}**`);
   }
 
   // ,topic <text>
@@ -1804,7 +1793,7 @@ client.on("messageCreate", async (message) => {
       title: `Invite: ${code}`,
       fields: [
         { name: "Server", value: invite.guild?.name || "Unknown", inline: true },
-        { name: "Inviter", value: invite.inviter?.tag || "Unknown", inline: true },
+        { name: "Inviter", value: invite.inviter?.username || "Unknown", inline: true },
         { name: "Uses", value: `${invite.uses ?? "?"}`, inline: true },
         { name: "Channel", value: invite.channel?.name || "Unknown", inline: true },
       ]
@@ -1817,7 +1806,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const bans = await message.guild.bans.fetch().catch(() => null);
     if (!bans || bans.size === 0) return ok(message, "No banned users.");
-    const list = bans.map(b => `${b.user.tag} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
+    const list = bans.map(b => `${b.user.username} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Banned Users (${bans.size})`, description: `\`\`\`${list}\`\`\`` }] });
   }
 
@@ -1826,7 +1815,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const bans = await message.guild.bans.fetch().catch(() => null);
     if (!bans || bans.size === 0) return ok(message, "No banned users.");
-    const list = bans.map(b => `${b.user.tag} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
+    const list = bans.map(b => `${b.user.username} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Banned Users (${bans.size})`, description: `\`\`\`${list}\`\`\`` }] });
   }
 
@@ -2282,9 +2271,9 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
   // ── ADVANCED MODERATION ─────────────────────────────────
@@ -2295,14 +2284,14 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason }).catch(() => null);
-    ok(message, `✅ Tempbanned **${target.user.tag}** for ${minutes} minutes | ${reason}`);
+    ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
-      message.channel.send(`🔓 **${target.user.tag}**'s tempban has expired.`).catch(() => {});
+      message.channel.send(`🔓 **${target.user.username}**'s tempban has expired.`).catch(() => {});
     }, minutes * 60 * 1000);
   }
 
@@ -2312,12 +2301,12 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Softban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    return ok(message, `softbanned **${target.user.tag}** (messages deleted) | ${reason}`);
+    return ok(message, `softbanned **${target.user.username}** (messages deleted) | ${reason}`);
   }
 
   // ,hardban <user> [reason] — ban + blacklist (stored in memory)
@@ -2326,12 +2315,12 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Hardban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    return ok(message, `hardbanned **${target.user.tag}** | ${reason}`);
+    return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
   }
 
   // ,jail <user> [reason]
@@ -2340,13 +2329,13 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason";
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
     await target.roles.add(jailRole).catch(() => null);
     try { await target.user.send(`🔒 You have been jailed in **${message.guild.name}**: ${reason}`); } catch {}
-    return ok(message, `jailed **${target.user.tag}** | ${reason}`);
+    return ok(message, `jailed **${target.user.username}** | ${reason}`);
   }
 
   // ,unjail <user>
@@ -2357,7 +2346,7 @@ client.on("messageCreate", async (message) => {
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found.");
     await target.roles.remove(jailRole).catch(() => null);
-    return ok(message, `unjailed **${target.user.tag}**`);
+    return ok(message, `unjailed **${target.user.username}**`);
   }
 
   // ,imute <user> [reason] — image mute
@@ -2368,7 +2357,7 @@ client.on("messageCreate", async (message) => {
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No role named `image muted` found.");
     await target.roles.add(role).catch(() => null);
-    return ok(message, `image muted **${target.user.tag}**`);
+    return ok(message, `image muted **${target.user.username}**`);
   }
 
   // ,iunmute <user>
@@ -2379,7 +2368,7 @@ client.on("messageCreate", async (message) => {
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No role named `image muted` found.");
     await target.roles.remove(role).catch(() => null);
-    return ok(message, `Image unmuted **${target.user.tag}**`);
+    return ok(message, `Image unmuted **${target.user.username}**`);
   }
 
   // ,strip <user> — removes all roles
@@ -2388,10 +2377,11 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
-    const roles = target.roles.cache.filter(r => r.id !== message.guild.id);
-    for (const role of roles.values()) await target.roles.remove(role).catch(() => {});
-    return ok(message, `Stripped all roles from **${target.user.tag}**`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const roles = target.roles.cache.filter(r => r.id !== message.guild.id && r.position < message.guild.members.me.roles.highest.position);
+    let stripped = 0;
+    for (const role of roles.values()) { await target.roles.remove(role).catch(() => {}); stripped++; }
+    return ok(message, `stripped **${stripped}** roles from **${target.user.username}**`);
   }
 
   // ,warnings <user>
@@ -2399,10 +2389,10 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null) || message.author;
     const key = `${message.guild.id}-${target.id}`;
     const list = warns.get(key) || [];
-    if (list.length === 0) return ok(message, `**${target.tag}** has no warnings.`);
+    if (list.length === 0) return ok(message, `**${target.username}** has no warnings.`);
     const embed = {
       color: PINK,
-      title: `⚠️ Warnings for ${target.tag}`,
+      title: `⚠️ Warnings for ${target.username}`,
       description: list.map((w, i) => `**${i + 1}.** ${w.reason} — by ${w.mod} (${w.date})`).join("\n")
     };
     return message.reply({ embeds: [embed] });
@@ -2414,7 +2404,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     warns.delete(`${message.guild.id}-${target.id}`);
-    return ok(message, `Cleared all warnings for **${target.tag}**`);
+    return ok(message, `Cleared all warnings for **${target.username}**`);
   }
 
   // ,delwarn <user> <index>
@@ -2428,7 +2418,7 @@ client.on("messageCreate", async (message) => {
     if (index < 0 || index >= list.length) return err(message, "Invalid warning number.");
     list.splice(index, 1);
     warns.set(key, list);
-    return ok(message, `Deleted warning **#${index + 1}** for **${target.tag}**`);
+    return ok(message, `Deleted warning **#${index + 1}** for **${target.username}**`);
   }
 
   // ,case <number> — show a moderation case from audit logs
@@ -2442,10 +2432,11 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "No reason provided";
     const key = `${message.guild.id}-${target.id}`;
     const list = warns.get(key) || [];
-    list.push({ reason, mod: message.author.tag, date: new Date().toLocaleDateString() });
+    list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
     warns.set(key, list);
-    try { await target.send(`⚠️ You have been warned in **${message.guild.name}**: ${reason}`); } catch {}
-    return ok(message, `warned **${target.tag}** (${list.length} warns) | ${reason}`);
+    ok(message, `warned **${target.username}** (${list.length} warns) | ${reason}`);
+    target.send({ embeds: [{ color: PINK, title: "⚠️ Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
+    return;
   }
 
   // ── LEVELING ─────────────────────────────────────────────
@@ -2472,16 +2463,15 @@ client.on("messageCreate", async (message) => {
     const key = `${message.guild.id}-${target.id}`;
     const data = xpData.get(key) || { xp: 0, level: 0 };
     const needed = (data.level + 1) * 100;
-    const embed = {
-      color: PINK,
-      title: `${target.user.tag}'s Rank`,
+    return message.reply({ embeds: [{ color: PINK,
+      title: `${target.user.username}'s Rank`,
       thumbnail: { url: target.user.displayAvatarURL() },
       fields: [
         { name: "Level", value: `${data.level}`, inline: true },
         { name: "XP", value: `${data.xp} / ${needed}`, inline: true },
-      ]
-    };
-    return message.reply({ embeds: [embed] });
+      ],
+      footer: { text: `${message.guild.name}` }, timestamp: new Date()
+    }] });
   }
 
   // ,leaderboard / ,lb
@@ -2507,7 +2497,7 @@ client.on("messageCreate", async (message) => {
     if (isNaN(level)) return err(message, "Invalid level.");
     const key = `${message.guild.id}-${target.id}`;
     xpData.set(key, { xp: 0, level });
-    return ok(message, `Set **${target.user.tag}**'s level to **${level}**`);
+    return ok(message, `Set **${target.user.username}**'s level to **${level}**`);
   }
 
   // ,resetxp <user>
@@ -2516,7 +2506,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     xpData.delete(`${message.guild.id}-${target.id}`);
-    return ok(message, `Reset XP for **${target.user.tag}**`);
+    return ok(message, `Reset XP for **${target.user.username}**`);
   }
 
   // ── ECONOMY ──────────────────────────────────────────────
@@ -2525,7 +2515,7 @@ client.on("messageCreate", async (message) => {
   if (command === "balance" || command === "bal") {
     const target = message.mentions.users.first() || message.author;
     const bal = economy.get(target.id) || 0;
-    return message.reply({ embeds: [{ color: PINK, title: `💰 ${target.tag}'s Balance`, description: `**${bal}** coins` }] });
+    return message.reply({ embeds: [{ color: PINK, title: `💰 ${target.username}'s Balance`, description: `**${bal}** coins` }] });
   }
 
   // ,daily
@@ -2554,7 +2544,7 @@ client.on("messageCreate", async (message) => {
     if (senderBal < amount) return err(message, "Insufficient funds.");
     economy.set(message.author.id, senderBal - amount);
     economy.set(target.id, (economy.get(target.id) || 0) + amount);
-    return ok(message, `Paid **${amount} coins** to **${target.tag}**`);
+    return ok(message, `Paid **${amount} coins** to **${target.username}**`);
   }
 
   // ,coinflip bet <amount>
@@ -2593,7 +2583,7 @@ client.on("messageCreate", async (message) => {
       .slice(0, 10);
     if (entries.length === 0) return message.reply("📊 No economy data yet.");
     const lines = entries.map(([id, bal], i) => `**${i + 1}.** <@${id}> — **${bal}** coins`);
-    return message.reply({ embeds: [{ color: PINK, title: "💰 Rich List", description: lines.join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "💰 Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ── REMINDERS ────────────────────────────────────────────
@@ -2620,7 +2610,7 @@ client.on("messageCreate", async (message) => {
     const list = remindersData.get(message.author.id) || [];
     if (list.length === 0) return message.reply("📋 You have no active reminders.");
     const lines = list.map((r, i) => `**${i + 1}.** ${r.text} — <t:${Math.floor(r.time / 1000)}:R>`);
-    return message.reply({ embeds: [{ color: PINK, title: "⏰ Your Reminders", description: lines.join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "⏰ Your Reminders", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ── GIVEAWAYS ────────────────────────────────────────────
@@ -2637,7 +2627,7 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
     const ms = parseInt(match[1]) * units[match[2]];
     const endTime = Date.now() + ms;
-    const embed = { color: PINK, title: "🎉 GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with 🎉 to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.tag}` } };
+    const embed = { color: PINK, title: "🎉 GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with 🎉 to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.username}` } };
     const msg = await message.channel.send({ embeds: [embed] });
     await msg.react("🎉");
     giveaways.set(msg.id, { prize, endTime, entries: [], channelId: message.channel.id, guildId: message.guild.id, ended: false });
@@ -2892,7 +2882,7 @@ client.on("messageCreate", async (message) => {
       const config = ticketConfig.get(message.guild.id);
       if (config?.logChannelId) {
         const logCh = message.guild.channels.cache.get(config.logChannelId);
-        if (logCh) logCh.send(`🎫 Ticket **${message.channel.name}** closed by ${message.author.tag}`).catch(() => {});
+        if (logCh) logCh.send(`🎫 Ticket **${message.channel.name}** closed by ${message.author.username}`).catch(() => {});
       }
       for (const [key, chId] of openTickets.entries()) {
         if (chId === message.channel.id) { openTickets.delete(key); break; }
@@ -2969,11 +2959,11 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument");
 
     const steps = [
-      { color: PINK, description: `🔍 Finding IP of **${target.tag}**...` },
+      { color: PINK, description: `🔍 Finding IP of **${target.username}**...` },
       { color: PINK, description: `💻 Accessing mainframe...` },
       { color: PINK, description: `🔓 Bypassing firewall...` },
       { color: PINK, description: `📁 Stealing data...` },
-      { color: PINK, description: `✅ Successfully hacked **${target.tag}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
+      { color: PINK, description: `✅ Successfully hacked **${target.username}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
     ];
     let i = 0;
     const m = await message.reply({ embeds: [steps[0]] });
@@ -2987,10 +2977,10 @@ client.on("messageCreate", async (message) => {
   // ,ship <@user1> [@user2]
   if (command === "ship") {
     const u1 = message.mentions.users.first() || message.author;
-    const u2 = message.mentions.users.nth ? message.mentions.users.nth(1) : [...message.mentions.users.values()][1] || message.author;
+    const u2 = [...message.mentions.users.values()][1] || message.author;
     const score = Math.floor(Math.random() * 101);
     const bar = "█".repeat(Math.floor(score / 10)) + "░".repeat(10 - Math.floor(score / 10));
-    return message.reply({ embeds: [{ color: PINK, title: "💕 Ship", description: `**${u1.username}** + **${u2.username}**\n\n${bar} **${score}%**` }] });
+    return message.reply({ embeds: [{ color: PINK, title: "💕 Ship", description: `**${u1.username}** 💕 **${u2.username}**\n\n${bar} **${score}%**`, footer: { text: message.guild.name } }] });
   }
 
   // ,pp [user]
@@ -3040,6 +3030,7 @@ client.on("messageCreate", async (message) => {
 
   // ,firstmessage [#channel]
   if (command === "firstmessage") {
+    await message.channel.sendTyping().catch(() => {});
     const channel = message.mentions.channels.first() || message.channel;
     const msgs = await channel.messages.fetch({ limit: 1, after: "0" }).catch(() => null);
     if (!msgs || msgs.size === 0) return err(message, "Could not fetch messages.");
@@ -3095,7 +3086,7 @@ client.on("messageCreate", async (message) => {
     const invites = await message.guild.invites.fetch().catch(() => null);
     if (!invites) return err(message, "Could not fetch invites.");
     const count = invites.filter(i => i.inviter?.id === target.id).reduce((sum, i) => sum + (i.uses || 0), 0);
-    return info(message, `**${target.user.tag}** has **${count}** invite uses.`);
+    return info(message, `**${target.user.username}** has **${count}** invite uses.`);
   }
 
   // ,createinvite [maxUses] [expiresIn hours]
@@ -3113,12 +3104,13 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const invites = await message.guild.invites.fetch().catch(() => null);
     if (!invites || invites.size === 0) return message.reply("No active invites.");
-    const list = invites.map(i => `**discord.gg/${i.code}** — ${i.inviter?.tag || "Unknown"} (${i.uses} uses)`).slice(0, 15).join("\n");
+    const list = invites.map(i => `**discord.gg/${i.code}** — ${i.inviter?.username || "Unknown"} (${i.uses} uses)`).slice(0, 15).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Invites (${invites.size})`, description: list }] });
   }
 
   // ,weather <city> — requires no API key, uses wttr.in
   if (command === "weather") {
+    await message.channel.sendTyping().catch(() => {});
     const city = args.slice(1).join("+");
     if (!city) return err(message, "missing required argument");
 
@@ -3145,6 +3137,7 @@ client.on("messageCreate", async (message) => {
 
   // ,urban <word>
   if (command === "urban") {
+    await message.channel.sendTyping().catch(() => {});
     const word = args.slice(1).join(" ");
     if (!word) return err(message, "missing required argument");
 
@@ -3158,8 +3151,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,updated help command
-  // help handled above
-  if (command === "help") return;
+  // help is handled in the 50 MOST USED COMMANDS handler
 });
 
 // ===================================================
@@ -3207,7 +3199,7 @@ async function punishUser(guild, userId, punishment, reason) {
       const roles = member.roles.cache.filter(r => r.id !== guild.id);
       for (const r of roles.values()) await member.roles.remove(r).catch(() => {});
     }
-    log(`AntiNuke: ${punishment} applied to ${member.user.tag} | ${reason}`, "success");
+    log(`AntiNuke: ${punishment} applied to ${member.user.username} | ${reason}`, "success");
   } catch (e) {
     log(`AntiNuke punishment failed: ${e.message}`, "error");
   }
@@ -3385,9 +3377,9 @@ async function notifyOwner(guild, message) {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
   // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
@@ -3424,14 +3416,14 @@ client.on("messageCreate", async (message) => {
       if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.add(target.id);
-      return ok(message, `**${target.tag}** whitelisted from AntiNuke`);
+      return ok(message, `**${target.username}** whitelisted from AntiNuke`);
     }
     if (sub === "unwhitelist") {
       const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
       if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.delete(target.id);
-      return ok(message, `**${target.tag}** removed from AntiNuke whitelist`);
+      return ok(message, `**${target.username}** removed from AntiNuke whitelist`);
     }
     if (sub === "status" || !sub) {
       const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
@@ -3647,7 +3639,7 @@ client.on("messageCreate", async (message) => {
     let entries = [...logs.entries.values()];
     if (target) entries = entries.filter(e => e.target?.id === target.id || e.executor?.id === target.id);
     if (entries.length === 0) return message.reply("📋 No recent mod actions found.");
-    const lines = entries.map(e => `**${e.action}** — by ${e.executor?.tag || "Unknown"} on ${e.target?.tag || e.target?.id || "Unknown"}\n*${e.reason || "No reason"}*`);
+    const lines = entries.map(e => `**${e.action}** — by ${e.executor?.username || "Unknown"} on ${e.target?.username || e.target?.id || "Unknown"}\n*${e.reason || "No reason"}*`);
     return message.reply({ embeds: [{ color: PINK, title: "📋 Mod Logs", description: lines.join("\n\n").substring(0, 4096) }] });
   }
 
@@ -3657,7 +3649,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.tag}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
     return err(message, "missing required argument");
@@ -3666,8 +3658,9 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
     const ms = parseInt(match[1]) * units[match[2]];
     const reason = args.slice(3).join(" ") || "No reason";
-    await target.timeout(ms, reason).catch(() => null);
-    return ok(message, `timed out **${target.user.tag}** for **${timeStr}** | ${reason}`);
+    const toResult = await target.timeout(ms, reason).catch(() => null);
+    if (!toResult) return err(message, `failed to timeout **${target.user.username}**`);
+    return ok(message, `timed out **${target.user.username}** for **${timeStr}** | ${reason}`);
   }
 
   // ,untimeout <user>
@@ -3676,7 +3669,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.timeout(null).catch(() => null);
-    return ok(message, `Removed timeout from **${target.user.tag}**`);
+    return ok(message, `Removed timeout from **${target.user.username}**`);
   }
 
   // ,baninfo <userId>
@@ -3687,36 +3680,38 @@ client.on("messageCreate", async (message) => {
 
     const ban = await message.guild.bans.fetch(userId).catch(() => null);
     if (!ban) return err(message, "User is not banned.");
-    return message.reply({ embeds: [{ color: PINK, title: `🔨 Ban Info`, fields: [{ name: "User", value: ban.user.tag, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
+    return message.reply({ embeds: [{ color: PINK, title: `🔨 Ban Info`, fields: [{ name: "User", value: ban.user.username, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
   }
 
   // ,memberinfo <user> — detailed member info
   if (command === "memberinfo" || command === "mi") {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
     const perms = target.permissions.toArray().slice(0, 5).join(", ");
-    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.tag, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? `<t:${Math.floor(target.premiumSinceTimestamp / 1000)}:R>` : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
+    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? `<t:${Math.floor(target.premiumSinceTimestamp / 1000)}:R>` : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
   }
 
   // ,whois <user> — alias for memberinfo
   if (command === "whois") {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
     const perms = target.permissions.toArray().slice(0, 5).join(", ");
-    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.tag, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes ✅" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
+    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes ✅" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
   }
 
   // ,newmembers [count] — show most recently joined members
   if (command === "newmembers") {
+    await message.channel.sendTyping().catch(() => {});
     const count = Math.min(parseInt(args[1]) || 10, 20);
     const members = (await message.guild.members.fetch()).sort((a, b) => b.joinedTimestamp - a.joinedTimestamp).first(count);
-    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.tag} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
+    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.username} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
     return message.reply({ embeds: [{ color: PINK, title: `🆕 Newest Members`, description: lines.join("\n") }] });
   }
 
   // ,oldmembers [count] — show oldest members
   if (command === "oldmembers") {
+    await message.channel.sendTyping().catch(() => {});
     const count = Math.min(parseInt(args[1]) || 10, 20);
     const members = (await message.guild.members.fetch()).sort((a, b) => a.joinedTimestamp - b.joinedTimestamp).first(count);
-    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.tag} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
+    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.username} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
     return message.reply({ embeds: [{ color: PINK, title: `👴 Oldest Members`, description: lines.join("\n") }] });
   }
 
@@ -3726,7 +3721,7 @@ client.on("messageCreate", async (message) => {
     if (!role) return err(message, "missing required argument: **role**");
     const members = role.members;
     if (members.size === 0) return info(message, `no members have **${role.name}**.`);
-    const list = members.map(m => m.user.tag).slice(0, 30).join(", ");
+    const list = members.map(m => m.user.username).slice(0, 30).join(", ");
     return message.reply({ embeds: [{ color: role.color || PINK, title: `${role.name} (${members.size})`, description: list }] });
   }
 
@@ -3734,7 +3729,7 @@ client.on("messageCreate", async (message) => {
   if (command === "boostinfo" || command === "boosters") {
     const boosters = message.guild.members.cache.filter(m => m.premiumSince);
     if (boosters.size === 0) return message.reply("No boosters.");
-    const list = boosters.map(m => `${m.user.tag} — <t:${Math.floor(m.premiumSinceTimestamp / 1000)}:R>`).join("\n");
+    const list = boosters.map(m => `${m.user.username} — <t:${Math.floor(m.premiumSinceTimestamp / 1000)}:R>`).join("\n");
     return message.reply({ embeds: [{ color: 0xFF73FA, title: `💜 Boosters (${boosters.size})`, description: list }] });
   }
 
@@ -3783,7 +3778,7 @@ client.on("messageCreate", async (message) => {
 
     const user = await client.users.fetch(userId).catch(() => null);
     if (!user) return err(message, "missing required argument: **user**");
-    return message.reply({ embeds: [{ color: PINK, title: user.tag, thumbnail: { url: user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: user.id, inline: true }, { name: "Bot", value: user.bot ? "Yes" : "No", inline: true }, { name: "Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true }] }] });
+    return message.reply({ embeds: [{ color: PINK, title: user.username, thumbnail: { url: user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: user.id, inline: true }, { name: "Bot", value: user.bot ? "Yes" : "No", inline: true }, { name: "Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true }] }] });
   }
 });
 
@@ -3852,16 +3847,16 @@ client.on("messageCreate", async (message) => {
     await message.delete().catch(() => {});
     const warn = await message.channel.send(`⚠️ ${message.author} your message was removed: **${triggered}**`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
-    await sendModLog(message.guild, { color: PINK, title: "🤖 AutoMod", fields: [{ name: "User", value: message.author.tag, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
+    await sendModLog(message.guild, { color: PINK, title: "🤖 AutoMod", fields: [{ name: "User", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
   }
 });
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
   // ── PURGE FILTERS ───────────────────────────────────
@@ -3915,7 +3910,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.author.id === target.id).first(parseInt(args[3]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Deleted ${toDelete.size} messages from **${target.tag}**.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Deleted ${toDelete.size} messages from **${target.username}**.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -4087,7 +4082,7 @@ client.on("messageCreate", async (message) => {
     if (warnList.length > 0) fields.push({ name: `⚠️ Warns (${warnList.length})`, value: warnList.map((w, i) => `${i + 1}. ${w.reason} — ${w.mod}`).join("\n").substring(0, 1024) });
     if (isBanned) fields.push({ name: "🔨 Banned", value: isBanned.reason || "No reason" });
     if (fields.length === 0) fields.push({ name: "Clean record", value: "No moderation actions found." });
-    return message.reply({ embeds: [{ color: PINK, title: `📋 History: ${target.tag}`, thumbnail: { url: target.displayAvatarURL() }, fields }] });
+    return message.reply({ embeds: [{ color: PINK, title: `📋 History: ${target.username}`, thumbnail: { url: target.displayAvatarURL() }, fields }] });
   }
 
   // ,clearhistory <@user>
@@ -4096,7 +4091,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     warns.delete(`${message.guild.id}-${target.id}`);
-    return ok(message, `Cleared history for **${target.tag}**`);
+    return ok(message, `Cleared history for **${target.username}**`);
   }
 
   // ── ROLE MANAGEMENT EXTENDED ─────────────────────────
@@ -4140,7 +4135,7 @@ client.on("messageCreate", async (message) => {
     if (!target || !role) return err(message, "missing required argument");
 
     await target.roles.add(role).catch(() => null);
-    return ok(message, `Added **${role.name}** to **${target.user.tag}**`);
+    return ok(message, `Added **${role.name}** to **${target.user.username}**`);
   }
 
   // ,takerole <@user> <@role> — alias
@@ -4151,7 +4146,7 @@ client.on("messageCreate", async (message) => {
     if (!target || !role) return err(message, "missing required argument");
 
     await target.roles.remove(role).catch(() => null);
-    return ok(message, `Removed **${role.name}** from **${target.user.tag}**`);
+    return ok(message, `Removed **${role.name}** from **${target.user.username}**`);
   }
 
   // ,roleperms <@role> — show role permissions
@@ -4224,7 +4219,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     if (!target.voice.channel) return err(message, "User is not in a voice channel.");
     await target.voice.setMute(true).catch(() => null);
-    return ok(message, `Voice muted **${target.user.tag}**`);
+    return ok(message, `Voice muted **${target.user.username}**`);
   }
 
   // ,vcunmute <@user>
@@ -4233,7 +4228,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setMute(false).catch(() => null);
-    return ok(message, `Voice unmuted **${target.user.tag}**`);
+    return ok(message, `Voice unmuted **${target.user.username}**`);
   }
 
   // ,vcdeafen <@user>
@@ -4242,7 +4237,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setDeaf(true).catch(() => null);
-    return ok(message, `Deafened **${target.user.tag}**`);
+    return ok(message, `Deafened **${target.user.username}**`);
   }
 
   // ,vcundeafen <@user>
@@ -4251,7 +4246,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.voice.setDeaf(false).catch(() => null);
-    return ok(message, `Undeafened **${target.user.tag}**`);
+    return ok(message, `Undeafened **${target.user.username}**`);
   }
 
   // ,vckick <@user>
@@ -4261,7 +4256,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     if (!target.voice.channel) return err(message, "User is not in a voice channel.");
     await target.voice.disconnect().catch(() => null);
-    return ok(message, `kicked **${target.user.tag}** from voice`);
+    return ok(message, `kicked **${target.user.username}** from voice`);
   }
 
   // ,vcmove <@user> <#channel>
@@ -4272,7 +4267,7 @@ client.on("messageCreate", async (message) => {
     if (!target || !channel) return err(message, "missing required argument");
 
     await target.voice.setChannel(channel).catch(() => null);
-    return ok(message, `Moved **${target.user.tag}** to ${channel}`);
+    return ok(message, `Moved **${target.user.username}** to ${channel}`);
   }
 
   // ,vcmuteall — mute everyone in a voice channel
@@ -4348,7 +4343,7 @@ client.on("messageCreate", async (message) => {
     const invites = await message.guild.invites.fetch().catch(() => null);
     if (!invites || invites.size === 0) return message.reply("No active invites.");
     const sorted = invites.sort((a, b) => (b.uses || 0) - (a.uses || 0));
-    const list = sorted.map(i => `**discord.gg/${i.code}** — ${i.inviter?.tag || "Unknown"} | ${i.uses} uses | expires: ${i.maxAge ? `${i.maxAge / 3600}h` : "never"}`).slice(0, 15).join("\n");
+    const list = sorted.map(i => `**discord.gg/${i.code}** — ${i.inviter?.username || "Unknown"} | ${i.uses} uses | expires: ${i.maxAge ? `${i.maxAge / 3600}h` : "never"}`).slice(0, 15).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `📨 Invites (${invites.size})`, description: list }] });
   }
 
@@ -4400,7 +4395,7 @@ client.on("messageCreate", async (message) => {
     let count = 0;
     for (const id of ids) {
       recentBoosters.delete(id);
-      await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.tag}` }).catch(() => {});
+      await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.username}` }).catch(() => {});
       count++;
     }
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** users.` }] });
@@ -4413,7 +4408,7 @@ client.on("messageCreate", async (message) => {
     if (targets.length === 0) return err(message, "missing required argument");
 
     message.reply({ embeds: [{ color: PINK, description: `🌸 Kicking **${targets.length}** users...` }] });
-    for (const t of targets) await t.kick(`[Masskick] by ${message.author.tag}`).catch(() => {});
+    for (const t of targets) await t.kick(`[Masskick] by ${message.author.username}`).catch(() => {});
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Kicked **${targets.length}** users.` }] });
   }
 
@@ -4455,9 +4450,9 @@ client.on("messageCreate", async (message) => {
 
     const key = `${message.guild.id}-${target.id}`;
     const list = notes.get(key) || [];
-    list.push({ text, mod: message.author.tag, date: new Date().toLocaleDateString() });
+    list.push({ text, mod: message.author.username, date: new Date().toLocaleDateString() });
     notes.set(key, list);
-    return ok(message, `Note added for **${target.tag}**`);
+    return ok(message, `Note added for **${target.username}**`);
   }
 
   // ,notes <@user> — view notes
@@ -4466,8 +4461,8 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     const list = notes.get(`${message.guild.id}-${target.id}`) || [];
-    if (list.length === 0) return info(message, `no notes for **${target.tag}**.`);
-    return message.reply({ embeds: [{ color: PINK, title: `📋 Notes: ${target.tag}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
+    if (list.length === 0) return info(message, `no notes for **${target.username}**.`);
+    return message.reply({ embeds: [{ color: PINK, title: `📋 Notes: ${target.username}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
   }
 
   // ,clearnotes <@user>
@@ -4476,7 +4471,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     notes.delete(`${message.guild.id}-${target.id}`);
-    return ok(message, `Cleared notes for **${target.tag}**`);
+    return ok(message, `Cleared notes for **${target.username}**`);
   }
 
   // ,moved <@user> <#channel> — move user messages context (just informs)
@@ -4486,7 +4481,7 @@ client.on("messageCreate", async (message) => {
     const channel = message.mentions.channels.first();
     if (!target || !channel) return err(message, "missing required argument");
 
-    return info(message, `**${target.tag}** please continue in ${channel}`);
+    return info(message, `**${target.username}** please continue in ${channel}`);
   }
 
   // ,report <@user> <reason> — report a user to mods
@@ -4498,9 +4493,9 @@ client.on("messageCreate", async (message) => {
     const logChId = modlogChannel.get(message.guild.id);
     if (logChId) {
       const logCh = message.guild.channels.cache.get(logChId);
-      if (logCh) await logCh.send({ embeds: [{ color: PINK, title: "📢 User Report", fields: [{ name: "Reported User", value: target.tag, inline: true }, { name: "Reported By", value: message.author.tag, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: reason }], timestamp: new Date() }] });
+      if (logCh) await logCh.send({ embeds: [{ color: PINK, title: "📢 User Report", fields: [{ name: "Reported User", value: target.username, inline: true }, { name: "Reported By", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: reason }], timestamp: new Date() }] });
     }
-    return ok(message, `Report submitted for **${target.tag}**`);
+    return ok(message, `Report submitted for **${target.username}**`);
   }
 });
 
@@ -4692,9 +4687,9 @@ setInterval(async () => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   const guildId = message.guild.id;
 
@@ -4772,9 +4767,9 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     const userCases = [...cases.entries()].filter(([k, v]) => k.startsWith(guildId) && v.userId === target.id).map(([, v]) => v);
-    if (userCases.length === 0) return ok(message, `**${target.tag}** has no cases.`);
+    if (userCases.length === 0) return ok(message, `**${target.username}** has no cases.`);
     const lines = userCases.map(c => `**#${c.id}** ${c.type} — ${c.reason} (${c.date.split("T")[0]})`).join("\n");
-    return message.reply({ embeds: [{ color: PINK, title: `Cases: ${target.tag}`, description: lines.substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Cases: ${target.username}`, description: lines.substring(0, 4096) }] });
   }
 
   // ,editcase <id> <new reason>
@@ -5183,7 +5178,7 @@ client.on("messageCreate", async (message) => {
       const members = await message.guild.members.fetch();
       const list = members.filter(m => birthdayData.has(m.id)).map(m => {
         const bd = birthdayData.get(m.id);
-        return `${m.user.tag} — **${bd.day}/${bd.month}**`;
+        return `${m.user.username} — **${bd.day}/${bd.month}**`;
       }).slice(0, 20);
       if (list.length === 0) return message.reply("No birthdays set.");
       return message.reply({ embeds: [{ color: PINK, title: "🎂 Birthdays", description: list.join("\n") }] });
@@ -5196,12 +5191,12 @@ client.on("messageCreate", async (message) => {
         return bd && bd.day === now.getDate() && bd.month === now.getMonth() + 1;
       });
       if (today.size === 0) return message.reply("🎂 No birthdays today.");
-      return info(message, `Today's birthdays: ${today.map(m => m.user.tag).join(", ")}`);
+      return info(message, `Today's birthdays: ${today.map(m => m.user.username).join(", ")}`);
     }
     const target = message.mentions.users.first() || message.author;
     const bd = birthdayData.get(target.id);
-    if (!bd) return err(message, `**${target.tag}** hasn't set their birthday.`);
-    return info(message, `**${target.tag}**'s birthday: **${bd.day}/${bd.month}**`);
+    if (!bd) return err(message, `**${target.username}** hasn't set their birthday.`);
+    return info(message, `**${target.username}**'s birthday: **${bd.day}/${bd.month}**`);
   }
 
   // ── FAKE PERMISSIONS ──────────────────────────────────
@@ -5251,11 +5246,11 @@ client.on("messageCreate", async (message) => {
     const set = ignoreList.get(guildId) || new Set();
     if (set.has(target.id)) {
       set.delete(target.id);
-      return ok(message, `**${target.tag}** is no longer ignored.`);
+      return ok(message, `**${target.username}** is no longer ignored.`);
     }
     set.add(target.id);
     ignoreList.set(guildId, set);
-    return ok(message, `Bot will now ignore **${target.tag}**`);
+    return ok(message, `Bot will now ignore **${target.username}**`);
   }
 
   // ,ignorelist
@@ -5360,7 +5355,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || message.member;
     const perms = message.channel.permissionsFor(target);
     const allowed = perms?.toArray().join(", ") || "None";
-    return message.reply({ embeds: [{ color: PINK, title: `Permissions: ${target.user.tag}`, description: allowed.substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Permissions: ${target.user.username}`, description: allowed.substring(0, 4096) }] });
   }
 
   // ,shared <userId> — mutual servers (can only check if user in cache)
@@ -5373,13 +5368,13 @@ client.on("messageCreate", async (message) => {
   // ,joined <@user> — when did user join
   if (command === "joined") {
     const target = message.mentions.members.first() || message.member;
-    return info(message, `**${target.user.tag}** joined <t:${Math.floor(target.joinedTimestamp / 1000)}:R>`);
+    return info(message, `**${target.user.username}** joined <t:${Math.floor(target.joinedTimestamp / 1000)}:R>`);
   }
 
   // ,created <@user> — when was account created
   if (command === "created") {
     const target = message.mentions.users.first() || message.author;
-    return info(message, `**${target.tag}** account created <t:${Math.floor(target.createdTimestamp / 1000)}:R>`);
+    return info(message, `**${target.username}** account created <t:${Math.floor(target.createdTimestamp / 1000)}:R>`);
   }
 
   // ,mutual — check mutual servers with a user
@@ -5389,7 +5384,7 @@ client.on("messageCreate", async (message) => {
 
     const mutual = client.guilds.cache.filter(g => g.members.cache.has(target.id));
     if (mutual.size === 0) return message.reply("No mutual servers.");
-    return info(message, `**${mutual.size}** mutual servers with **${target.tag}**: ${mutual.map(g => g.name).join(", ")}`);
+    return info(message, `**${mutual.size}** mutual servers with **${target.username}**: ${mutual.map(g => g.name).join(", ")}`);
   }
 
   // ── UTILITY EXTRAS ────────────────────────────────────
@@ -5510,6 +5505,7 @@ client.on("messageCreate", async (message) => {
 
   // ,define <word>
   if (command === "define") {
+    await message.channel.sendTyping().catch(() => {});
     const word = args[1];
     if (!word) return err(message, "missing required argument");
 
@@ -5526,6 +5522,7 @@ client.on("messageCreate", async (message) => {
 
   // ,translate <lang> <text>
   if (command === "translate") {
+    await message.channel.sendTyping().catch(() => {});
     const lang = args[1];
     const text = args.slice(2).join(" ");
     if (!lang || !text) return err(message, "missing required argument");
@@ -5557,15 +5554,17 @@ client.on("messageCreate", async (message) => {
 
   // ,meme — random meme
   if (command === "meme") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://meme-api.com/gimme");
       const data = await res.json();
-      return message.reply({ embeds: [{ color: PINK, title: data.title, image: { url: data.url }, footer: { text: `👍 ${data.ups} | r/${data.subreddit}` } }] });
+      return message.reply({ embeds: [{ color: PINK, title: data.title, image: { url: data.url }, footer: { text: `👍 ${data.ups} | r/${data.subreddit} • ${message.guild.name}` } }] });
     } catch { return err(message, "Could not fetch meme."); }
   }
 
   // ,joke — random joke
   if (command === "joke") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://official-joke-api.appspot.com/random_joke");
       const data = await res.json();
@@ -5575,6 +5574,7 @@ client.on("messageCreate", async (message) => {
 
   // ,fact — random fact
   if (command === "fact") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://uselessfacts.jsph.pl/api/v2/facts/random?language=en");
       const data = await res.json();
@@ -5584,15 +5584,17 @@ client.on("messageCreate", async (message) => {
 
   // ,quote — random quote
   if (command === "quote") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://api.quotable.io/random");
       const data = await res.json();
-      return message.reply({ embeds: [{ color: PINK, description: `*"${data.content}"*\n— **${data.author}**` }] });
+      return info(message, `*"${data.content}"*\n— **${data.author}**`);
     } catch { return err(message, "Could not fetch quote."); }
   }
 
   // ,catfact
   if (command === "catfact") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://catfact.ninja/fact");
       const data = await res.json();
@@ -5602,6 +5604,7 @@ client.on("messageCreate", async (message) => {
 
   // ,dogfact
   if (command === "dogfact") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://dog-api.kinduff.com/api/facts");
       const data = await res.json();
@@ -5611,6 +5614,7 @@ client.on("messageCreate", async (message) => {
 
   // ,cat — random cat image
   if (command === "cat") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://api.thecatapi.com/v1/images/search");
       const data = await res.json();
@@ -5620,6 +5624,7 @@ client.on("messageCreate", async (message) => {
 
   // ,dog — random dog image
   if (command === "dog") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://dog.ceo/api/breeds/image/random");
       const data = await res.json();
@@ -5629,6 +5634,7 @@ client.on("messageCreate", async (message) => {
 
   // ,fox — random fox image
   if (command === "fox") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://randomfox.ca/floof/");
       const data = await res.json();
@@ -5638,6 +5644,7 @@ client.on("messageCreate", async (message) => {
 
   // ,duck — random duck image
   if (command === "duck") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://random-d.uk/api/v2/random");
       const data = await res.json();
@@ -5647,6 +5654,7 @@ client.on("messageCreate", async (message) => {
 
   // ,panda
   if (command === "panda") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://some-random-api.com/animal/panda");
       const data = await res.json();
@@ -5666,7 +5674,7 @@ client.on("messageCreate", async (message) => {
       "Lose all your money or all your memories?",
     ];
     const q = questions[Math.floor(Math.random() * questions.length)];
-    const msg = await message.reply({ embeds: [{ color: PINK, description: `🌸 **Would you rather...** ${q}` }] });
+    const msg = await message.reply({ embeds: [{ color: PINK, title: "Would you rather...", description: q, footer: { text: message.guild.name } }] });
     await msg.react("1️⃣");
     await msg.react("2️⃣");
   }
@@ -5762,7 +5770,7 @@ client.on("messageCreate", async (message) => {
     const guildId2 = args[0]; // not used here, but for structure
     // Notify owner
     const owner = await client.users.fetch(message.guild?.ownerId || OWNER_ID).catch(() => null);
-    if (owner) await owner.send({ embeds: [{ color: PINK, title: "📨 Ban Appeal", fields: [{ name: "User", value: `${message.author.tag} (${message.author.id})` }, { name: "Reason", value: reason }], timestamp: new Date() }] }).catch(() => {});
+    if (owner) await owner.send({ embeds: [{ color: PINK, title: "📨 Ban Appeal", fields: [{ name: "User", value: `${message.author.username} (${message.author.id})` }, { name: "Reason", value: reason }], timestamp: new Date() }] }).catch(() => {});
     return ok(message, "Your appeal has been submitted.");
   }
 });
@@ -5791,9 +5799,9 @@ const logEvents = new Map();          // guildId-event => channelId
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   const guildId = message.guild.id;
 
@@ -5847,7 +5855,7 @@ client.on("messageCreate", async (message) => {
       const content = args.slice(3).join(" ");
       if (!name || !content) return err(message, "missing required argument");
 
-      tagData.set(`${guildId}-${name}`, { content, author: message.author.tag });
+      tagData.set(`${guildId}-${name}`, { content, author: message.author.username });
       return ok(message, `Tag **${name}** created.`);
     }
     if (sub === "delete" || sub === "remove") {
@@ -5879,7 +5887,7 @@ client.on("messageCreate", async (message) => {
     const name = sub;
     const tag = tagData.get(`${guildId}-${name}`);
     if (!tag) return err(message, `Tag **${name}** not found.`);
-    return message.channel.send(tag.content.replace("{user}", message.author.toString()));
+    return message.channel.send(tag.content.replace("{user}", message.author.toString())).catch(() => null);
   }
 
   // ── TODO LIST ────────────────────────────────────────
@@ -5949,6 +5957,7 @@ client.on("messageCreate", async (message) => {
 
   // ,serverstats — detailed server statistics
   if (command === "serverstats") {
+    await message.channel.sendTyping().catch(() => {});
     const g = message.guild;
     const members = await g.members.fetch();
     const bots = members.filter(m => m.user.bot).size;
@@ -5971,6 +5980,7 @@ client.on("messageCreate", async (message) => {
 
   // ,joincount — how many people joined today
   if (command === "joincount") {
+    await message.channel.sendTyping().catch(() => {});
     const members = await message.guild.members.fetch();
     const today = Date.now() - 86400000;
     const recent = members.filter(m => m.joinedTimestamp > today).size;
@@ -5999,11 +6009,11 @@ client.on("messageCreate", async (message) => {
     if (!query) return err(message, "missing required argument");
 
     const members = message.guild.members.cache.filter(m =>
-      m.user.tag.toLowerCase().includes(query) ||
+      m.user.username.toLowerCase().includes(query) ||
       m.nickname?.toLowerCase().includes(query)
     ).first(10);
     if (!members || (Array.isArray(members) ? members.length === 0 : members.size === 0)) return err(message, "No members found.");
-    const list = (Array.isArray(members) ? members : [...members.values()]).map(m => `${m.user.tag} (${m.id})`).join("\n");
+    const list = (Array.isArray(members) ? members : [...members.values()]).map(m => `${m.user.username} (${m.id})`).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Search: "${query}"`, description: list }] });
   }
 
@@ -6018,19 +6028,19 @@ client.on("messageCreate", async (message) => {
   if (command === "admins") {
     const admins = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot);
     if (admins.size === 0) return message.reply("No admins found.");
-    return message.reply({ embeds: [{ color: PINK, title: `👑 Admins (${admins.size})`, description: admins.map(m => m.user.tag).join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: `👑 Admins (${admins.size})`, description: admins.map(m => m.user.username).join("\n") }] });
   }
 
   // ,mods — list members with ban/kick permissions
   if (command === "mods") {
     const mods = message.guild.members.cache.filter(m => (m.permissions.has(PermissionFlagsBits.BanMembers) || m.permissions.has(PermissionFlagsBits.KickMembers)) && !m.user.bot && !m.permissions.has(PermissionFlagsBits.Administrator));
-    return message.reply({ embeds: [{ color: PINK, title: `🛡️ Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.tag).join("\n") : "None" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `🛡️ Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.username).join("\n") : "None" }] });
   }
 
   // ,bots — list all bots in server
   if (command === "bots") {
     const bots = message.guild.members.cache.filter(m => m.user.bot);
-    return message.reply({ embeds: [{ color: PINK, title: `🤖 Bots (${bots.size})`, description: bots.map(m => m.user.tag).join("\n").substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `🤖 Bots (${bots.size})`, description: bots.map(m => m.user.username).join("\n").substring(0, 4096) }] });
   }
 
   // ── VOICE MANAGEMENT ──────────────────────────────────
@@ -6039,7 +6049,7 @@ client.on("messageCreate", async (message) => {
   if (command === "voicelist" || command === "vc") {
     const vcs = message.guild.channels.cache.filter(c => c.type === 2 && c.members.size > 0);
     if (vcs.size === 0) return message.reply("🔇 No one is in a voice channel.");
-    const desc = vcs.map(c => `**${c.name}** (${c.members.size})\n${c.members.map(m => `  └ ${m.user.tag}`).join("\n")}`).join("\n\n");
+    const desc = vcs.map(c => `**${c.name}** (${c.members.size})\n${c.members.map(m => `  └ ${m.user.username}`).join("\n")}`).join("\n\n");
     return message.reply({ embeds: [{ color: PINK, title: "🔊 Voice Channels", description: desc.substring(0, 4096) }] });
   }
 
@@ -6111,6 +6121,7 @@ client.on("messageCreate", async (message) => {
 
   // ,pins — list pinned messages count
   if (command === "pins") {
+    await message.channel.sendTyping().catch(() => {});
     const pins = await message.channel.messages.fetchPinned().catch(() => null);
     if (!pins) return err(message, "Could not fetch pins.");
     return info(message, `**${pins.size}** pinned messages in this channel`);
@@ -6176,7 +6187,7 @@ client.on("messageCreate", async (message) => {
 
       if (!message.channel.isThread()) return err(message, "Not in a thread.");
       await message.channel.members.add(target.id).catch(() => null);
-      return ok(message, `Added **${target.user.tag}** to thread.`);
+      return ok(message, `Added **${target.user.username}** to thread.`);
     }
     if (sub === "remove") {
       const target = message.mentions.members.first();
@@ -6184,7 +6195,7 @@ client.on("messageCreate", async (message) => {
 
       if (!message.channel.isThread()) return err(message, "Not in a thread.");
       await message.channel.members.remove(target.id).catch(() => null);
-      return ok(message, `Removed **${target.user.tag}** from thread.`);
+      return ok(message, `Removed **${target.user.username}** from thread.`);
     }
   }
 
@@ -6276,14 +6287,14 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     const hist = muteHistory.get(`${guildId}-${target.id}`) || [];
-    if (hist.length === 0) return ok(message, `**${target.tag}** has no mute history.`);
-    return message.reply({ embeds: [{ color: PINK, title: `Mute History: ${target.tag}`, description: hist.map((h, i) => `**${i+1}.** ${h.duration} — ${h.reason} (${h.mod})`).join("\n") }] });
+    if (hist.length === 0) return ok(message, `**${target.username}** has no mute history.`);
+    return message.reply({ embeds: [{ color: PINK, title: `Mute History: ${target.username}`, description: hist.map((h, i) => `**${i+1}.** ${h.duration} — ${h.reason} (${h.mod})`).join("\n") }] });
   }
 
   // ,stafflist — list all staff (admin + mod)
   if (command === "stafflist") {
     const staff = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.ModerateMembers) && !m.user.bot);
-    return message.reply({ embeds: [{ color: PINK, title: `👮 Staff (${staff.size})`, description: staff.map(m => `${m.user.tag} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `👮 Staff (${staff.size})`, description: staff.map(m => `${m.user.username} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
   }
 
   // ,slowmodechannel <#channel> <seconds>
@@ -6373,7 +6384,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     await target.setNickname(null).catch(() => null);
-    return ok(message, `Reset nickname for **${target.user.tag}**`);
+    return ok(message, `Reset nickname for **${target.user.username}**`);
   }
 
   // ,resetallnicks — reset all nicknames
@@ -6450,7 +6461,7 @@ client.on("messageCreate", async (message) => {
     const user = message.mentions.users.first();
     const role = message.mentions.roles.first();
     const ch = message.mentions.channels.first();
-    if (user) return info(message, `**${user.tag}** — \`${user.id}\``);
+    if (user) return info(message, `**${user.username}** — \`${user.id}\``);
     if (role) return info(message, `**${role.name}** — \`${role.id}\``);
     if (ch) return info(message, `**${ch.name}** — \`${ch.id}\``);
     return info(message, `your ID: \`${message.author.id}\` | server: \`${guildId}\` | channel: \`${message.channel.id}\``);
@@ -6459,16 +6470,17 @@ client.on("messageCreate", async (message) => {
   // ,icon [user]
   if (command === "icon") {
     const target = message.mentions.users.first() || message.author;
-    return message.reply({ embeds: [{ color: PINK, title: `${target.tag}'s Avatar`, image: { url: target.displayAvatarURL({ size: 1024, dynamic: true }) } }] });
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, image: { url: target.displayAvatarURL({ size: 1024, dynamic: true }) }, footer: { text: message.guild.name } }] });
   }
 
   // ,banner [user]
   if (command === "banner") {
+    await message.channel.sendTyping().catch(() => {});
     const target = await client.users.fetch(message.mentions.users.first()?.id || message.author.id, { force: true }).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     const url = target.bannerURL({ size: 1024 });
-    if (!url) return err(message, "No banner found.");
-    return message.reply({ embeds: [{ color: PINK, title: `${target.tag}'s Banner`, image: { url } }] });
+    if (!url) return info(message, `**${target.username}** has no banner`);
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, image: { url }, footer: { text: message.guild.name } }] });
   }
 
   // ,hex <color> — convert color name to hex
@@ -6500,7 +6512,7 @@ client.on("messageCreate", async (message) => {
 
     const members = message.guild.members.cache.filter(m => m.user.discriminator === discrim);
     if (members.size === 0) return info(message, `no members with discriminator **#${discrim}**`);
-    return message.reply({ embeds: [{ color: PINK, title: `Users with #${discrim}`, description: members.map(m => m.user.tag).join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Users with #${discrim}`, description: members.map(m => m.user.username).join("\n") }] });
   }
 
   // ,copycat <@user> — mimic a user's name and avatar for a webhook message
@@ -6557,7 +6569,7 @@ client.on("messageCreate", async (message) => {
     if (!target || isNaN(amount)) return err(message, "missing required argument");
 
     economy.set(target.id, (economy.get(target.id) || 0) + amount);
-    return ok(message, `Gave **${amount} coins** to **${target.tag}**`);
+    return ok(message, `Gave **${amount} coins** to **${target.username}**`);
   }
 
   // ,take <@user> <amount>
@@ -6569,7 +6581,7 @@ client.on("messageCreate", async (message) => {
 
     const bal = economy.get(target.id) || 0;
     economy.set(target.id, Math.max(0, bal - amount));
-    return ok(message, `Took **${amount} coins** from **${target.tag}**`);
+    return ok(message, `Took **${amount} coins** from **${target.username}**`);
   }
 
   // ,resetbal <@user>
@@ -6579,7 +6591,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument");
 
     economy.set(target.id, 0);
-    return ok(message, `Reset **${target.tag}**'s balance.`);
+    return ok(message, `Reset **${target.username}**'s balance.`);
   }
 
   // ,setbal <@user> <amount>
@@ -6590,7 +6602,7 @@ client.on("messageCreate", async (message) => {
     if (!target || isNaN(amount)) return err(message, "missing required argument");
 
     economy.set(target.id, amount);
-    return ok(message, `Set **${target.tag}**'s balance to **${amount}**`);
+    return ok(message, `Set **${target.username}**'s balance to **${amount}**`);
   }
 
   // ,work — earn coins by working
@@ -6656,7 +6668,7 @@ client.on("messageCreate", async (message) => {
 
   // ,shop — show economy shop
   if (command === "shop") {
-    return message.reply({ embeds: [{ color: PINK, title: "🛒 Shop", description: "Shop items coming soon! Use `,work` `,daily` `,crime` to earn coins." }] });
+    return info(message, "shop coming soon! Use `,work` `,daily` `,crime` to earn coins");
   }
 
   // ── FUN EXTRAS ────────────────────────────────────────
@@ -6679,7 +6691,8 @@ client.on("messageCreate", async (message) => {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
 
-    return message.channel.send(`||${text}||`);
+    message.delete().catch(() => {});
+    return message.channel.send(`||${text}||`).catch(() => null);
   }
 
   // ,zalgo <text>
@@ -6723,8 +6736,8 @@ client.on("messageCreate", async (message) => {
     const msg = await message.channel.send(`⏳ **${n}**`);
     let current = n - 1;
     const interval = setInterval(async () => {
-      if (current <= 0) { clearInterval(interval); await msg.edit("🎉 **GO!**"); return; }
-      await msg.edit(`⏳ **${current}**`);
+      if (current <= 0) { clearInterval(interval); await msg.edit({ embeds: [{ color: PINK, description: "🎉 **GO!**" }] }).catch(() => {}); return; }
+      await msg.edit({ embeds: [{ color: PINK, description: `⏳ **${current}**` }] }).catch(() => { clearInterval(interval); });
       current--;
     }, 1000);
   }
@@ -6750,31 +6763,36 @@ client.on("messageCreate", async (message) => {
   // ,bold <text>
   if (command === "bold") {
     const text = args.slice(1).join(" ");
-    return message.channel.send(`**${text}**`);
+    message.delete().catch(() => {});
+    return message.channel.send(`**${text}**`).catch(() => null);
   }
 
   // ,italic <text>
   if (command === "italic") {
     const text = args.slice(1).join(" ");
-    return message.channel.send(`*${text}*`);
+    message.delete().catch(() => {});
+    return message.channel.send(`*${text}*`).catch(() => null);
   }
 
   // ,strikethrough <text>
   if (command === "strikethrough") {
     const text = args.slice(1).join(" ");
-    return message.channel.send(`~~${text}~~`);
+    message.delete().catch(() => {});
+    return message.channel.send(`~~${text}~~`).catch(() => null);
   }
 
   // ,underline <text>
   if (command === "underline") {
     const text = args.slice(1).join(" ");
-    return message.channel.send(`__${text}__`);
+    message.delete().catch(() => {});
+    return message.channel.send(`__${text}__`).catch(() => null);
   }
 
   // ,codeblock <text>
   if (command === "codeblock") {
     const text = args.slice(1).join(" ");
-    return message.channel.send(`\`\`\`\n${text}\n\`\`\``);
+    message.delete().catch(() => {});
+    return message.channel.send(`\`\`\`\n${text}\n\`\`\``).catch(() => null);
   }
 
   // ,repeat <n> <text>
@@ -6853,6 +6871,7 @@ client.on("messageCreate", async (message) => {
 
   // ,news — latest Discord status
   if (command === "news") {
+    await message.channel.sendTyping().catch(() => {});
     try {
       const res = await fetch("https://discordstatus.com/api/v2/status.json");
       const data = await res.json();
@@ -6871,7 +6890,7 @@ client.on("messageCreate", async (message) => {
   if (command === "accountage") {
     const target = message.mentions.users.first() || message.author;
     const days = Math.floor((Date.now() - target.createdTimestamp) / 86400000);
-    return info(message, `**${target.tag}**'s account is **${days} days** old`);
+    return info(message, `**${target.username}**'s account is **${days} days** old`);
   }
 
   // ,invitebot — get bot invite link
@@ -6886,7 +6905,7 @@ client.on("messageCreate", async (message) => {
 
   // ,source — show bot source info
   if (command === "source") {
-    return message.reply({ embeds: [{ color: PINK, title: "📦 Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }] }] });
+    return message.reply({ embeds: [{ color: PINK, title: "📦 Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }], footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ,shards — shard info
@@ -7007,9 +7026,9 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
   if (command === "whitelistcheck") {
@@ -7030,8 +7049,8 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
     const ms = parseInt(match[1]) * units[match[2]];
     await target.roles.add(role).catch(() => null);
-    ok(message, `✅ Gave **${role.name}** to **${target.user.tag}** for **${timeStr}**`);
-    setTimeout(async () => { await target.roles.remove(role).catch(() => {}); message.channel.send(`⏰ Removed **${role.name}** from **${target.user.tag}**`).catch(() => {}); }, ms);
+    ok(message, `✅ Gave **${role.name}** to **${target.user.username}** for **${timeStr}**`);
+    setTimeout(async () => { await target.roles.remove(role).catch(() => {}); message.channel.send(`⏰ Removed **${role.name}** from **${target.user.username}**`).catch(() => {}); }, ms);
   }
   if (command === "muterole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -7049,7 +7068,7 @@ client.on("messageCreate", async (message) => {
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (!role) return err(message, "No 'Image Muted' role. Run `,setupmute` first.");
     await target.roles.add(role).catch(() => null);
-    return ok(message, `Image muted **${target.user.tag}**`);
+    return ok(message, `Image muted **${target.user.username}**`);
   }
   if (command === "reactionmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
@@ -7059,21 +7078,21 @@ client.on("messageCreate", async (message) => {
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "reaction muted");
     if (!role) return err(message, "No 'Reaction Muted' role. Run `,setupmute` first.");
     await target.roles.add(role).catch(() => null);
-    return ok(message, `Reaction muted **${target.user.tag}**`);
+    return ok(message, `Reaction muted **${target.user.username}**`);
   }
   if (command === "reactionunmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "reaction muted");
     if (target && role) await target.roles.remove(role).catch(() => null);
-    return ok(message, `Reaction unmuted **${target?.user.tag}**`);
+    return ok(message, `Reaction unmuted **${target?.user.username}**`);
   }
   if (command === "imageunmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
     const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
     if (target && role) await target.roles.remove(role).catch(() => null);
-    return ok(message, `Image unmuted **${target?.user.tag}**`);
+    return ok(message, `Image unmuted **${target?.user.username}**`);
   }
   if (command === "serverrules") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -7088,24 +7107,24 @@ client.on("messageCreate", async (message) => {
 
     const invite = await client.fetchInvite(code).catch(() => null);
     if (!invite) return err(message, "Invite not found.");
-    return message.reply({ embeds: [{ color: PINK, title: `Invite: ${code}`, fields: [{ name: "Server", value: invite.guild?.name || "Unknown", inline: true }, { name: "Channel", value: invite.channel?.name || "Unknown", inline: true }, { name: "Uses", value: `${invite.uses ?? "?"}`, inline: true }, { name: "Inviter", value: invite.inviter?.tag || "Unknown", inline: true }, { name: "Max Uses", value: `${invite.maxUses || "∞"}`, inline: true }, { name: "Expires", value: invite.expiresAt ? `<t:${Math.floor(invite.expiresAt.getTime()/1000)}:R>` : "Never", inline: true }] }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Invite: ${code}`, fields: [{ name: "Server", value: invite.guild?.name || "Unknown", inline: true }, { name: "Channel", value: invite.channel?.name || "Unknown", inline: true }, { name: "Uses", value: `${invite.uses ?? "?"}`, inline: true }, { name: "Inviter", value: invite.inviter?.username || "Unknown", inline: true }, { name: "Max Uses", value: `${invite.maxUses || "∞"}`, inline: true }, { name: "Expires", value: invite.expiresAt ? `<t:${Math.floor(invite.expiresAt.getTime()/1000)}:R>` : "Never", inline: true }] }] });
   }
   if (command === "memberpos") {
     const target = message.mentions.members.first() || message.member;
     const members = (await message.guild.members.fetch()).sort((a, b) => a.joinedTimestamp - b.joinedTimestamp);
     const pos = [...members.values()].findIndex(m => m.id === target.id) + 1;
-    return info(message, `**${target.user.tag}** is member **#${pos}** to join`);
+    return info(message, `**${target.user.username}** is member **#${pos}** to join`);
   }
   if (command === "permissions2") {
     const target = message.mentions.members.first() || message.member;
     const perms = target.permissions.toArray();
-    return message.reply({ embeds: [{ color: PINK, title: `All Permissions: ${target.user.tag}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `All Permissions: ${target.user.username}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
   }
   if (command === "channelpermissions") {
     const ch = message.mentions.channels.first() || message.channel;
     const target = message.mentions.members.first() || message.member;
     const perms = ch.permissionsFor(target)?.toArray() || [];
-    return message.reply({ embeds: [{ color: PINK, title: `Channel Perms: ${target.user.tag} in #${ch.name}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Channel Perms: ${target.user.username} in #${ch.name}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
   }
   if (command === "guildicon") {
     const url = message.guild.iconURL({ size: 2048, dynamic: true });
@@ -7133,7 +7152,7 @@ client.on("messageCreate", async (message) => {
     if (target.permissions.has(PermissionFlagsBits.KickMembers)) dangerous.push("Kick Members");
     if (target.permissions.has(PermissionFlagsBits.ManageGuild)) dangerous.push("Manage Server");
     if (target.permissions.has(PermissionFlagsBits.ManageRoles)) dangerous.push("Manage Roles");
-    return message.reply({ embeds: [{ color: PINK, title: `⚠️ Key Perms: ${target.user.tag}`, description: dangerous.length > 0 ? dangerous.join(", ") : "No dangerous permissions" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `⚠️ Key Perms: ${target.user.username}`, description: dangerous.length > 0 ? dangerous.join(", ") : "No dangerous permissions" }] });
   }
   if (command === "vcrename") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
@@ -7161,7 +7180,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument");
 
     afkUsers.delete(`${message.guild.id}-${target.id}`);
-    return ok(message, `Removed AFK from **${target.tag}**`);
+    return ok(message, `Removed AFK from **${target.username}**`);
   }
   if (command === "censor") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -7208,7 +7227,7 @@ client.on("messageCreate", async (message) => {
   if (command === "export") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgs = await message.channel.messages.fetch({ limit: 100 });
-    const text = msgs.reverse().map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content}`).join("\n");
+    const text = msgs.reverse().map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.username}: ${m.content}`).join("\n");
     await message.author.send(`📥 Chat log from #${message.channel.name} sent!`).catch(() => err(message, "Could not DM you."));
     return ok(message, "Chat log sent to your DMs.");
   }
@@ -7233,7 +7252,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ViewAuditLog)) return err(message, "Missing permissions.");
     const logs = await message.guild.fetchAuditLogs({ limit: 5 }).catch(() => null);
     if (!logs) return err(message, "Could not fetch audit logs.");
-    const lines = [...logs.entries.values()].map(e => `**${e.action}** by ${e.executor?.tag || "Unknown"} — ${e.reason || "No reason"}`);
+    const lines = [...logs.entries.values()].map(e => `**${e.action}** by ${e.executor?.username || "Unknown"} — ${e.reason || "No reason"}`);
     return message.reply({ embeds: [{ color: PINK, title: "📋 Recent Audit Log", description: lines.join("\n") }] });
   }
   if (command === "clearreactions") {
@@ -7300,15 +7319,15 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (_handledMessages.has(message.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   if (command === "hackban2") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
     if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
-    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.tag}` }).catch(() => {});
+    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
     return ok(message, `hackbanned **${ids.length}** users`);
   }
   if (command === "modnick") {
@@ -7318,7 +7337,7 @@ client.on("messageCreate", async (message) => {
     const nick = args.slice(2).join(" ");
     if (!nick) return err(message, "missing required argument: **nick**\nusage: `,modnick @user <nick>`");
     await t.setNickname(nick).catch(() => null);
-    return ok(message, `nickname set to **${nick}** for **${t.user.tag}**`);
+    return ok(message, `nickname set to **${nick}** for **${t.user.username}**`);
   }
   if (command === "roleaddall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
@@ -7367,7 +7386,7 @@ client.on("messageCreate", async (message) => {
     const t = message.mentions.users.first();
     if (!t) return err(message, "missing required argument: **user**\nusage: `,unignore @user`");
     ignoreList.get(message.guild.id)?.delete(t.id);
-    return ok(message, `unignored **${t.tag}**`);
+    return ok(message, `unignored **${t.username}**`);
   }
   if (command === "staffrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
@@ -7410,6 +7429,5 @@ client.on("error", (error) => {
 });
 
 // Clean up handled messages cache every 30 seconds
-setInterval(() => _handledMessages.clear(), 30000);
 
 client.login(process.env.TOKEN);
