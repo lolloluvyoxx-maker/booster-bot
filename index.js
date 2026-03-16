@@ -543,6 +543,9 @@ client.once("ready", async () => {
   // Load all configs from Discord backup channel
   await loadAllConfigs();
 
+  // Re-register any open tickets from before restart
+  setTimeout(() => rehydrateTickets(), 3000);
+
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
@@ -3148,8 +3151,43 @@ client.on("messageCreate", async (message) => {
   // ,ticket setup <#log-channel>
 // ===== TICKET INACTIVITY MONITOR =====
 const TICKET_CATEGORY_ID = "1409003502826557560";
-const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, warned, closing }
+const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
 const ticketWarnings = new Map();    // channelId => warningMessageId
+
+// On startup: scan ticket category and re-register any open tickets
+async function rehydrateTickets() {
+  try {
+    for (const guild of client.guilds.cache.values()) {
+      const category = guild.channels.cache.get(TICKET_CATEGORY_ID);
+      if (!category) continue;
+      const ticketChannels = guild.channels.cache.filter(c => c.parentId === TICKET_CATEGORY_ID && c.type === 0);
+      for (const ch of ticketChannels.values()) {
+        if (ticketActivity.has(ch.id)) continue; // already tracked
+        // Fetch last message to find creator and last activity
+        const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+        if (!msgs) continue;
+        // Creator is in openTickets map, or find first non-bot message
+        let creatorId = null;
+        for (const [key, chId] of openTickets.entries()) {
+          if (chId === ch.id) { creatorId = key.split('-')[1]; break; }
+        }
+        if (!creatorId) {
+          const firstHuman = [...msgs.values()].reverse().find(m => !m.author.bot);
+          if (firstHuman) creatorId = firstHuman.author.id;
+        }
+        if (!creatorId) continue;
+        // Last activity = last message FROM THE CREATOR only (mods writing doesn't reset timer)
+        const lastCreatorMsg = [...msgs.values()].find(m => m.author.id === creatorId);
+        // If creator never wrote, use channel creation time as baseline
+        const lastActivity = lastCreatorMsg ? lastCreatorMsg.createdTimestamp : ch.createdTimestamp;
+        ticketActivity.set(ch.id, { creatorId, guildId: guild.id, lastActivity, closing: false });
+        log(`Re-registered ticket ${ch.name} (last active: ${new Date(lastActivity).toLocaleTimeString()})`, "info");
+      }
+    }
+  } catch (e) {
+    log(`Ticket rehydration error: ${e.message}`, "error");
+  }
+}
 
 // Track activity in ticket channels — reset timer on ANY message from creator
 client.on("messageCreate", async (message) => {
@@ -3157,11 +3195,9 @@ client.on("messageCreate", async (message) => {
   const activity = ticketActivity.get(message.channel.id);
   if (!activity) return;
   if (message.author.id !== activity.creatorId) return;
-  if (activity.closing) return; // already closing, ignore
+  if (activity.closing) return;
 
-  // Reset timer
   activity.lastActivity = Date.now();
-  activity.warned = false;
   ticketActivity.set(message.channel.id, activity);
 
   // Delete warning message if exists
@@ -3173,16 +3209,15 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// Check every minute for inactive tickets (more precise than every 5min)
+// Check every minute for inactive tickets
 setInterval(async () => {
   const now = Date.now();
-
   for (const [channelId, activity] of ticketActivity.entries()) {
     if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
     if (elapsed < 3600000) continue; // less than 1 hour — skip
 
-    // Mark as closing immediately to prevent double-firing
+    // Mark closing immediately to prevent double-fire
     activity.closing = true;
     ticketActivity.set(channelId, activity);
 
@@ -3195,34 +3230,32 @@ setInterval(async () => {
       // DM the creator
       const creator = await client.users.fetch(activity.creatorId).catch(() => null);
       if (creator) {
-        creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** has been inactive for **1 hour** and has been closed.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+        creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** was closed after **1 hour** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
       }
 
-      // Send warning in channel
+      // Warn in channel then delete
       await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **1 hour** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
 
-      // Log to ticket log channel
+      // Log
       const cfg = ticketConfig.get(guild.id);
       if (cfg?.logChannelId) {
         const logCh = guild.channels.cache.get(cfg.logChannelId);
         if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** closed after **1 hour** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
       }
 
-      // Clean up maps
+      // Cleanup
       ticketActivity.delete(channelId);
       ticketWarnings.delete(channelId);
       for (const [key, chId] of openTickets.entries()) {
         if (chId === channelId) { openTickets.delete(key); break; }
       }
 
-      // Delete after 10 seconds
       setTimeout(() => ch.delete().catch(() => {}), 10000);
-
     } catch (e) {
       ticketActivity.delete(channelId);
     }
   }
-}, 60 * 1000); // check every minute
+}, 60 * 1000); // every minute
 
 
   if (command === "ticket") {
