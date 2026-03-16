@@ -1,4 +1,168 @@
 const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require("discord.js");
+const fs = require("fs");
+const path = require("path");
+
+// ===================================================
+// ===== PERSISTENCE SYSTEM (Discord-backed) =========
+// ===================================================
+// Saves config to a Discord channel so it survives Railway restarts
+const CONFIG_CHANNEL_ID = "1482107392463474921";
+const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";
+let _configMessageId = null; // cached message ID
+
+// Serializer — handles Map and Set
+function serialize(data) {
+  return JSON.stringify(data, (key, value) => {
+    if (value instanceof Set) return { __type: "Set", values: [...value] };
+    if (value instanceof Map) return { __type: "Map", entries: [...value.entries()] };
+    return value;
+  });
+}
+
+function deserialize(raw) {
+  return JSON.parse(raw, (key, value) => {
+    if (value?.__type === "Set") return new Set(value.values || []);
+    if (value?.__type === "Map") return new Map(value.entries || []);
+    return value;
+  });
+}
+
+// Build config snapshot to save
+function buildConfigSnapshot() {
+  return {
+    antiMinorsConfig,
+    antinukeConfig,
+    antiraidConfig,
+    autoroles,
+    welcomeConfig,
+    goodbyeConfig,
+    ticketConfig,
+    filterConfig,
+    modlogChannel,
+    levelingEnabled,
+    vanityLock,
+    muteRole,
+    birthdayChannel,
+    logEvents,
+    reactionRoles,
+    customCommands,
+    disabledCommands,
+    aliases,
+    reactionTriggers,
+    counters,
+    automodExempt,
+    warnThresholds,
+    userTimezones,
+  };
+}
+
+// Save all configs to Discord channel
+async function saveAllConfigs() {
+  try {
+    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
+    if (!ch) return;
+
+    const content = `\`\`\`json\n${CONFIG_MESSAGE_TAG}\n${serialize(buildConfigSnapshot())}\n\`\`\``;
+
+    if (_configMessageId) {
+      // Edit existing message
+      const msg = await ch.messages.fetch(_configMessageId).catch(() => null);
+      if (msg) {
+        await msg.edit(content).catch(() => {});
+        return;
+      }
+    }
+
+    // No existing message — find it or create new one
+    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    if (messages) {
+      const existing = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
+      if (existing) {
+        _configMessageId = existing.id;
+        await existing.edit(content).catch(() => {});
+        return;
+      }
+    }
+
+    // Create new message
+    const sent = await ch.send(content).catch(() => null);
+    if (sent) _configMessageId = sent.id;
+  } catch (e) {
+    console.error("[Config] Failed to save:", e.message);
+  }
+}
+
+// Load configs from Discord channel on startup
+async function loadAllConfigs() {
+  try {
+    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
+    if (!ch) { console.log("[Config] Config channel not found, starting fresh"); return; }
+
+    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    if (!messages) return;
+
+    const configMsg = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
+    if (!configMsg) { console.log("[Config] No saved config found, starting fresh"); return; }
+
+    _configMessageId = configMsg.id;
+
+    // Extract JSON from codeblock
+    const match = configMsg.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
+    if (!match) return;
+
+    const data = deserialize(match[1]);
+
+    // Restore each config — ensure Sets/Maps are valid
+    function restoreMap(saved, defaultVal) {
+      if (!saved) return defaultVal;
+      if (saved instanceof Map) return saved;
+      return defaultVal;
+    }
+
+    function ensureSetInMap(map) {
+      for (const [key, val] of map.entries()) {
+        if (val && typeof val === 'object') {
+          if (val.channels && !(val.channels instanceof Set)) val.channels = new Set(Array.isArray(val.channels) ? val.channels : []);
+          if (val.requireAttach && !(val.requireAttach instanceof Set)) val.requireAttach = new Set(Array.isArray(val.requireAttach) ? val.requireAttach : []);
+          if (val.whitelist && !(val.whitelist instanceof Set)) val.whitelist = new Set(Array.isArray(val.whitelist) ? val.whitelist : []);
+        }
+      }
+      return map;
+    }
+
+    if (data.antiMinorsConfig instanceof Map) { antiMinorsConfig.clear(); ensureSetInMap(data.antiMinorsConfig).forEach((v,k) => antiMinorsConfig.set(k,v)); }
+    if (data.antinukeConfig instanceof Map) { antinukeConfig.clear(); ensureSetInMap(data.antinukeConfig).forEach((v,k) => antinukeConfig.set(k,v)); }
+    if (data.antiraidConfig instanceof Map) { antiraidConfig.clear(); data.antiraidConfig.forEach((v,k) => antiraidConfig.set(k,v)); }
+    if (data.autoroles instanceof Map) { autoroles.clear(); data.autoroles.forEach((v,k) => autoroles.set(k,v)); }
+    if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
+    if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
+    if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
+    if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
+    if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
+    if (data.levelingEnabled instanceof Map) { levelingEnabled.clear(); data.levelingEnabled.forEach((v,k) => levelingEnabled.set(k,v)); }
+    if (data.vanityLock instanceof Map) { vanityLock.clear(); data.vanityLock.forEach((v,k) => vanityLock.set(k,v)); }
+    if (data.muteRole instanceof Map) { muteRole.clear(); data.muteRole.forEach((v,k) => muteRole.set(k,v)); }
+    if (data.birthdayChannel instanceof Map) { birthdayChannel.clear(); data.birthdayChannel.forEach((v,k) => birthdayChannel.set(k,v)); }
+    if (data.logEvents instanceof Map) { logEvents.clear(); data.logEvents.forEach((v,k) => logEvents.set(k,v)); }
+    if (data.reactionRoles instanceof Map) { reactionRoles.clear(); data.reactionRoles.forEach((v,k) => reactionRoles.set(k,v)); }
+    if (data.customCommands instanceof Map) { customCommands.clear(); data.customCommands.forEach((v,k) => customCommands.set(k,v)); }
+    if (data.disabledCommands instanceof Map) { disabledCommands.clear(); data.disabledCommands.forEach((v,k) => disabledCommands.set(k,v)); }
+    if (data.aliases instanceof Map) { aliases.clear(); data.aliases.forEach((v,k) => aliases.set(k,v)); }
+    if (data.reactionTriggers instanceof Map) { reactionTriggers.clear(); data.reactionTriggers.forEach((v,k) => reactionTriggers.set(k,v)); }
+    if (data.counters instanceof Map) { counters.clear(); data.counters.forEach((v,k) => counters.set(k,v)); }
+    if (data.automodExempt instanceof Map) { automodExempt.clear(); data.automodExempt.forEach((v,k) => automodExempt.set(k,v)); }
+    if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
+    if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
+
+    console.log("[Config] ✅ All configs restored from Discord");
+  } catch (e) {
+    console.error("[Config] Failed to load:", e.message);
+  }
+}
+
+// Auto-save every 2 minutes as backup
+setInterval(() => saveAllConfigs(), 2 * 60 * 1000);
+
 
 // ===================================================
 // ===== GREED-STYLE RESPONSE SYSTEM =================
@@ -376,6 +540,9 @@ async function checkAllTargetMembers() {
 client.once("ready", async () => {
   log(`Logged in as ${client.user.username}`, "success");
 
+  // Load all configs from Discord backup channel
+  await loadAllConfigs();
+
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
@@ -410,6 +577,10 @@ client.once("ready", async () => {
       url: "https://www.twitch.tv/sensational"
     }]
   });
+
+  // Auto-save all configs every 60 seconds
+  // Also save immediately on startup in case of new defaults
+  setTimeout(saveAllConfigs, 5000);
 });
 
 // ===== MEMBER JOINS TARGET SERVER =====
@@ -856,7 +1027,7 @@ client.on("messageUpdate", (oldMsg, newMsg) => {
 });
 
 // ===== XP SYSTEM (disabled by default — enable with ,leveling on) =====
-const levelingEnabled = new Map(); // guildId => boolean
+const levelingEnabled = new Map();
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
@@ -2487,10 +2658,12 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "on" || sub === "enable") {
       levelingEnabled.set(message.guild.id, true);
+      saveAllConfigs();
       return ok(message, "leveling system **enabled** — XP will now be tracked.");
     }
     if (sub === "off" || sub === "disable") {
       levelingEnabled.set(message.guild.id, false);
+      saveAllConfigs();
       return ok(message, "leveling system **disabled**.");
     }
     const enabled = levelingEnabled.get(message.guild.id) || false;
@@ -2706,13 +2879,13 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") {
       autoroles.delete(message.guild.id);
-      return ok(message, "Autorole disabled.");
+      saveAllConfigs();return ok(message, "Autorole disabled.");
     }
     const role = message.mentions.roles.first();
     if (!role) return err(message, "missing required argument");
 
     autoroles.set(message.guild.id, role.id);
-    return ok(message, `Autorole set to **${role.name}**`);
+    saveAllConfigs();return ok(message, `Autorole set to **${role.name}**`);
   }
 
   // ,welcome <#channel> <message> (use {user}, {server}, {count})
@@ -2725,7 +2898,7 @@ client.on("messageCreate", async (message) => {
     const msg = args.slice(2).join(" ");
     if (!msg) return err(message, "Please provide a message. Use `{user}`, `{server}`, `{count}`");
     welcomeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
-    return ok(message, `Welcome messages set in ${channel}`);
+    saveAllConfigs();return ok(message, `Welcome messages set in ${channel}`);
   }
 
   // ,goodbye <#channel> <message>
@@ -2738,7 +2911,7 @@ client.on("messageCreate", async (message) => {
     const msg = args.slice(2).join(" ");
     if (!msg) return err(message, "Please provide a message.");
     goodbyeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
-    return ok(message, `Goodbye messages set in ${channel}`);
+    saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
   }
 
   // ,starboard <#channel> [threshold]
@@ -3059,6 +3232,7 @@ setInterval(async () => {
       const logCh = message.mentions.channels.first();
       if (!logCh) return err(message, "missing required argument");
       ticketConfig.set(message.guild.id, { logChannelId: logCh.id });
+      saveAllConfigs();
       return ok(message, `ticket system set up. logs → ${logCh}`);
     }
     if (sub === "create" || !sub) {
@@ -3370,8 +3544,8 @@ setInterval(async () => {
 // ===================================================
 
 // ── CONFIG STORAGE ──────────────────────────────────
-const antinukeConfig = new Map();  // guildId => { enabled, punishment, threshold, whitelist: Set }
-const antiraidConfig = new Map();  // guildId => { enabled, action, joinThreshold, joinWindow }
+const antinukeConfig = new Map();
+const antiraidConfig = new Map();
 const recentJoins = new Map();     // guildId => [{ userId, time }]
 const recentActions = new Map();   // guildId-modId-actionType => [timestamps]
 const lockedGuilds = new Set();    // guildIds currently under raid lockdown
@@ -3601,18 +3775,18 @@ client.on("messageCreate", async (message) => {
 
     if (sub === "on" || sub === "enable") {
       cfg.enabled = true;
-      return ok(message, "**AntiNuke** enabled. The bot will now monitor for destructive actions.");
+      saveAllConfigs();return ok(message, "**AntiNuke** enabled. The bot will now monitor for destructive actions.");
     }
     if (sub === "off" || sub === "disable") {
       cfg.enabled = false;
-      return ok(message, "**AntiNuke** disabled.");
+      saveAllConfigs();return ok(message, "**AntiNuke** disabled.");
     }
     if (sub === "punishment") {
       const p = args[2]?.toLowerCase();
       if (!["ban", "kick", "strip"].includes(p)) return err(message, "missing required argument");
 
       cfg.punishment = p;
-      return ok(message, `AntiNuke punishment set to **${p}**`);
+      saveAllConfigs();return ok(message, `AntiNuke punishment set to **${p}**`);
     }
     if (sub === "threshold") {
       const n = parseInt(args[2]);
@@ -3620,21 +3794,21 @@ client.on("messageCreate", async (message) => {
 
 
       cfg.threshold = n;
-      return ok(message, `AntiNuke threshold set to **${n}** actions`);
+      saveAllConfigs();return ok(message, `AntiNuke threshold set to **${n}** actions`);
     }
     if (sub === "whitelist") {
       const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
       if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.add(target.id);
-      return ok(message, `**${target.username}** whitelisted from AntiNuke`);
+      saveAllConfigs();return ok(message, `**${target.username}** whitelisted from AntiNuke`);
     }
     if (sub === "unwhitelist") {
       const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
       if (!target) return err(message, "missing required argument");
 
       cfg.whitelist.delete(target.id);
-      return ok(message, `**${target.username}** removed from AntiNuke whitelist`);
+      saveAllConfigs();return ok(message, `**${target.username}** removed from AntiNuke whitelist`);
     }
     if (sub === "status" || !sub) {
       const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
@@ -3652,18 +3826,18 @@ client.on("messageCreate", async (message) => {
 
     if (sub === "on" || sub === "enable") {
       cfg.enabled = true;
-      return ok(message, "**AntiRaid** enabled. Mass joins will trigger automatic lockdown.");
+      saveAllConfigs();return ok(message, "**AntiRaid** enabled. Mass joins will trigger automatic lockdown.");
     }
     if (sub === "off" || sub === "disable") {
       cfg.enabled = false;
-      return ok(message, "**AntiRaid** disabled.");
+      saveAllConfigs();return ok(message, "**AntiRaid** disabled.");
     }
     if (sub === "action") {
       const a = args[2]?.toLowerCase();
       if (!["ban", "kick", "mute"].includes(a)) return err(message, "missing required argument");
 
       cfg.action = a;
-      return ok(message, `AntiRaid action set to **${a}**`);
+      saveAllConfigs();return ok(message, `AntiRaid action set to **${a}**`);
     }
     if (sub === "threshold") {
       const n = parseInt(args[2]);
@@ -3671,14 +3845,14 @@ client.on("messageCreate", async (message) => {
 
 
       cfg.joinThreshold = n;
-      return ok(message, `AntiRaid threshold set to **${n}** joins`);
+      saveAllConfigs();return ok(message, `AntiRaid threshold set to **${n}** joins`);
     }
     if (sub === "window") {
       const n = parseInt(args[2]);
       if (isNaN(n) || n < 1) return err(message, "missing required argument");
 
       cfg.joinWindow = n * 1000;
-      return ok(message, `AntiRaid window set to **${n}** seconds`);
+      saveAllConfigs();return ok(message, `AntiRaid window set to **${n}** seconds`);
     }
     if (sub === "unlock") {
       lockedGuilds.delete(message.guild.id);
@@ -3686,7 +3860,7 @@ client.on("messageCreate", async (message) => {
       for (const ch of channels.values()) {
         await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => {});
       }
-      return ok(message, "Server unlocked manually.");
+      saveAllConfigs();return ok(message, "Server unlocked manually.");
     }
     if (sub === "status" || !sub) {
       return message.reply({ embeds: [{ color: PINK, title: "🚨 AntiRaid Status", fields: [{ name: "Status", value: cfg.enabled ? "✅ Enabled" : "❌ Disabled", inline: true }, { name: "Action", value: cfg.action, inline: true }, { name: "Threshold", value: `${cfg.joinThreshold} joins`, inline: true }, { name: "Window", value: `${cfg.joinWindow / 1000}s`, inline: true }, { name: "Lockdown Active", value: lockedGuilds.has(message.guild.id) ? "🔒 Yes" : "✅ No", inline: true }] }] });
@@ -3761,13 +3935,13 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") {
       welcomeConfig.delete(`log-${message.guild.id}`);
-      return ok(message, "Logging disabled.");
+      saveAllConfigs();return ok(message, "Logging disabled.");
     }
     const channel = message.mentions.channels.first();
     if (!channel) return err(message, "missing required argument");
 
     welcomeConfig.set(`log-${message.guild.id}`, { channelId: channel.id });
-    return ok(message, `Mod logs will be sent to ${channel}`);
+    saveAllConfigs();return ok(message, `Mod logs will be sent to ${channel}`);
   }
 
   // ,rolecreate <name> [color]
@@ -3998,10 +4172,10 @@ client.on("messageCreate", async (message) => {
 // ===================================================
 
 // ── AUTOMOD / FILTER SYSTEM ─────────────────────────
-const filterConfig = new Map();   // guildId => { enabled, words: [], links: bool, invites: bool, caps: bool, spam: bool, mentions: bool, maxMentions: 5 }
+const filterConfig = new Map();
 const spamTracker = new Map();    // userId-guildId => [timestamps]
-const automodExempt = new Map();  // guildId => { roles: Set, channels: Set }
-const modlogChannel = new Map();  // guildId => channelId
+const automodExempt = new Map();
+const modlogChannel = new Map();
 
 function getFilter(guildId) {
   if (!filterConfig.has(guildId)) filterConfig.set(guildId, { enabled: false, words: [], links: false, invites: false, caps: false, spam: false, maxMentions: 5, mentions: false });
@@ -4185,12 +4359,12 @@ client.on("messageCreate", async (message) => {
       if (!word) return err(message, "missing required argument");
 
       cfg.words.push(word.toLowerCase());
-      return ok(message, `Added **${word}** to filter.`);
+      saveAllConfigs();return ok(message, `Added **${word}** to filter.`);
     }
     if (sub === "remove") {
       const word = args.slice(2).join(" ").toLowerCase();
       cfg.words = cfg.words.filter(w => w !== word);
-      return ok(message, `Removed **${word}** from filter.`);
+      saveAllConfigs();return ok(message, `Removed **${word}** from filter.`);
     }
     if (sub === "list") return message.reply({ embeds: [{ color: PINK, title: "Filter Words", description: cfg.words.length > 0 ? cfg.words.map((w, i) => `${i + 1}. \`${w}\``).join("\n") : "No words filtered." }] });
     if (sub === "links") { cfg.links = !cfg.links; return ok(message, `Link filter: **${cfg.links ? "on" : "off"}**`); }
@@ -4201,7 +4375,7 @@ client.on("messageCreate", async (message) => {
       const max = parseInt(args[2]);
       if (!isNaN(max)) { cfg.maxMentions = max; cfg.mentions = true; return ok(message, `Mention filter: on (max **${max}**)`); }
       cfg.mentions = !cfg.mentions;
-      return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
+      saveAllConfigs();return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
     }
     if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "🤖 AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "✅ On" : "❌ Off", inline: true }, { name: "Links", value: cfg.links ? "✅" : "❌", inline: true }, { name: "Invites", value: cfg.invites ? "✅" : "❌", inline: true }, { name: "Caps", value: cfg.caps ? "✅" : "❌", inline: true }, { name: "Spam", value: cfg.spam ? "✅" : "❌", inline: true }, { name: "Mentions", value: cfg.mentions ? `✅ (max ${cfg.maxMentions})` : "❌", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
     return err(message, "missing required argument");
@@ -4734,13 +4908,13 @@ client.on("messageReactionRemove", async (reaction, user) => {
 // ===================================================
 
 // ── IN-MEMORY STORES ────────────────────────────────
-const vanityLock = new Map();        // guildId => { code, locked, notifyUserId }
-const customCommands = new Map();    // guildId-name => response
-const disabledCommands = new Map();  // guildId => Set<commandName>
-const aliases = new Map();           // guildId-alias => command
+const vanityLock = new Map();
+const customCommands = new Map();
+const disabledCommands = new Map();
+const aliases = new Map();
 const boosterRoles = new Map();      // userId-guildId => roleId (custom booster role)
-const reactionTriggers = new Map();  // guildId => [{ trigger, response, type }]
-const counters = new Map();          // guildId-name => { channelId, count, type }
+const reactionTriggers = new Map();
+const counters = new Map();
 const stickyMessages = new Map();    // channelId => { content, msgId }
 const bumpReminder = new Map();      // guildId => { channelId, lastBump, reminded }
 const joinToCreate = new Map();      // guildId => { triggerVcId, categoryId }
@@ -4751,11 +4925,11 @@ const medicConfig = new Map();       // guildId => { roleId }
 const fakePerms = new Map();         // guildId-roleId => [permissions]
 const autoResponders = new Map();    // guildId => [{ trigger, response, exact }]
 const birthdayData = new Map();      // userId => { day, month }
-const birthdayChannel = new Map();   // guildId => channelId
-const muteRole = new Map();          // guildId => roleId (custom mute role)
+const birthdayChannel = new Map();
+const muteRole = new Map();
 const ignoreList = new Map();        // guildId => Set<userId> (ignored from all cmds)
 const blacklistWords = new Map();    // guildId => Set<word>
-const warnThresholds = new Map();    // guildId => [{ count, action }]
+const warnThresholds = new Map();
 const caseCounter = new Map();       // guildId => number
 const cases = new Map();             // guildId-caseId => { type, user, mod, reason, date }
 
@@ -4936,11 +5110,13 @@ client.on("messageCreate", async (message) => {
       cfg.locked = true;
       cfg.notifyUserId = message.author.id;
       vanityLock.set(guildId, cfg);
+      saveAllConfigs();
       return ok(message, `Vanity lock enabled for **discord.gg/${cfg.code}** — I'll monitor every 15s and restore if changed.`);
     }
     if (sub === "off" || sub === "disable") {
       cfg.locked = false;
       vanityLock.set(guildId, cfg);
+      saveAllConfigs();
       return ok(message, "Vanity lock disabled.");
     }
     if (sub === "status" || !sub) {
@@ -5020,7 +5196,7 @@ client.on("messageCreate", async (message) => {
     list.push({ count, action });
     list.sort((a, b) => a.count - b.count);
     warnThresholds.set(guildId, list);
-    return ok(message, `At **${count}** warns → **${action}**`);
+    saveAllConfigs();return ok(message, `At **${count}** warns → **${action}**`);
   }
 
   // ,warnthresholds — list all thresholds
@@ -5042,14 +5218,14 @@ client.on("messageCreate", async (message) => {
       if (!name || !response) return err(message, "missing required argument");
 
       customCommands.set(`${guildId}-${name}`, response);
-      return ok(message, `Custom command **,${name}** created.`);
+      saveAllConfigs();return ok(message, `Custom command **,${name}** created.`);
     }
     if (sub === "remove" || sub === "delete") {
       const name = args[2]?.toLowerCase();
       if (!name) return err(message, "missing required argument");
 
       customCommands.delete(`${guildId}-${name}`);
-      return ok(message, `Custom command **,${name}** removed.`);
+      saveAllConfigs();return ok(message, `Custom command **,${name}** removed.`);
     }
     if (sub === "list") {
       const cmds = [...customCommands.keys()].filter(k => k.startsWith(`${guildId}-`)).map(k => k.replace(`${guildId}-`, ""));
@@ -5072,12 +5248,12 @@ client.on("messageCreate", async (message) => {
       if (!alias || !target) return err(message, "missing required argument");
 
       aliases.set(`${guildId}-${alias}`, target);
-      return ok(message, `\`,${alias}\` is now an alias for \`,${target}\``);
+      saveAllConfigs();return ok(message, `\`,${alias}\` is now an alias for \`,${target}\``);
     }
     if (sub === "remove") {
       const alias = args[2]?.toLowerCase();
       aliases.delete(`${guildId}-${alias}`);
-      return ok(message, `Alias \`,${alias}\` removed.`);
+      saveAllConfigs();return ok(message, `Alias \`,${alias}\` removed.`);
     }
     if (sub === "list") {
       const list = [...aliases.entries()].filter(([k]) => k.startsWith(`${guildId}-`)).map(([k, v]) => `\`,${k.replace(`${guildId}-`, "")}\` → \`,${v}\``);
@@ -5097,7 +5273,7 @@ client.on("messageCreate", async (message) => {
     const set = disabledCommands.get(guildId) || new Set();
     set.add(cmd);
     disabledCommands.set(guildId, set);
-    return ok(message, `Command \`,${cmd}\` disabled.`);
+    saveAllConfigs();return ok(message, `Command \`,${cmd}\` disabled.`);
   }
 
   // ,enable <command>
@@ -5223,12 +5399,12 @@ client.on("messageCreate", async (message) => {
       else if (type === "all") count = message.guild.memberCount;
       counters.set(`${guildId}-${name}`, { channelId: channel.id, count, type });
       await channel.setName(`${name}: ${count}`).catch(() => {});
-      return ok(message, `Counter **${name}** created in ${channel}`);
+      saveAllConfigs();return ok(message, `Counter **${name}** created in ${channel}`);
     }
     if (sub === "delete") {
       const name = args[2];
       counters.delete(`${guildId}-${name}`);
-      return ok(message, `Counter **${name}** deleted.`);
+      saveAllConfigs();return ok(message, `Counter **${name}** deleted.`);
     }
     if (sub === "list") {
       const list = [...counters.entries()].filter(([k]) => k.startsWith(`${guildId}-`));
@@ -5371,11 +5547,11 @@ client.on("messageCreate", async (message) => {
       if (isNaN(day) || isNaN(month) || day < 1 || day > 31 || month < 1 || month > 12) return err(message, "missing required argument");
 
       birthdayData.set(message.author.id, { day, month });
-      return ok(message, `Birthday set to **${day}/${month}** 🎂`);
+      saveAllConfigs();return ok(message, `Birthday set to **${day}/${month}** 🎂`);
     }
     if (sub === "remove") {
       birthdayData.delete(message.author.id);
-      return ok(message, "Birthday removed.");
+      saveAllConfigs();return ok(message, "Birthday removed.");
     }
     if (sub === "channel") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -5383,7 +5559,7 @@ client.on("messageCreate", async (message) => {
       if (!ch) return err(message, "missing required argument");
 
       birthdayChannel.set(guildId, ch.id);
-      return ok(message, `Birthday announcements in ${ch}`);
+      saveAllConfigs();return ok(message, `Birthday announcements in ${ch}`);
     }
     if (sub === "list") {
       const members = await message.guild.members.fetch();
@@ -5485,7 +5661,7 @@ client.on("messageCreate", async (message) => {
     if (!ch) return err(message, "missing required argument");
 
     logEvents.set(`${guildId}-${sub}`, ch.id);
-    return ok(message, `**${sub}** events logged to ${ch}`);
+    saveAllConfigs();return ok(message, `**${sub}** events logged to ${ch}`);
   }
 
   // ── BLACKLIST ─────────────────────────────────────────
@@ -6003,10 +6179,9 @@ const pingRoles = new Map();         // guildId => Set<roleId> — roles allowed
 const slowmodeHistory = new Map();   // channelId => previous slowmode
 const memberSearch = new Map();      // cache
 const voiceLogs = new Map();
-const userTimezones = new Map();  // userId => timezone string         // guildId => channelId for voice logs
-const notes = new Map();              // guildId-userId => [{ text, mod, date }]
-const reactionRoles = new Map();      // msgId-emoji => roleId
-const logEvents = new Map();          // guildId-event => channelId
+const userTimezones = new Map();
+const reactionRoles = new Map();
+const logEvents = new Map();
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -6621,7 +6796,7 @@ client.on("messageCreate", async (message) => {
     if (!ch) return err(message, "missing required argument");
 
     modlogChannel.set(`msg-${guildId}`, ch.id);
-    return ok(message, `Message logs → ${ch}`);
+    saveAllConfigs();return ok(message, `Message logs → ${ch}`);
   }
 
   // ,joinlog <#channel>
@@ -6632,7 +6807,7 @@ client.on("messageCreate", async (message) => {
     if (!ch) return err(message, "missing required argument");
 
     modlogChannel.set(`join-${guildId}`, ch.id);
-    return ok(message, `Join/leave logs → ${ch}`);
+    saveAllConfigs();return ok(message, `Join/leave logs → ${ch}`);
   }
 
   // ,voicelog <#channel>
@@ -7277,7 +7452,7 @@ client.on("messageCreate", async (message) => {
     if (!role) return err(message, "missing required argument");
 
     muteRole.set(message.guild.id, role.id);
-    return ok(message, `Mute role set to **${role.name}**`);
+    saveAllConfigs();return ok(message, `Mute role set to **${role.name}**`);
   }
   if (command === "imagemute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
@@ -7699,13 +7874,17 @@ client.on("messageCreate", async (message) => {
 // ===================================================
 
 // ── CONFIG (only OWNER_ID can modify) ──────────────
-const antiMinorsConfig = new Map(); // guildId => { logChannelId, modRoleId, channels: Set, requireAttach: Set }
+const antiMinorsConfig = new Map();
 
 function getAMConfig(guildId) {
   if (!antiMinorsConfig.has(guildId)) {
     antiMinorsConfig.set(guildId, { logChannelId: null, modRoleId: null, channels: new Set(), requireAttach: new Set() });
   }
-  return antiMinorsConfig.get(guildId);
+  const cfg = antiMinorsConfig.get(guildId);
+  // Ensure channels and requireAttach are always proper Sets (survives JSON reload)
+  if (!(cfg.channels instanceof Set)) cfg.channels = new Set(Array.isArray(cfg.channels) ? cfg.channels : []);
+  if (!(cfg.requireAttach instanceof Set)) cfg.requireAttach = new Set(Array.isArray(cfg.requireAttach) ? cfg.requireAttach : []);
+  return cfg;
 }
 
 // ── REGEX ENGINE (from old bot, extended) ───────────
@@ -8012,6 +8191,7 @@ client.on("messageCreate", async (message) => {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,addc #channel`");
     cfg.channels.add(ch.id);
+    saveAllConfigs();
     return ok(message, `now monitoring **#${ch.name}** for minors`);
   }
 
@@ -8020,6 +8200,7 @@ client.on("messageCreate", async (message) => {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,delc #channel`");
     cfg.channels.delete(ch.id);
+    saveAllConfigs();
     return ok(message, `stopped monitoring **#${ch.name}**`);
   }
 
@@ -8042,6 +8223,7 @@ client.on("messageCreate", async (message) => {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,reqattach #channel`");
     cfg.requireAttach.add(ch.id);
+    saveAllConfigs();
     return ok(message, `**#${ch.name}** now requires attachments — text-only messages will be deleted`);
   }
 
@@ -8050,6 +8232,7 @@ client.on("messageCreate", async (message) => {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,unreqattach #channel`");
     cfg.requireAttach.delete(ch.id);
+    saveAllConfigs();
     return ok(message, `**#${ch.name}** no longer requires attachments`);
   }
 
@@ -8058,6 +8241,7 @@ client.on("messageCreate", async (message) => {
     const role = message.mentions.roles.first();
     if (!role) return err(message, "missing required argument: **role**\nusage: `,modr @role`");
     cfg.modRoleId = role.id;
+    saveAllConfigs();
     return ok(message, `mod role set to **${role.name}** — will be pinged on minor detections`);
   }
 
@@ -8066,6 +8250,7 @@ client.on("messageCreate", async (message) => {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,logs #channel`");
     cfg.logChannelId = ch.id;
+    saveAllConfigs();
     return ok(message, `minor warnings will be sent to **#${ch.name}**`);
   }
 });
