@@ -277,6 +277,7 @@ async function loadBanStatsFromAuditLogs(guild) {
   return stats;
 }
 
+process.setMaxListeners(20);
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -537,7 +538,7 @@ async function checkAllTargetMembers() {
 }
 
 // ===== BOT EVENTS =====
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   log(`Logged in as ${client.user.username}`, "success");
 
   // Load all configs from Discord backup channel
@@ -3149,6 +3150,8 @@ client.on("messageCreate", async (message) => {
   // ── TICKETS ──────────────────────────────────────────────
 
   // ,ticket setup <#log-channel>
+});
+
 // ===== TICKET INACTIVITY MONITOR =====
 const TICKET_CATEGORY_ID = "1409003502826557560";
 const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
@@ -3257,6 +3260,13 @@ setInterval(async () => {
   }
 }, 60 * 1000); // every minute
 
+// ===== TICKET + EXTRA COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
 
   if (command === "ticket") {
     const sub = args[1]?.toLowerCase();
