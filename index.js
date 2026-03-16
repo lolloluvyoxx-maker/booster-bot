@@ -1698,6 +1698,44 @@ client.on("messageCreate", async (message) => {
     return ok(message, `unhidden ${channel}`);
   }
 
+  // ,hider @role — removes ViewChannel perm for a role from ALL channels/categories/vcs
+  if (command === "hider") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,hider @role`");
+    await message.channel.sendTyping().catch(() => {});
+    const channels = message.guild.channels.cache;
+    let count = 0;
+    for (const ch of channels.values()) {
+      // Check if this channel has an explicit allow for ViewChannel for this role
+      const overwrite = ch.permissionOverwrites.cache.get(role.id);
+      if (overwrite && overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+        await ch.permissionOverwrites.edit(role, { ViewChannel: null }).catch(() => {});
+        count++;
+      }
+    }
+    if (count === 0) return info(message, `**${role.name}** had no explicit ViewChannel permissions to remove`);
+    return ok(message, `removed ViewChannel from **${role.name}** in **${count}** channels`);
+  }
+
+  // ,unhider @role — restores ViewChannel perm for a role in ALL channels (resets to default)
+  if (command === "unhider") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,unhider @role`");
+    await message.channel.sendTyping().catch(() => {});
+    const channels = message.guild.channels.cache;
+    let count = 0;
+    for (const ch of channels.values()) {
+      const overwrite = ch.permissionOverwrites.cache.get(role.id);
+      if (overwrite) {
+        await ch.permissionOverwrites.edit(role, { ViewChannel: null }).catch(() => {});
+        count++;
+      }
+    }
+    return ok(message, `reset ViewChannel for **${role.name}** in **${count}** channels`);
+  }
+
   // ,warn <user> <reason>
 
   // ,nickname <user> <nick>
@@ -7943,6 +7981,10 @@ function checkForMinor(text) {
   let t = text;
   for (const [e, n] of Object.entries(emojiMap)) t = t.replace(new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'), n);
 
+  // Step 1b: remove Discord mentions before any processing (they contain large IDs)
+  t = t.replace(/<[@#][!&]?\d+>/g, '');   // remove <#channelId>, <@userId>, <@&roleId>
+  t = t.replace(/https?:\/\/\S+/g, '');  // remove URLs
+
   // Step 2: normalize leet/special bypass chars (digits only, don't touch letters)
   t = t.replace(/[|!¡](\d)/g, '$1')   // !6 → 6
        .replace(/(\d)[|!¡]/g, '$1');   // 6! → 6
@@ -7981,10 +8023,15 @@ function checkForMinor(text) {
     if (/\d$/.test(before) || /^\s*(lbs?|kg|pounds?|lb)/.test(after) || /(lbs?|kg|pounds?|lb)\s*$/.test(before)) continue;
     // Skip if it's a height in cm
     if (/^\s*cm/.test(after)) continue;
-    // Skip if it's a year (4 digits starting with 19xx or 20xx)
-    if (/^(19|20)\d{2}$/.test(highMatch[1])) continue;
-    // Skip 3-digit numbers that are clearly body stats (100-180 range as weight)
+    // Skip years (4 digits)
+    if (highMatch[1].length === 4) continue;
+    // Skip 3-digit body stats (100-250 range = weight/height)
     if (age >= 100 && age <= 250) continue;
+    // Skip Discord snowflake IDs (15+ digit numbers)
+    if (highMatch[1].length >= 15) continue;
+    // Skip if preceded by # (discriminator, channel ref)
+    const beforeHigh = t.substring(Math.max(0, highMatch.index - 2), highMatch.index);
+    if (beforeHigh.includes('#') || beforeHigh.includes(':')) continue;
     return { flag: true, is_minor: false, reason: `Suspiciously high age: ${age} (possible bypass)`, confidence: 'medium' };
   }
 
