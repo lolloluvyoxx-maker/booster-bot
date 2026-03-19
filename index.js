@@ -3193,110 +3193,109 @@ client.on("messageCreate", async (message) => {
 // ===== TICKET INACTIVITY MONITOR =====
 const TICKET_CATEGORY_ID = "1409003502826557560";
 const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
-const ticketWarnings = new Map();    // channelId => warningMessageId
+const ticketWarnings = new Map();
 
-// On startup: scan ticket category and re-register any open tickets
+async function closeInactiveTicket(channelId, activity, reason = "1 hour of inactivity") {
+  if (activity.closing) return;
+  activity.closing = true;
+  ticketActivity.set(channelId, activity);
+
+  try {
+    const guild = client.guilds.cache.get(activity.guildId);
+    if (!guild) { ticketActivity.delete(channelId); return; }
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) { ticketActivity.delete(channelId); return; }
+
+    // DM creator
+    const creator = await client.users.fetch(activity.creatorId).catch(() => null);
+    if (creator) {
+      creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **${reason}** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+    }
+
+    // Warn in channel
+    await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **${reason}** and will be deleted in **10 seconds**.`, footer: { text: guild.name } }] }).catch(() => {});
+
+    // Log to configured channel
+    const cfg = ticketConfig.get(guild.id);
+    if (cfg?.logChannelId) {
+      const logCh = guild.channels.cache.get(cfg.logChannelId);
+      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** closed after **${reason}** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+    }
+
+    // Cleanup
+    ticketActivity.delete(channelId);
+    ticketWarnings.delete(channelId);
+    for (const [key, chId] of openTickets.entries()) {
+      if (chId === channelId) { openTickets.delete(key); break; }
+    }
+
+    setTimeout(() => ch.delete().catch(() => {}), 10000);
+    log(`[Tickets] Auto-closed ${ch.name} (${reason})`, "info");
+  } catch (e) {
+    log(`[Tickets] Error closing ${channelId}: ${e.message}`, "error");
+    ticketActivity.delete(channelId);
+  }
+}
+
+// On startup: scan ticket category and re-register open tickets
 async function rehydrateTickets() {
   try {
     for (const guild of client.guilds.cache.values()) {
-      const category = guild.channels.cache.get(TICKET_CATEGORY_ID);
-      if (!category) continue;
       const ticketChannels = guild.channels.cache.filter(c => c.parentId === TICKET_CATEGORY_ID && c.type === 0);
       for (const ch of ticketChannels.values()) {
-        if (ticketActivity.has(ch.id)) continue; // already tracked
-        // Fetch last message to find creator and last activity
-        const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
-        if (!msgs) continue;
-        // Creator is in openTickets map, or find first non-bot message
+        if (ticketActivity.has(ch.id)) continue;
+        // Find creator from openTickets map
         let creatorId = null;
         for (const [key, chId] of openTickets.entries()) {
           if (chId === ch.id) { creatorId = key.split('-')[1]; break; }
         }
+        // Fallback: first non-bot message author
         if (!creatorId) {
-          const firstHuman = [...msgs.values()].reverse().find(m => !m.author.bot);
-          if (firstHuman) creatorId = firstHuman.author.id;
+          const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+          if (msgs) {
+            const firstHuman = [...msgs.values()].reverse().find(m => !m.author.bot);
+            if (firstHuman) creatorId = firstHuman.author.id;
+          }
         }
         if (!creatorId) continue;
-        // Last activity = last message FROM THE CREATOR only (mods writing doesn't reset timer)
-        const lastCreatorMsg = [...msgs.values()].find(m => m.author.id === creatorId);
-        // If creator never wrote, use channel creation time as baseline
+
+        // lastActivity = last message FROM CREATOR only
+        const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+        const lastCreatorMsg = msgs ? [...msgs.values()].find(m => m.author.id === creatorId) : null;
         const lastActivity = lastCreatorMsg ? lastCreatorMsg.createdTimestamp : ch.createdTimestamp;
+
         ticketActivity.set(ch.id, { creatorId, guildId: guild.id, lastActivity, closing: false });
-        log(`Re-registered ticket ${ch.name} (last active: ${new Date(lastActivity).toLocaleTimeString()})`, "info");
+        log(`[Tickets] Re-registered ${ch.name} (last activity: ${new Date(lastActivity).toLocaleTimeString()})`, "info");
       }
     }
+    log(`[Tickets] Rehydrated ${ticketActivity.size} tickets`, "info");
   } catch (e) {
-    log(`Ticket rehydration error: ${e.message}`, "error");
+    log(`[Tickets] Rehydration error: ${e.message}`, "error");
   }
 }
 
-// Track activity in ticket channels — reset timer on ANY message from creator
+// Reset timer ONLY when CREATOR sends a message
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   const activity = ticketActivity.get(message.channel.id);
-  if (!activity) return;
-  if (message.author.id !== activity.creatorId) return;
-  if (activity.closing) return;
-
+  if (!activity || activity.closing) return;
+  if (message.author.id !== activity.creatorId) return; // only creator resets timer
   activity.lastActivity = Date.now();
   ticketActivity.set(message.channel.id, activity);
-
-  // Delete warning message if exists
-  if (ticketWarnings.has(message.channel.id)) {
-    message.channel.messages.fetch(ticketWarnings.get(message.channel.id))
-      .then(m => m.delete().catch(() => {}))
-      .catch(() => {});
-    ticketWarnings.delete(message.channel.id);
-  }
 });
 
-// Check every minute for inactive tickets
+// Check every minute
 setInterval(async () => {
   const now = Date.now();
-  for (const [channelId, activity] of ticketActivity.entries()) {
+  for (const [channelId, activity] of [...ticketActivity.entries()]) {
     if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
-    if (elapsed < 3600000) continue; // less than 1 hour — skip
-
-    // Mark closing immediately to prevent double-fire
-    activity.closing = true;
-    ticketActivity.set(channelId, activity);
-
-    try {
-      const guild = client.guilds.cache.get(activity.guildId);
-      if (!guild) { ticketActivity.delete(channelId); continue; }
-      const ch = guild.channels.cache.get(channelId);
-      if (!ch) { ticketActivity.delete(channelId); continue; }
-
-      // DM the creator
-      const creator = await client.users.fetch(activity.creatorId).catch(() => null);
-      if (creator) {
-        creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket Warning", description: `Your ticket **${ch.name}** in **${guild.name}** was closed after **1 hour** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
-      }
-
-      // Warn in channel then delete
-      await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **1 hour** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
-
-      // Log
-      const cfg = ticketConfig.get(guild.id);
-      if (cfg?.logChannelId) {
-        const logCh = guild.channels.cache.get(cfg.logChannelId);
-        if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** closed after **1 hour** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
-      }
-
-      // Cleanup
-      ticketActivity.delete(channelId);
-      ticketWarnings.delete(channelId);
-      for (const [key, chId] of openTickets.entries()) {
-        if (chId === channelId) { openTickets.delete(key); break; }
-      }
-
-      setTimeout(() => ch.delete().catch(() => {}), 10000);
-    } catch (e) {
-      ticketActivity.delete(channelId);
+    if (elapsed >= 3600000) { // 1 hour
+      log(`[Tickets] ${channelId} inactive for ${Math.floor(elapsed/60000)}min — closing`, "info");
+      closeInactiveTicket(channelId, activity);
     }
   }
-}, 60 * 1000); // every minute
+}, 60 * 1000);
 
 // ===== TICKET + EXTRA COMMANDS =====
 client.on("messageCreate", async (message) => {
@@ -3305,6 +3304,29 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
+
+  // ,tc — close ticket (usable by creator, mods with ManageChannels, or configured mod role)
+  if (command === "tc") {
+    const _cfg = ticketConfig.get(message.guild.id);
+    const _act = ticketActivity.get(message.channel.id);
+    if (!_act) return err(message, "this channel is not a ticket");
+    const _isCreator = _act.creatorId === message.author.id;
+    const _hasPerm = message.member.permissions.has(PermissionFlagsBits.ManageChannels);
+    const _hasRole = _cfg?.modRoleId && message.member.roles.cache.has(_cfg.modRoleId);
+    if (!_isCreator && !_hasPerm && !_hasRole) return err(message, "you don't have permission to close this ticket");
+    if (_cfg?.logChannelId) {
+      const _logCh = message.guild.channels.cache.get(_cfg.logChannelId);
+      if (_logCh) _logCh.send({ embeds: [{ color: PINK, description: `🎫 Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
+    }
+    ticketActivity.delete(message.channel.id);
+    ticketWarnings.delete(message.channel.id);
+    for (const [k, chId] of openTickets.entries()) {
+      if (chId === message.channel.id) { openTickets.delete(k); break; }
+    }
+    await message.channel.send({ embeds: [{ color: PINK, description: "🔒 Closing ticket in 3 seconds..." }] });
+    setTimeout(() => message.channel.delete().catch(() => {}), 3000);
+    return;
+  }
 
   if (command === "ticket") {
     const sub = args[1]?.toLowerCase();
@@ -3319,31 +3341,42 @@ client.on("messageCreate", async (message) => {
     if (sub === "create" || !sub) {
       const existing = openTickets.get(`${message.guild.id}-${message.author.id}`);
       if (existing) return err(message, `you already have an open ticket: <#${existing}>`);
+      const cfg = ticketConfig.get(message.guild.id);
+      const permOverwrites = [
+        { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+        { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      ];
+      // Add mod role to ticket if configured
+      if (cfg?.modRoleId) {
+        permOverwrites.push({ id: cfg.modRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+      }
       const ticketChannel = await message.guild.channels.create({
         name: `ticket-${message.author.username}`,
         type: 0,
         parent: TICKET_CATEGORY_ID,
-        permissionOverwrites: [
-          { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ]
+        permissionOverwrites: permOverwrites
       }).catch(() => null);
       if (!ticketChannel) return err(message, "could not create ticket channel — check my permissions");
       openTickets.set(`${message.guild.id}-${message.author.id}`, ticketChannel.id);
-      // Register inactivity monitoring — store guildId for reliable lookup
       ticketActivity.set(ticketChannel.id, {
         creatorId: message.author.id,
         guildId: message.guild.id,
         lastActivity: Date.now(),
-        warned: false,
         closing: false
       });
       await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n⚠️ This ticket will be **automatically closed** if you don't respond within **1 hour**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
       return ok(message, `ticket created: ${ticketChannel}`);
     }
     if (sub === "close") {
+      // Allow: ticket creator, mods with ManageChannels, or the configured mod role
       const config = ticketConfig.get(message.guild.id);
+      const activity = ticketActivity.get(message.channel.id);
+      const isCreator = activity?.creatorId === message.author.id;
+      const hasPerm = message.member.permissions.has(PermissionFlagsBits.ManageChannels);
+      const hasModRole = config?.modRoleId && message.member.roles.cache.has(config.modRoleId);
+      if (!isCreator && !hasPerm && !hasModRole) return err(message, "You don't have permission to close this ticket.");
+
       if (config?.logChannelId) {
         const logCh = message.guild.channels.cache.get(config.logChannelId);
         if (logCh) logCh.send({ embeds: [{ color: PINK, description: `🎫 Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
@@ -7984,6 +8017,8 @@ function checkForMinor(text) {
   // Step 1b: remove Discord mentions before any processing (they contain large IDs)
   t = t.replace(/<[@#][!&]?\d+>/g, '');   // remove <#channelId>, <@userId>, <@&roleId>
   t = t.replace(/https?:\/\/\S+/g, '');  // remove URLs
+  t = t.replace(/\b1[,.]\d{2}\s*m\b/gi, ''); // European heights 1,78m
+  t = t.replace(/\b\d+[,.]\d+\s*m\b/gi, ''); // decimal meters
 
   // Step 2: normalize leet/special bypass chars (digits only, don't touch letters)
   t = t.replace(/[|!¡](\d)/g, '$1')   // !6 → 6
@@ -8004,6 +8039,9 @@ function checkForMinor(text) {
     if (m) {
       const raw = (m[1] || m[3] || '').replace(/\D/g,'');
       if (!raw) continue;
+      const original = parseInt(raw);
+      // If already a valid adult age (18-70), NEVER treat as reversed bypass
+      if (original >= 18 && original <= 70) continue;
       const reversed = parseInt(raw.split('').reverse().join('').replace(/^0+/,'') || '0');
       if (reversed < 18) return { flag: true, reason: `Reversed age bypass: ${raw} → ${reversed} (minor)`, confidence: 'high' };
       return { flag: true, reason: `Age bypass attempt detected (reversed: ${raw} → ${reversed})`, confidence: 'high' };
@@ -8029,9 +8067,12 @@ function checkForMinor(text) {
     if (age >= 100 && age <= 250) continue;
     // Skip Discord snowflake IDs (15+ digit numbers)
     if (highMatch[1].length >= 15) continue;
-    // Skip if preceded by # (discriminator, channel ref)
-    const beforeHigh = t.substring(Math.max(0, highMatch.index - 2), highMatch.index);
-    if (beforeHigh.includes('#') || beforeHigh.includes(':')) continue;
+    // Skip if preceded by # : , . (discriminator, height, channel ref)
+    const beforeHigh = t.substring(Math.max(0, highMatch.index - 3), highMatch.index);
+    if (beforeHigh.includes('#') || beforeHigh.includes(':') || 
+        beforeHigh.includes(',') || beforeHigh.includes('.')) continue;
+    // Skip 2-digit numbers 70-99 if they appear right after a number+comma (height notation)
+    if (/\d[,.]\s*$/.test(beforeHigh)) continue;
     return { flag: true, is_minor: false, reason: `Suspiciously high age: ${age} (possible bypass)`, confidence: 'medium' };
   }
 
@@ -8056,7 +8097,7 @@ function checkForMinor(text) {
   const adultPreCheck = [
     /\b(1[8-9]|[2-6]\d)\s*[mfMF]\b/,
     /\b[mfMF]\s*(1[8-9]|[2-6]\d)\b/,
-    /\b(1[8-9]|[2-6]\d)\s*(yo|year|yr|y\.o|y\/o|male|female|man|woman|lf|lm|top|bottom|vers|masc|femme|here|looking|latino|latina|black|white|asian|mixed|bi|gay|str8|straight|curious)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*(yo|year|yr|y\.o|y\/o|male|female|man|woman|boy|girl|lf|lm|top|bottom|vers|masc|femme|here|looking|latino|latina|black|white|asian|mixed|bi|gay|str8|straight|curious|sub|dom|twink|bear|masc|femme)\b/i,
     /\bi'?m\s*(1[8-9]|[2-6]\d)\b/i,
     /\b(1[8-9]|[2-6]\d)\s*years?\s*old\b/i,
     /\bturned\s*(1[8-9]|[2-6]\d)\b/i,
@@ -8066,12 +8107,16 @@ function checkForMinor(text) {
     /\bhii?\s+(1[8-9]|[2-9]\d)\b/i,
     /\bhey\s+(1[8-9]|[2-9]\d)\b/i,
     /\bim\s+(1[8-9]|[2-9]\d)\b/i,
+    /\b(male|female|boy|girl|man|woman|guy|dude)\s+(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*[😊😁😉🔥💕❤️🌸✨💜🖤]$/,
   ];
   let hasAdultAge = false;
   for (const p of adultPreCheck) {
     const match = t.match(p);
     if (match) {
-      const age = parseInt(match[1] || match[2]);
+      // Try all capture groups to find the age (some patterns have word before age)
+      const ageStr = [match[1], match[2], match[3]].find(g => g && /^\d+$/.test(g));
+      const age = parseInt(ageStr || '0');
       if (age >= 18 && age <= 70) { hasAdultAge = true; break; }
     }
   }
