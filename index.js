@@ -4400,17 +4400,53 @@ client.on("messageCreate", async (message) => {
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
-  // ,purge user <@user> [amount]
+  // ,purge user <@user|id> — deletes ALL messages from user in this channel
   if (command === "purge" && args[1] === "user") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
-    const target = message.mentions.users.first();
-    if (!target) return err(message, "missing required argument");
+    const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,purge user @user`");
 
-    const msgs = await message.channel.messages.fetch({ limit: 100 });
-    const toDelete = msgs.filter(m => m.author.id === target.id).first(parseInt(args[3]) || 100);
-    await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Deleted ${toDelete.size} messages from **${target.username}**.` }] });
-    setTimeout(() => m.delete().catch(() => {}), 3000);
+    const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 Scanning and deleting all messages from **${target.username}**... this may take a moment` }] });
+
+    let deleted = 0;
+    let lastId = undefined;
+    let keepGoing = true;
+
+    while (keepGoing) {
+      const options = { limit: 100 };
+      if (lastId) options.before = lastId;
+
+      const batch = await message.channel.messages.fetch(options).catch(() => null);
+      if (!batch || batch.size === 0) { keepGoing = false; break; }
+
+      const userMsgs = [...batch.filter(m => m.author.id === target.id).values()];
+      lastId = batch.last().id;
+
+      // Bulk delete recent messages (< 14 days)
+      const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < 12 * 24 * 60 * 60 * 1000);
+      const old = userMsgs.filter(m => Date.now() - m.createdTimestamp >= 12 * 24 * 60 * 60 * 1000);
+
+      if (recent.length > 0) {
+        await message.channel.bulkDelete(recent, true).catch(() => {});
+        deleted += recent.length;
+      }
+      // Delete old messages one by one (bulkDelete doesn't work on these)
+      for (const msg of old) {
+        await msg.delete().catch(() => {});
+        deleted++;
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      if (deleted > 0 && deleted % 50 === 0) {
+        statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 Deleted **${deleted}** messages from **${target.username}** so far...` }] }).catch(() => {});
+      }
+
+      if (batch.size < 100) keepGoing = false;
+    }
+
+    await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 deleted **${deleted}** messages from **${target.username}**` }] }).catch(() => {});
+    setTimeout(() => statusMsg.delete().catch(() => {}), 5000);
+    return;
   }
 
   // ,purge contains <text> [amount]
