@@ -3192,10 +3192,11 @@ client.on("messageCreate", async (message) => {
 
 // ===== TICKET INACTIVITY MONITOR =====
 const TICKET_CATEGORY_ID = "1409003502826557560";
+const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
 const ticketWarnings = new Map();
 
-async function closeInactiveTicket(channelId, activity, reason = "1 hour of inactivity") {
+async function closeInactiveTicket(channelId, activity) {
   if (activity.closing) return;
   activity.closing = true;
   ticketActivity.set(channelId, activity);
@@ -3207,19 +3208,18 @@ async function closeInactiveTicket(channelId, activity, reason = "1 hour of inac
     if (!ch) { ticketActivity.delete(channelId); return; }
 
     // DM creator
-    const creator = await client.users.fetch(activity.creatorId).catch(() => null);
-    if (creator) {
-      creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **${reason}** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
-    }
+    client.users.fetch(activity.creatorId).then(creator => {
+      creator.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **2 hours** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+    }).catch(() => {});
 
-    // Warn in channel
-    await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **${reason}** and will be deleted in **10 seconds**.`, footer: { text: guild.name } }] }).catch(() => {});
+    // Send warning in channel
+    await ch.send({ embeds: [{ color: PINK, title: "⚠️ Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **2 hours** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
 
-    // Log to configured channel
+    // Log
     const cfg = ticketConfig.get(guild.id);
     if (cfg?.logChannelId) {
       const logCh = guild.channels.cache.get(cfg.logChannelId);
-      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** closed after **${reason}** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "🎫 Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **2 hours** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
     }
 
     // Cleanup
@@ -3229,10 +3229,12 @@ async function closeInactiveTicket(channelId, activity, reason = "1 hour of inac
       if (chId === channelId) { openTickets.delete(key); break; }
     }
 
-    setTimeout(() => ch.delete().catch(() => {}), 10000);
-    log(`[Tickets] Auto-closed ${ch.name} (${reason})`, "info");
+    // Delete channel immediately (await so we know if it works)
+    await new Promise(r => setTimeout(r, 5000));
+    await ch.delete("[Auto-Close] Inactive 2h").catch(e => log(`[Tickets] ❌ Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] ✅ Deleted ${ch.name}`, "success");
   } catch (e) {
-    log(`[Tickets] Error closing ${channelId}: ${e.message}`, "error");
+    log(`[Tickets] ❌ Error closing ${channelId}: ${e.message}`, "error");
     ticketActivity.delete(channelId);
   }
 }
@@ -3240,16 +3242,19 @@ async function closeInactiveTicket(channelId, activity, reason = "1 hour of inac
 // On startup: scan ticket category and re-register open tickets
 async function rehydrateTickets() {
   try {
+    let count = 0;
     for (const guild of client.guilds.cache.values()) {
       const ticketChannels = guild.channels.cache.filter(c => c.parentId === TICKET_CATEGORY_ID && c.type === 0);
       for (const ch of ticketChannels.values()) {
         if (ticketActivity.has(ch.id)) continue;
-        // Find creator from openTickets map
+
+        // Find creator from openTickets map first
         let creatorId = null;
         for (const [key, chId] of openTickets.entries()) {
           if (chId === ch.id) { creatorId = key.split('-')[1]; break; }
         }
-        // Fallback: first non-bot message author
+
+        // Fallback: first non-bot message in channel
         if (!creatorId) {
           const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
           if (msgs) {
@@ -3257,18 +3262,27 @@ async function rehydrateTickets() {
             if (firstHuman) creatorId = firstHuman.author.id;
           }
         }
-        if (!creatorId) continue;
 
-        // lastActivity = last message FROM CREATOR only
-        const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
-        const lastCreatorMsg = msgs ? [...msgs.values()].find(m => m.author.id === creatorId) : null;
+        if (!creatorId) { log(`[Tickets] Could not find creator for ${ch.name}, skipping`, "error"); continue; }
+
+        // lastActivity = last message from creator only (mods don't reset timer)
+        const msgs2 = await ch.messages.fetch({ limit: 100 }).catch(() => null);
+        const lastCreatorMsg = msgs2 ? [...msgs2.values()].find(m => m.author.id === creatorId) : null;
         const lastActivity = lastCreatorMsg ? lastCreatorMsg.createdTimestamp : ch.createdTimestamp;
+        const elapsed = Date.now() - lastActivity;
 
         ticketActivity.set(ch.id, { creatorId, guildId: guild.id, lastActivity, closing: false });
-        log(`[Tickets] Re-registered ${ch.name} (last activity: ${new Date(lastActivity).toLocaleTimeString()})`, "info");
+        count++;
+        log(`[Tickets] Re-registered ${ch.name} — inactive for ${Math.floor(elapsed/60000)}min`, "info");
+
+        // If already over 2 hours, close immediately
+        if (elapsed >= TICKET_TIMEOUT_MS) {
+          log(`[Tickets] ${ch.name} already past 2h — closing immediately`, "info");
+          closeInactiveTicket(ch.id, ticketActivity.get(ch.id));
+        }
       }
     }
-    log(`[Tickets] Rehydrated ${ticketActivity.size} tickets`, "info");
+    log(`[Tickets] Rehydrated ${count} tickets`, "success");
   } catch (e) {
     log(`[Tickets] Rehydration error: ${e.message}`, "error");
   }
@@ -3279,23 +3293,27 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   const activity = ticketActivity.get(message.channel.id);
   if (!activity || activity.closing) return;
-  if (message.author.id !== activity.creatorId) return; // only creator resets timer
+  if (message.author.id !== activity.creatorId) return;
   activity.lastActivity = Date.now();
   ticketActivity.set(message.channel.id, activity);
+  log(`[Tickets] Timer reset for ${message.channel.name}`, "info");
 });
 
-// Check every minute
+// Check every 5 minutes (more reliable than every minute)
 setInterval(async () => {
   const now = Date.now();
-  for (const [channelId, activity] of [...ticketActivity.entries()]) {
+  const entries = [...ticketActivity.entries()];
+  if (entries.length > 0) log(`[Tickets] Checking ${entries.length} ticket(s)...`, "info");
+  for (const [channelId, activity] of entries) {
     if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
-    if (elapsed >= 3600000) { // 1 hour
-      log(`[Tickets] ${channelId} inactive for ${Math.floor(elapsed/60000)}min — closing`, "info");
+    const minutesLeft = Math.ceil((TICKET_TIMEOUT_MS - elapsed) / 60000);
+    log(`[Tickets] ${channelId}: ${Math.floor(elapsed/60000)}min inactive (${minutesLeft}min left)`, "info");
+    if (elapsed >= TICKET_TIMEOUT_MS) {
       closeInactiveTicket(channelId, activity);
     }
   }
-}, 60 * 1000);
+}, 5 * 60 * 1000); // every 5 minutes
 
 // ===== TICKET + EXTRA COMMANDS =====
 client.on("messageCreate", async (message) => {
@@ -3365,7 +3383,7 @@ client.on("messageCreate", async (message) => {
         lastActivity: Date.now(),
         closing: false
       });
-      await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n⚠️ This ticket will be **automatically closed** if you don't respond within **1 hour**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
+      await ticketChannel.send({ embeds: [{ color: PINK, title: "🎫 Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n⚠️ This ticket will be **automatically closed** if you don't respond within **2 hours**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
       return ok(message, `ticket created: ${ticketChannel}`);
     }
     if (sub === "close") {
@@ -4264,10 +4282,13 @@ client.on("messageCreate", async (message) => {
 
   // ,clearsnipe
   if (command === "clearsnipe" || command === "cs") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const _csCfg = ticketConfig.get(message.guild.id);
+    const _csHasPerm = message.member.permissions.has(PermissionFlagsBits.ManageMessages);
+    const _csHasRole = _csCfg?.modRoleId && message.member.roles.cache.has(_csCfg.modRoleId);
+    if (!_csHasPerm && !_csHasRole) return err(message, "Missing permissions.");
     sniped.delete(message.channel.id);
     editSniped.delete(message.channel.id);
-    return ok(message, "Snipe cleared.");
+    return ok(message, "snipe cleared");
   }
 
   // ,identify <userId> — look up a user by ID
