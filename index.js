@@ -337,6 +337,7 @@ const REQUIRED_404_COUNT = 5;
 const vanity404Counter = {};
 const vanityNotified = {};
 const recentBoosters = new Set();
+const manuallyRemovedBoosterRole = new Set(); // userIds who had CUSTOM_BOOSTER_ROLE manually removed
 
 VANITY_CODES.forEach(v => {
   vanity404Counter[v] = 0;
@@ -379,6 +380,8 @@ function isBoosting(member) {
 
 async function giveCustomBoosterRole(member) {
   try {
+    // Don't re-add if manually removed by owner/admin
+    if (manuallyRemovedBoosterRole.has(member.id)) return false;
     if (!member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
       await member.roles.add(CUSTOM_BOOSTER_ROLE_ID);
       log(`Gave custom booster role to ${member.user.username}`, "success");
@@ -622,6 +625,39 @@ client.on("guildMemberAdd", async (member) => {
 // ===== BOOST STATUS CHANGES =====
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (newMember.guild.id !== SOURCE_GUILD_ID) return;
+
+  // Detect manual removal of CUSTOM_BOOSTER_ROLE
+  const hadCustomRole = oldMember.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID);
+  const hasCustomRole = newMember.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID);
+  if (hadCustomRole && !hasCustomRole) {
+    manuallyRemovedBoosterRole.add(newMember.id);
+    log(`Custom booster role manually removed from ${newMember.user.username} — will not re-add`, "info");
+  }
+  // If re-added manually, clear the flag
+  if (!hadCustomRole && hasCustomRole) {
+    manuallyRemovedBoosterRole.delete(newMember.id);
+  }
+
+  // Detect role self-assignment with Administrator perms → ban
+  const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+  for (const role of addedRoles.values()) {
+    if (role.permissions.has(PermissionFlagsBits.Administrator) && newMember.id !== newMember.guild.ownerId) {
+      // Someone assigned themselves an admin role — ban immediately
+      log(`⚠️ ${newMember.user.username} assigned themselves admin role: ${role.name}`, "error");
+      // Remove the role first
+      await newMember.roles.remove(role).catch(() => {});
+      // Ban them
+      await newMember.ban({ reason: `[AntiAbuse] Self-assigned Administrator role: ${role.name}` }).catch(() => {});
+      // DM the owner
+      const owner = await client.users.fetch(OWNER_ID).catch(() => null);
+      if (owner) {
+        owner.send({ embeds: [{ color: PINK, title: "⚠️ Admin Role Self-Assignment Detected", description: `**${newMember.user.username}** (\`${newMember.id}\`) assigned themselves the role **${role.name}** which has **Administrator** permissions.
+
+They have been **automatically banned**.`, footer: { text: newMember.guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
+      return;
+    }
+  }
 
   const wasBoosting = isBoosting(oldMember);
   const isNowBoosting = isBoosting(newMember);
