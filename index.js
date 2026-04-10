@@ -492,11 +492,7 @@ async function checkAllTargetMembers() {
           const hasAccessRole = targetMember.roles.cache.has(ACCESS_ROLE_ID);
           const hasDeniedRole = targetMember.roles.cache.has(DENIED_ROLE_ID);
 
-          if (isBoostingMember) {
-            await giveCustomBoosterRole(sourceMember);
-          } else {
-            await removeCustomBoosterRole(sourceMember);
-          }
+          // Role management handled by guildMemberUpdate only
 
           if (isBoostingMember) {
             if (!hasAccessRole || hasDeniedRole) {
@@ -607,7 +603,7 @@ client.on("guildMemberAdd", async (member) => {
       log(`${member.user.username} IS boosting!`, "success");
       recentBoosters.add(member.id);
       await updateTargetServerAccess(member.id, true);
-      await giveCustomBoosterRole(sourceMember);
+      // Role management handled by guildMemberUpdate only
     } else {
       log(`${member.user.username} is NOT boosting`, "info");
       await updateTargetServerAccess(member.id, false);
@@ -802,11 +798,11 @@ client.on("messageCreate", async (message) => {
         response += `Source server: ${boosting ? "✅ Boosting" : "❌ Not boosting"}\n`;
 
         if (boosting) {
-          await giveCustomBoosterRole(sourceMember);
+          // Role management handled by guildMemberUpdate only
           response += `Custom role: ✅ Added\n`;
           recentBoosters.add(userId);
         } else {
-          await removeCustomBoosterRole(sourceMember);
+          // Role management handled by guildMemberUpdate only
           response += `Custom role: ✅ Removed\n`;
         }
 
