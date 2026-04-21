@@ -172,32 +172,26 @@ const PINK = 0xFF69B4;  // Hot pink color for all embeds
 
 // ✅ Success response — pink embed, no title, inline style
 function ok(message, text) {
-  return message.reply({
-    embeds: [{
-      color: PINK,
-      description: `🌸 ${message.author} ${text}`
-    }]
-  });
+  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
 }
 
 // ❌ Error response
 function err(message, text) {
-  return message.reply({
-    embeds: [{
-      color: PINK,
-      description: `✖ ${message.author} ${text}`
-    }]
-  });
+  const embed = { color: PINK, description: `✖ ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
 }
 
 // ℹ️ Info response
 function info(message, text) {
-  return message.reply({
-    embeds: [{
-      color: PINK,
-      description: `🌸 ${message.author} ${text}`
-    }]
-  });
+  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
 }
 
 // 📊 Data embed with fields
@@ -227,7 +221,7 @@ async function confirm(message, text, onConfirm) {
   collector.on("collect", async i => {
     try {
       if (i.user.id !== message.author.id) {
-        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], flags: 64 });
       }
       if (i.customId === "confirm_yes") {
         await i.update({ embeds: [{ color: PINK, description: "🌸 Executing..." }], components: [] });
@@ -962,7 +956,7 @@ client.on("messageCreate", async (message) => {
   collector.on("collect", async i => {
     try {
       if (i.user.id !== message.author.id) {
-        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+        return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], flags: 64 });
       }
       if (i.customId === "modstats_prev" && page > 0) page--;
       else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
@@ -2509,7 +2503,7 @@ client.on("messageCreate", async (message) => {
     collector.on("collect", async i => {
       try {
         if (i.user.id !== message.author.id) {
-          return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], ephemeral: true });
+          return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], flags: 64 });
         }
         // Handle select menu
         if (i.isStringSelectMenu()) {
@@ -8482,6 +8476,17 @@ client.on("messageCreate", async (message) => {
 // ===== ERROR HANDLING =====
 client.on("error", (error) => {
   log(`Client error: ${error.message}`, "error");
+});
+
+// Prevent crashes from unhandled promise rejections
+process.on("unhandledRejection", (error) => {
+  log(`Unhandled rejection: ${error?.message || error}`, "error");
+  // Do NOT exit — just log it
+});
+
+process.on("uncaughtException", (error) => {
+  log(`Uncaught exception: ${error?.message || error}`, "error");
+  // Do NOT exit
 });
 
 // Clean up handled messages cache every 30 seconds
