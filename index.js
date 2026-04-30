@@ -4088,6 +4088,55 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ ${action === "add" ? "Added" : "Removed"} **${role.name}** for **${count}** members.` }] });
   }
 
+  // ,addr inactive @role-to-add | @required-role1 @required-role2 ...
+  // Adds @role-to-add to everyone who doesn't have ANY of the required roles
+  if (command === "addr" && args[1]?.toLowerCase() === "inactive") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+
+    const raw = message.content.slice(1).trim();
+    const parts = raw.split("|");
+    if (parts.length < 2) return err(message, "usage: `,addr inactive @role-to-add | @required-role1 @required-role2 ...`");
+
+    const leftMentions = parts[0].match(/<@&(\d+)>/g) || [];
+    if (leftMentions.length === 0) return err(message, "missing required argument: **role to add**");
+    const roleToAddId = leftMentions[0].replace(/<@&|>/g, '');
+    const roleToAdd = message.guild.roles.cache.get(roleToAddId);
+    if (!roleToAdd) return err(message, "role to add not found");
+
+    const rightMentions = parts[1].match(/<@&(\d+)>/g) || [];
+    if (rightMentions.length === 0) return err(message, "missing required argument: **required roles**");
+    const requiredRoleIds = rightMentions.map(m => m.replace(/<@&|>/g, ''));
+    const requiredRoles = requiredRoleIds.map(id => message.guild.roles.cache.get(id)).filter(Boolean);
+
+    await message.channel.sendTyping().catch(() => {});
+    const members = await message.guild.members.fetch();
+
+    const inactive = members.filter(m => {
+      if (m.user.bot) return false;
+      if (m.roles.cache.has(roleToAdd.id)) return false;
+      return requiredRoleIds.every(rid => !m.roles.cache.has(rid));
+    });
+
+    if (inactive.size === 0) return info(message, `no inactive members found (everyone has at least one of the required roles)`);
+
+    // Show confirm buttons
+    return confirm(message,
+      `This will add **${roleToAdd.name}** to **${inactive.size}** members who don't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`,
+      async () => {
+        const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `🌸 Adding **${roleToAdd.name}** to **${inactive.size}** members...` }] }).catch(() => null);
+        let count = 0;
+        for (const m of inactive.values()) {
+          await m.roles.add(roleToAdd).catch(() => {});
+          count++;
+          if (count % 25 === 0 && statusMsg) {
+            statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 Progress: **${count}/${inactive.size}** members...` }] }).catch(() => {});
+          }
+        }
+        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, title: "✅ Done", description: `Added **${roleToAdd.name}** to **${count}** members\nwho didn't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`, footer: { text: message.guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
+    );
+  }
+
   // ,logging <#channel | off> — set mod log channel
   if (command === "logging") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
