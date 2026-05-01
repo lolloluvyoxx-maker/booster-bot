@@ -540,6 +540,9 @@ client.once("clientReady", async () => {
   // Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
 
+  // Resume mass DM if it was in progress before restart
+  setTimeout(() => resumeMassDMIfNeeded(), 5000);
+
   try {
     const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
     const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
@@ -1995,6 +1998,38 @@ client.on("messageCreate", async (message) => {
     return ok(message, `DM sent to **${target.username}**`);
   }
 
+  // ,massdm @role-to-exclude <message> — DMs all members WITHOUT a specific role
+  if (command === "massdm") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+
+    const excludeRole = message.mentions.roles.first();
+    if (!excludeRole) return err(message, "missing required argument: **role to exclude**\nusage: `,massdm @role <message>` — DMs everyone who does NOT have this role.");
+
+    const dmText = args.slice(2).join(" ");
+    if (!dmText) return err(message, "missing required argument: **message**\nusage: `,massdm @role <message>`");
+
+    await message.channel.sendTyping().catch(() => {});
+    const allMembers = await message.guild.members.fetch().catch(() => null);
+    if (!allMembers) return err(message, "failed to fetch members");
+
+    const targets = [...allMembers.filter(m => !m.user.bot && !m.roles.cache.has(excludeRole.id)).values()];
+    if (targets.length === 0) return info(message, `no members found without **${excludeRole.name}**`);
+
+    return confirm(message,
+      `This will DM **${targets.length}** members who don't have **${excludeRole.name}**.\n\nMessage:\n> ${dmText.substring(0, 200)}${dmText.length > 200 ? '...' : ''}`,
+      async () => {
+        await runMassDM({
+          guildId: message.guild.id,
+          channelId: message.channel.id,
+          excludeRoleId: excludeRole.id,
+          dmText,
+          targetIds: targets.map(m => m.id),
+          startIndex: 0
+        });
+      }
+    );
+  }
+
   // ,topic <text>
   if (command === "topic") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
@@ -3216,7 +3251,170 @@ client.on("messageCreate", async (message) => {
   // ,ticket setup <#log-channel>
 });
 
-// ===== TICKET INACTIVITY MONITOR =====
+// ===================================================
+// ===== MASS DM SYSTEM (with Railway persistence) ===
+// ===================================================
+const MASSDM_TAG = "SENSATIONAL_MASSDM_V1";
+let activeMassDM = null; // { guildId, channelId, dmText, targetIds, startIndex, statusMsgId, sent, failed }
+
+async function saveMassDMProgress() {
+  if (!activeMassDM) return;
+  try {
+    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
+    if (!ch) return;
+    const content = `\`\`\`json\n${MASSDM_TAG}\n${JSON.stringify(activeMassDM)}\n\`\`\``;
+    // Find existing massdm message or create new one
+    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    const existing = msgs?.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
+    if (existing) await existing.edit(content).catch(() => {});
+    else await ch.send(content).catch(() => {});
+  } catch {}
+}
+
+async function clearMassDMProgress() {
+  try {
+    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
+    if (!ch) return;
+    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    const existing = msgs?.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
+    if (existing) await existing.delete().catch(() => {});
+  } catch {}
+  activeMassDM = null;
+}
+
+async function resumeMassDMIfNeeded() {
+  try {
+    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
+    if (!ch) return;
+    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
+    if (!msgs) return;
+    const saved = msgs.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
+    if (!saved) return;
+    const match = saved.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
+    if (!match) return;
+    const state = JSON.parse(match[1]);
+    if (!state.targetIds?.length || state.startIndex >= state.targetIds.length) {
+      await saved.delete().catch(() => {});
+      return;
+    }
+    const remaining = state.targetIds.length - state.startIndex;
+    log(`[MassDM] Resuming — ${remaining} users left from index ${state.startIndex}`, "info");
+    // Notify in original channel
+    const notifyCh = client.channels.cache.get(state.channelId);
+    if (notifyCh) {
+      await notifyCh.send({ embeds: [{ color: PINK, title: "📨 Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n⏳ **${remaining}** users remaining (${state.sent} sent, ${state.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
+    }
+    runMassDM(state);
+  } catch (e) {
+    log(`[MassDM] Resume error: ${e.message}`, "error");
+  }
+}
+
+async function runMassDM(state) {
+  const { guildId, channelId, dmText, targetIds, sent: prevSent = 0, failed: prevFailed = 0 } = state;
+  let { startIndex = 0 } = state;
+
+  activeMassDM = { ...state, sent: prevSent, failed: prevFailed, startIndex };
+
+  const guild = client.guilds.cache.get(guildId);
+  const statusCh = client.channels.cache.get(channelId);
+
+  let sent = prevSent, failed = prevFailed, rateLimited = 0;
+  let cancelled = false;
+  const startTime = Date.now();
+  const total = targetIds.length;
+
+  const statusMsg = statusCh ? await statusCh.send({ embeds: [{ color: PINK,
+    title: "📨 Mass DM in progress...",
+    description: `Sending to **${total - startIndex}** remaining members (${startIndex > 0 ? `resumed from #${startIndex}` : 'started fresh'})\n\n✅ Sent: **${sent}** | ❌ Failed: **${failed}** | ⏳ Remaining: **${total - startIndex}**`,
+    footer: { text: "React ❌ to cancel" }
+  }] }).catch(() => null) : null;
+
+  if (statusMsg) {
+    activeMassDM.statusMsgId = statusMsg.id;
+    await statusMsg.react("❌").catch(() => {});
+    statusMsg.createReactionCollector({
+      filter: (r, u) => r.emoji.name === "❌" && !u.bot,
+      time: 48 * 60 * 60 * 1000
+    }).on("collect", () => { cancelled = true; });
+  }
+
+  const updateStatus = async () => {
+    if (!statusMsg) return;
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const done = (sent + failed) - prevSent - prevFailed;
+    const rate = done / (elapsed || 1);
+    const remaining = total - startIndex;
+    const eta = rate > 0 ? Math.ceil(remaining / rate) : "?";
+    await statusMsg.edit({ embeds: [{ color: PINK,
+      title: "📨 Mass DM in progress...",
+      description: `✅ Sent: **${sent}** | ❌ Failed: **${failed}** | ⏳ Remaining: **${remaining}**\n⚡ **${rate.toFixed(1)}/s** | ⏱️ ETA: **${typeof eta === "number" ? eta + "s" : eta}**\n📌 Progress saved — safe to restart`,
+      footer: { text: `Elapsed: ${elapsed}s` }
+    }] }).catch(() => {});
+  };
+
+  for (let i = startIndex; i < targetIds.length; i++) {
+    if (cancelled) break;
+
+    const userId = targetIds[i];
+    let retries = 0, done = false;
+
+    while (retries < 3 && !done) {
+      try {
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (!user) { failed++; done = true; break; }
+        await user.send({ embeds: [{ color: PINK,
+          title: `📨 Message from ${guild?.name || "Server"}`,
+          description: dmText,
+          footer: { text: guild?.name || "Server" },
+          timestamp: new Date()
+        }] });
+        sent++;
+        done = true;
+      } catch (e) {
+        if (e.code === 50007 || e.code === 50013 || e.code === 10013) {
+          failed++; done = true; // DMs closed or invalid user
+        } else if (e.status === 429 || e.code === 429) {
+          rateLimited++;
+          const wait = Math.max((e.retryAfter || 5) * 1000, 5000) + 1000;
+          log(`[MassDM] Rate limited — waiting ${wait}ms`, "error");
+          await new Promise(r => setTimeout(r, wait));
+          retries++;
+        } else {
+          failed++; done = true;
+        }
+      }
+    }
+    if (!done) failed++;
+
+    startIndex = i + 1;
+    activeMassDM.startIndex = startIndex;
+    activeMassDM.sent = sent;
+    activeMassDM.failed = failed;
+
+    // Save progress every 10 sends
+    if (startIndex % 10 === 0) await saveMassDMProgress();
+    // Update status every 50
+    if (startIndex % 50 === 0) await updateStatus();
+
+    // 1.1s between DMs — Discord allows ~1/s
+    await new Promise(r => setTimeout(r, 1100));
+  }
+
+  // Done — clear saved state
+  await clearMassDMProgress();
+
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK,
+    title: cancelled ? "📨 Mass DM cancelled" : "📨 Mass DM complete ✅",
+    description: `✅ Sent: **${sent}** | ❌ Failed (DMs off): **${failed}**${rateLimited > 0 ? ` | ⚡ Rate limited: **${rateLimited}x**` : ""}\n⏱️ Total time: **${elapsed}s** | 👥 Total: **${total}**`,
+    footer: { text: guild?.name || "Server" }, timestamp: new Date()
+  }] }).catch(() => {});
+
+  log(`[MassDM] Complete — sent: ${sent}, failed: ${failed}, time: ${elapsed}s`, "success");
+}
+
+
 const TICKET_CATEGORY_ID = "1409003502826557560";
 const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
@@ -4090,6 +4288,87 @@ client.on("messageCreate", async (message) => {
 
   // ,addr inactive @role-to-add | @required-role1 @required-role2 ...
   // Adds @role-to-add to everyone who doesn't have ANY of the required roles
+  // ,inactive remove @role1 @role2 ... — kicks up to 350 members missing ALL listed roles
+  if (command === "inactive" && args[1]?.toLowerCase() === "remove") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+
+    const roleIds = [...message.content.matchAll(/<@&(\d+)>/g)].map(m => m[1]);
+    if (roleIds.length === 0) return err(message, "missing required argument: **roles**\nusage: `,inactive remove @role1 @role2 ...`\nKicks members who have NONE of the listed roles.");
+
+    const roles = roleIds.map(id => message.guild.roles.cache.get(id)).filter(Boolean);
+    if (roles.length === 0) return err(message, "no valid roles found");
+
+    await message.channel.sendTyping().catch(() => {});
+    const allMembers = await message.guild.members.fetch().catch(() => null);
+    if (!allMembers) return err(message, "failed to fetch members");
+
+    // Members who have NONE of the listed roles
+    const toKick = [...allMembers.filter(m => {
+      if (m.user.bot) return false;
+      if (m.id === message.author.id) return false;
+      if (m.id === OWNER_ID) return false;
+      if (m.roles.highest.position >= message.guild.members.me.roles.highest.position) return false;
+      // If they have EVEN ONE of the required roles → safe
+      return roleIds.every(rid => !m.roles.cache.has(rid));
+    }).values()].slice(0, 350); // cap at 350
+
+    if (toKick.length === 0) return info(message, `no inactive members found — everyone has at least one of: ${roles.map(r => `**${r.name}**`).join(', ')}`);
+
+    return confirm(message,
+      `This will kick **${toKick.length}** members who have NONE of: ${roles.map(r => `**${r.name}**`).join(', ')}\n\n⚠️ Anyone with even ONE of these roles is safe.`,
+      async () => {
+        const statusMsg = await message.channel.send({ embeds: [{ color: PINK,
+          title: "👢 Inactive Kick in progress...",
+          description: `Kicking **${toKick.length}** members...\n\n✅ Kicked: **0** | ❌ Failed: **0** | ⏳ Remaining: **${toKick.length}**`,
+          footer: { text: "Rate limit safe — 1 kick/s" }
+        }] }).catch(() => null);
+
+        let kicked = 0, failed = 0;
+
+        for (const member of toKick) {
+          let retries = 0;
+          while (retries < 3) {
+            try {
+              await member.kick(`[Inactive Remove] Missing roles: ${roles.map(r => r.name).join(', ')}`);
+              kicked++;
+              break;
+            } catch (e) {
+              if (e.status === 429 || e.code === 429) {
+                // Rate limited — wait and retry
+                const wait = ((e.retryAfter || 5) * 1000) + 500;
+                log(`[InactiveRemove] Rate limited — waiting ${wait}ms`, "error");
+                await new Promise(r => setTimeout(r, wait));
+                retries++;
+              } else {
+                failed++;
+                break;
+              }
+            }
+          }
+
+          if ((kicked + failed) % 25 === 0 && statusMsg) {
+            statusMsg.edit({ embeds: [{ color: PINK,
+              title: "👢 Inactive Kick in progress...",
+              description: `✅ Kicked: **${kicked}** | ❌ Failed: **${failed}** | ⏳ Remaining: **${toKick.length - kicked - failed}**`,
+              footer: { text: "Rate limit safe" }
+            }] }).catch(() => {});
+          }
+
+          // 1.1s between each kick — rate limit safe
+          await new Promise(r => setTimeout(r, 1100));
+        }
+
+        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK,
+          title: "👢 Inactive Kick complete ✅",
+          description: `✅ Kicked: **${kicked}** | ❌ Failed: **${failed}**\nMissing all of: ${roles.map(r => `**${r.name}**`).join(', ')}`,
+          footer: { text: message.guild.name }, timestamp: new Date()
+        }] }).catch(() => {});
+
+        log(`[InactiveRemove] Kicked ${kicked} members, failed ${failed}`, "success");
+      }
+    );
+  }
+
   if (command === "addr" && args[1]?.toLowerCase() === "inactive") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
 
