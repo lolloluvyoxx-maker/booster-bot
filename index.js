@@ -1577,6 +1577,8 @@ const CMD_SCHEMA = {
   checkall: { usage: ",checkall", args: [] },
   fixuser: { usage: ",fixuser <userId|@user>", args: [] },
   stats: { usage: ",stats", args: [] },
+  inactive: { usage: ",inactive remove @role1 @role2 ...", args: [] },
+  addr: { usage: ",addr inactive @role-to-add | @required-role1 ...", args: [] },
   s: { usage: ",s", args: [] },
   cs: { usage: ",cs", args: [] },
   es: { usage: ",es", args: [] },
