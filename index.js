@@ -8885,8 +8885,11 @@ async function fetchNitterRSS(username) {
 async function pollTwitterAccounts() {
   for (const [guildId, cfg] of twitterConfig.entries()) {
     if (!cfg.channelId || cfg.accounts.size === 0) continue;
-    const channel = client.channels.cache.get(cfg.channelId);
-    if (!channel) continue;
+    const channel = client.channels.cache.get(cfg.channelId) || await client.channels.fetch(cfg.channelId).catch(() => null);
+    if (!channel) {
+      log(`[Twitter] Channel ${cfg.channelId} not found for guild ${guildId}`, "error");
+      continue;
+    }
 
     for (const username of cfg.accounts) {
       try {
@@ -9049,11 +9052,39 @@ client.on("interactionCreate", async (interaction) => {
       cfg.accounts.add(username);
       saveAllConfigs();
 
-      // Immediately fetch last tweet so next poll sends only NEW ones
-      fetchNitterRSS(username).then(rss => {
+      // Immediately fetch and repost the latest tweet
+      fetchNitterRSS(username).then(async rss => {
         if (!rss) return;
-        const idMatch = rss.match(/\/status\/(\d+)/);
-        if (idMatch && !lastTweetId[username]) lastTweetId[username] = idMatch[1];
+        const items = [...rss.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+        if (items.length === 0) return;
+        const item = items[0][1];
+        const linkMatch = item.match(/<link>(.*?)<\/link>/);
+        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>(.*?)<\/title>/);
+        const pubDateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
+        const mediaMatch = item.match(/<media:thumbnail[^>]*url="([^"]+)"/);
+        if (!linkMatch) return;
+        const rawLink = linkMatch[1].replace(/&amp;/g, "&");
+        const tweetIdMatch = rawLink.match(/\/status\/(\d+)/);
+        if (!tweetIdMatch) return;
+        const tweetId = tweetIdMatch[1];
+        lastTweetId[username] = tweetId;
+        if (cfg.channelId) {
+          const ch = client.channels.cache.get(cfg.channelId) || await client.channels.fetch(cfg.channelId).catch(() => null);
+          if (ch) {
+            const tweetUrl = `https://twitter.com/${username}/status/${tweetId}`;
+            const title = (titleMatch ? titleMatch[1] : "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+            const embed = {
+              color: PINK,
+              author: { name: `@${username}`, url: `https://twitter.com/${username}`, icon_url: "https://abs.twimg.com/icons/apple-touch-icon-192x192.png" },
+              description: title.length > 500 ? title.substring(0, 497) + "…" : title || null,
+              url: tweetUrl,
+              image: mediaMatch ? { url: mediaMatch[1] } : null,
+              footer: { text: "Twitter / X" },
+              timestamp: pubDateMatch ? new Date(pubDateMatch[1]) : new Date(),
+            };
+            await ch.send({ content: tweetUrl, embeds: [embed] }).catch(() => {});
+          }
+        }
       }).catch(() => {});
 
       await showTwitterPanel(null, cfg, guildId, interaction.message);
