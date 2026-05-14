@@ -53,6 +53,7 @@ function buildConfigSnapshot() {
     automodExempt,
     warnThresholds,
     userTimezones,
+    twitterConfig,
   };
 }
 
@@ -153,6 +154,15 @@ async function loadAllConfigs() {
     if (data.automodExempt instanceof Map) { automodExempt.clear(); data.automodExempt.forEach((v,k) => automodExempt.set(k,v)); }
     if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
     if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
+    if (data.twitterConfig instanceof Map) {
+      twitterConfig.clear();
+      data.twitterConfig.forEach((v, k) => {
+        if (v && typeof v === "object") {
+          if (!(v.accounts instanceof Set)) v.accounts = new Set(Array.isArray(v.accounts) ? v.accounts : []);
+          twitterConfig.set(k, v);
+        }
+      });
+    }
 
     console.log("[Config] ✅ All configs restored from Discord");
   } catch (e) {
@@ -8820,5 +8830,329 @@ process.on("uncaughtException", (error) => {
 });
 
 // Clean up handled messages cache every 30 seconds
+
+// ===================================================
+// ===== TWITTER REPOST SYSTEM =======================
+// ===================================================
+
+// twitterConfig[guildId] = { accounts: Set<string>, channelId: string|null }
+const twitterConfig = new Map();
+// lastTweetId[username] = tweetId string (to avoid double-posting)
+const lastTweetId = {};
+
+function getTwitterConfig(guildId) {
+  if (!twitterConfig.has(guildId)) {
+    twitterConfig.set(guildId, { accounts: new Set(), channelId: null });
+  }
+  return twitterConfig.get(guildId);
+}
+
+// Nitter instances (free, no API key needed)
+const NITTER_INSTANCES = [
+  "https://nitter.privacydev.net",
+  "https://nitter.poast.org",
+  "https://nitter.1d4.us",
+  "https://nitter.adminforge.de",
+];
+
+async function fetchNitterRSS(username) {
+  for (const instance of NITTER_INSTANCES) {
+    try {
+      const res = await fetch(`${instance}/${username}/rss`, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; Discordbot/1.0)" },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const text = await res.text();
+        if (text.includes("<item>")) return text;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function pollTwitterAccounts() {
+  for (const [guildId, cfg] of twitterConfig.entries()) {
+    if (!cfg.channelId || cfg.accounts.size === 0) continue;
+    const channel = client.channels.cache.get(cfg.channelId);
+    if (!channel) continue;
+
+    for (const username of cfg.accounts) {
+      try {
+        const rss = await fetchNitterRSS(username);
+        if (!rss) continue;
+
+        const items = [...rss.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+        if (items.length === 0) continue;
+
+        // First item = newest tweet
+        const item = items[0][1];
+        const linkMatch = item.match(/<link>(.*?)<\/link>/);
+        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>(.*?)<\/title>/);
+        const pubDateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
+        const mediaMatch = item.match(/<media:thumbnail[^>]*url="([^"]+)"/);
+
+        if (!linkMatch) continue;
+
+        // Convert nitter link → real Twitter link
+        const rawLink = linkMatch[1].replace(/&amp;/g, "&");
+        const tweetIdMatch = rawLink.match(/\/status\/(\d+)/);
+        if (!tweetIdMatch) continue;
+
+        const tweetId = tweetIdMatch[1];
+
+        // First poll — just record without posting
+        if (!lastTweetId[username]) {
+          lastTweetId[username] = tweetId;
+          log(`[Twitter] Tracking @${username}, latest tweet: ${tweetId}`, "info");
+          continue;
+        }
+
+        // No new tweet
+        if (tweetId === lastTweetId[username]) continue;
+
+        // New tweet found!
+        lastTweetId[username] = tweetId;
+
+        const tweetUrl = `https://twitter.com/${username}/status/${tweetId}`;
+        const title = (titleMatch ? titleMatch[1] : "")
+          .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+
+        // Skip retweets if desired (RT @...) — comment this out to include them
+        // if (title.startsWith("RT @")) continue;
+
+        const embed = {
+          color: PINK,
+          author: {
+            name: `@${username}`,
+            url: `https://twitter.com/${username}`,
+            icon_url: "https://abs.twimg.com/icons/apple-touch-icon-192x192.png",
+          },
+          description: title.length > 500 ? title.substring(0, 497) + "…" : title || null,
+          url: tweetUrl,
+          image: mediaMatch ? { url: mediaMatch[1] } : null,
+          footer: { text: "Twitter / X" },
+          timestamp: pubDateMatch ? new Date(pubDateMatch[1]) : new Date(),
+        };
+
+        await channel.send({ content: tweetUrl, embeds: [embed] }).catch(() => {});
+        log(`[Twitter] Reposted tweet from @${username} → ${tweetUrl}`, "success");
+
+      } catch (e) {
+        log(`[Twitter] Error polling @${username}: ${e.message}`, "error");
+      }
+    }
+  }
+}
+
+// Poll every 60 seconds
+setInterval(pollTwitterAccounts, 60 * 1000);
+
+// ── CONFIG PANEL EMBED BUILDER ───────────────────────
+async function showTwitterPanel(target, cfg, guildId, editTarget = null) {
+  const accounts = [...cfg.accounts];
+  const channelStr = cfg.channelId ? `<#${cfg.channelId}>` : "❌ not set";
+
+  const panelEmbed = {
+    color: PINK,
+    title: "🐦  Twitter Repost Panel",
+    description: "Manage which Twitter accounts get reposted automatically in your server.",
+    fields: [
+      { name: "📌 Repost Channel", value: channelStr, inline: true },
+      { name: "🔄 Poll Interval", value: "every 60s", inline: true },
+      { name: "\u200b", value: "\u200b", inline: true },
+      {
+        name: `👥 Followed Accounts (${accounts.length})`,
+        value: accounts.length > 0
+          ? accounts.map(a => `\`@${a}\``).join("  ·  ")
+          : "none — add one below",
+        inline: false,
+      },
+    ],
+    footer: { text: "v3.9 | Made by hrodvitnir_fenrir" },
+    timestamp: new Date(),
+  };
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("tw_add").setLabel("➕ Add Account").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("tw_remove").setLabel("➖ Remove").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("tw_setchannel").setLabel("📌 Set Channel").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("tw_refresh").setLabel("🔄 Refresh").setStyle(ButtonStyle.Secondary),
+  );
+
+  if (editTarget) {
+    return editTarget.edit({ embeds: [panelEmbed], components: [row] }).catch(() => null);
+  } else {
+    return target.reply({ embeds: [panelEmbed], components: [row] }).catch(() => null);
+  }
+}
+
+// ── ,config-panel COMMAND ────────────────────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (message.author.id !== OWNER_ID) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  if (command !== "config-panel" && command !== "twconfig") return;
+
+  const cfg = getTwitterConfig(message.guild.id);
+  await showTwitterPanel(message, cfg, message.guild.id);
+});
+
+// ── TWITTER PANEL BUTTON INTERACTIONS ───────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("tw_")) return;
+
+  if (interaction.user.id !== OWNER_ID) {
+    return interaction.reply({
+      embeds: [{ color: PINK, description: "✖ Only the server owner can use this panel." }],
+      flags: 64,
+    });
+  }
+
+  const cfg = getTwitterConfig(interaction.guild.id);
+  const guildId = interaction.guild.id;
+
+  // 🔄 Refresh
+  if (interaction.customId === "tw_refresh") {
+    await interaction.deferUpdate();
+    await showTwitterPanel(null, cfg, guildId, interaction.message);
+    return;
+  }
+
+  // ➕ Add account
+  if (interaction.customId === "tw_add") {
+    await interaction.reply({
+      embeds: [{ color: PINK, description: "🌸 Type the **Twitter username** to add (e.g. `elonmusk` or `@elonmusk`). You have **30 seconds**." }],
+      flags: 64,
+    });
+
+    const collector = interaction.channel.createMessageCollector({
+      filter: m => m.author.id === OWNER_ID,
+      time: 30000,
+      max: 1,
+    });
+
+    collector.on("collect", async m => {
+      const username = m.content.trim().replace(/^@/, "").toLowerCase();
+      m.delete().catch(() => {});
+
+      if (!username || !/^[a-zA-Z0-9_]{1,50}$/.test(username)) {
+        return interaction.followUp({ embeds: [{ color: PINK, description: "✖ Invalid username." }], flags: 64 });
+      }
+      if (cfg.accounts.has(username)) {
+        return interaction.followUp({ embeds: [{ color: PINK, description: `✖ **@${username}** is already in the list.` }], flags: 64 });
+      }
+
+      cfg.accounts.add(username);
+      saveAllConfigs();
+
+      // Immediately fetch last tweet so next poll sends only NEW ones
+      fetchNitterRSS(username).then(rss => {
+        if (!rss) return;
+        const idMatch = rss.match(/\/status\/(\d+)/);
+        if (idMatch && !lastTweetId[username]) lastTweetId[username] = idMatch[1];
+      }).catch(() => {});
+
+      await showTwitterPanel(null, cfg, guildId, interaction.message);
+      await interaction.followUp({
+        embeds: [{ color: PINK, description: `🌸 Now following **@${username}** — new tweets will be reposted in <#${cfg.channelId || "???"}>!` }],
+        flags: 64,
+      });
+    });
+
+    collector.on("end", collected => {
+      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out — no username received." }], flags: 64 }).catch(() => {});
+    });
+    return;
+  }
+
+  // ➖ Remove account
+  if (interaction.customId === "tw_remove") {
+    if (cfg.accounts.size === 0) {
+      return interaction.reply({ embeds: [{ color: PINK, description: "✖ No accounts to remove." }], flags: 64 });
+    }
+
+    await interaction.reply({
+      embeds: [{
+        color: PINK,
+        description: `🌸 Type the username to **remove**:\n${[...cfg.accounts].map(a => `\`@${a}\``).join("  ·  ")}\n\nYou have **30 seconds**.`,
+      }],
+      flags: 64,
+    });
+
+    const collector = interaction.channel.createMessageCollector({
+      filter: m => m.author.id === OWNER_ID,
+      time: 30000,
+      max: 1,
+    });
+
+    collector.on("collect", async m => {
+      const username = m.content.trim().replace(/^@/, "").toLowerCase();
+      m.delete().catch(() => {});
+
+      if (!cfg.accounts.has(username)) {
+        return interaction.followUp({ embeds: [{ color: PINK, description: `✖ **@${username}** is not in the list.` }], flags: 64 });
+      }
+
+      cfg.accounts.delete(username);
+      delete lastTweetId[username];
+      saveAllConfigs();
+
+      await showTwitterPanel(null, cfg, guildId, interaction.message);
+      await interaction.followUp({
+        embeds: [{ color: PINK, description: `🌸 Removed **@${username}** — no longer reposting their tweets.` }],
+        flags: 64,
+      });
+    });
+
+    collector.on("end", collected => {
+      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out." }], flags: 64 }).catch(() => {});
+    });
+    return;
+  }
+
+  // 📌 Set channel
+  if (interaction.customId === "tw_setchannel") {
+    await interaction.reply({
+      embeds: [{ color: PINK, description: "🌸 Mention the **channel** where tweets should be reposted (e.g. `#auto`). You have **30 seconds**." }],
+      flags: 64,
+    });
+
+    const collector = interaction.channel.createMessageCollector({
+      filter: m => m.author.id === OWNER_ID,
+      time: 30000,
+      max: 1,
+    });
+
+    collector.on("collect", async m => {
+      const ch = m.mentions.channels.first() || interaction.guild.channels.cache.get(m.content.trim());
+      m.delete().catch(() => {});
+
+      if (!ch) {
+        return interaction.followUp({ embeds: [{ color: PINK, description: "✖ Channel not found. Mention it like `#auto`." }], flags: 64 });
+      }
+
+      cfg.channelId = ch.id;
+      saveAllConfigs();
+
+      await showTwitterPanel(null, cfg, guildId, interaction.message);
+      await interaction.followUp({
+        embeds: [{ color: PINK, description: `🌸 Tweets will now be reposted in **#${ch.name}**!` }],
+        flags: 64,
+      });
+    });
+
+    collector.on("end", collected => {
+      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out." }], flags: 64 }).catch(() => {});
+    });
+    return;
+  }
+});
 
 client.login(process.env.TOKEN);
