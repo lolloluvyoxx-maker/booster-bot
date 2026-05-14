@@ -8991,13 +8991,24 @@ async function showTwitterPanel(target, cfg, guildId, editTarget = null) {
 // ── ,config-panel COMMAND ────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith(",")) return;
-  if (message.author.id !== OWNER_ID) return;
 
-  const args = message.content.slice(1).trim().split(/ +/);
+  const content = message.content.trim();
+  if (!content.startsWith(",")) return;
+
+  const args = content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
   if (command !== "config-panel" && command !== "twconfig") return;
+
+  // Allow OWNER_ID or the guild owner
+  const isOwner = message.author.id === OWNER_ID || message.author.id === message.guild.ownerId;
+  if (!isOwner) {
+    return message.reply({
+      embeds: [{ color: PINK, description: "✖ Only the bot owner can use this command." }]
+    }).catch(() => {});
+  }
+
+  log(`[Twitter] ,config-panel triggered by ${message.author.username} in ${message.guild.name}`, "info");
 
   const cfg = getTwitterConfig(message.guild.id);
   await showTwitterPanel(message, cfg, message.guild.id);
@@ -9008,9 +9019,10 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith("tw_")) return;
 
-  if (interaction.user.id !== OWNER_ID) {
+  const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === interaction.guild.ownerId;
+  if (!isOwner) {
     return interaction.reply({
-      embeds: [{ color: PINK, description: "✖ Only the server owner can use this panel." }],
+      embeds: [{ color: PINK, description: "✖ Only the bot owner can use this panel." }],
       flags: 64,
     });
   }
