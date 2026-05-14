@@ -2317,6 +2317,7 @@ client.on("messageCreate", async (message) => {
           [",warnthreshold <n> <action>", "Auto punish on warns"],
           [",birthday channel #channel", "Birthday announcements"],
           [",antinuke / ,antiraid / ,vanitylock", "Security systems"],
+          [",config-panel", "Twitter repost panel (add/remove accounts)"],
         ]
       },
       economy: {
@@ -2469,6 +2470,7 @@ client.on("messageCreate", async (message) => {
           [",addc #channel", "Add channel to minor monitoring"],
           [",delc #channel", "Remove channel from monitoring"],
           [",list", "Show all monitored channels & config"],
+          [",config-panel", "Twitter repost panel"],
           [",reqattach #channel", "Require media — deletes text-only messages"],
           [",unreqattach #channel", "Remove media requirement"],
           [",modr @role", "Role pinged on minor detections"],
@@ -8811,6 +8813,15 @@ client.on("messageCreate", async (message) => {
     saveAllConfigs();
     return ok(message, `minor warnings will be sent to **#${ch.name}**`);
   }
+
+  // ,config-panel / ,twconfig — Twitter repost panel
+  if (command === "config-panel" || command === "twconfig") {
+    const isOwner = message.author.id === OWNER_ID || message.author.id === message.guild.ownerId;
+    if (!isOwner) return err(message, "Only the bot owner can use this command.");
+    const twCfg = getTwitterConfig(message.guild.id);
+    await showTwitterPanel(message, twCfg, message.guild.id);
+    return;
+  }
 });
 
 // ===== ERROR HANDLING =====
@@ -8987,32 +8998,6 @@ async function showTwitterPanel(target, cfg, guildId, editTarget = null) {
     return target.reply({ embeds: [panelEmbed], components: [row] }).catch(() => null);
   }
 }
-
-// ── ,config-panel COMMAND ────────────────────────────
-client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild) return;
-
-  const content = message.content.trim();
-  if (!content.startsWith(",")) return;
-
-  const args = content.slice(1).trim().split(/ +/);
-  const command = args[0].toLowerCase();
-
-  if (command !== "config-panel" && command !== "twconfig") return;
-
-  // Allow OWNER_ID or the guild owner
-  const isOwner = message.author.id === OWNER_ID || message.author.id === message.guild.ownerId;
-  if (!isOwner) {
-    return message.reply({
-      embeds: [{ color: PINK, description: "✖ Only the bot owner can use this command." }]
-    }).catch(() => {});
-  }
-
-  log(`[Twitter] ,config-panel triggered by ${message.author.username} in ${message.guild.name}`, "info");
-
-  const cfg = getTwitterConfig(message.guild.id);
-  await showTwitterPanel(message, cfg, message.guild.id);
-});
 
 // ── TWITTER PANEL BUTTON INTERACTIONS ───────────────
 client.on("interactionCreate", async (interaction) => {
