@@ -8883,20 +8883,31 @@ async function fetchNitterRSS(username) {
 }
 
 async function pollTwitterAccounts() {
+  log(`[Twitter] Polling ${twitterConfig.size} guild(s)...`, "info");
   for (const [guildId, cfg] of twitterConfig.entries()) {
-    if (!cfg.channelId || cfg.accounts.size === 0) continue;
+    log(`[Twitter] Guild ${guildId} — channelId: ${cfg.channelId}, accounts: ${[...cfg.accounts].join(", ")}`, "info");
+    if (!cfg.channelId || cfg.accounts.size === 0) {
+      log(`[Twitter] Skipping guild ${guildId} — no channel or no accounts`, "info");
+      continue;
+    }
     const channel = client.channels.cache.get(cfg.channelId) || await client.channels.fetch(cfg.channelId).catch(() => null);
     if (!channel) {
       log(`[Twitter] Channel ${cfg.channelId} not found for guild ${guildId}`, "error");
       continue;
     }
+    log(`[Twitter] Found channel #${channel.name}`, "info");
 
     for (const username of cfg.accounts) {
       try {
+        log(`[Twitter] Fetching RSS for @${username}...`, "info");
         const rss = await fetchNitterRSS(username);
-        if (!rss) continue;
+        if (!rss) {
+          log(`[Twitter] No RSS returned for @${username}`, "error");
+          continue;
+        }
 
         const items = [...rss.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+        log(`[Twitter] @${username} — ${items.length} items in RSS`, "info");
         if (items.length === 0) continue;
 
         // First item = newest tweet
@@ -8915,6 +8926,8 @@ async function pollTwitterAccounts() {
 
         const tweetId = tweetIdMatch[1];
 
+        log(`[Twitter] @${username} — latest tweet: ${tweetId}, last known: ${lastTweetId[username] || "none"}`, "info");
+
         // First poll — just record without posting
         if (!lastTweetId[username]) {
           lastTweetId[username] = tweetId;
@@ -8923,7 +8936,10 @@ async function pollTwitterAccounts() {
         }
 
         // No new tweet
-        if (tweetId === lastTweetId[username]) continue;
+        if (tweetId === lastTweetId[username]) {
+          log(`[Twitter] @${username} — no new tweet`, "info");
+          continue;
+        }
 
         // New tweet found!
         lastTweetId[username] = tweetId;
