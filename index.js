@@ -2454,6 +2454,18 @@ client.on("messageCreate", async (message) => {
           [",resetxp <user>", "Admin: reset user XP"],
         ]
       },
+      perks: {
+        label: "Perks Tools",
+        emoji: "🌸",
+        description: "Clone, sort and manage perks servers",
+        commands: [
+          [",cloneperks <sourceId> <targetId>", "Clone all roles, categories and channels from one server to another"],
+          [",clonecategoryperks <sourceId> <targetId> <catName>", "Clone a category and distribute its videos 2-by-2 into exclusive1/exclusive2"],
+          [",setuppaidperks <sourceId> <targetId> [exclusiveName]", "Setup paid perks server with cloned + exclusive channels"],
+          [",hidepaidperks <targetId> [count]", "Randomly hide N channels in a server (default 20)"],
+          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categories (auto overflow at 50)"],
+        ]
+      },
       nsfw: {
         label: "NSFW (Owner Only)",
         emoji: "🔞",
@@ -9091,6 +9103,332 @@ client.on("messageCreate", async (message) => {
       return err(message, `failed: ${e.message}`);
     }
   }
+
+  // ─────────────────────────────────────────────────────────
+  // ,sortchannels <serverId> <cat1name> <cat2name>
+  // Splits ALL channels in the server evenly into two categories.
+  // Auto-creates overflow categories (cat 2, cat 3...) if > 50 channels per category.
+  // ─────────────────────────────────────────────────────────
+  if (command === "sortchannels") {
+    const serverId = args[1];
+    const cat1Name = args[2];
+    const cat2Name = args[3];
+    if (!serverId || !cat1Name || !cat2Name)
+      return err(message, "usage: `,sortchannels <serverId> <category1name> <category2name>`");
+
+    let statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `🌸 Fetching channels...` }]
+    }).catch(() => null);
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      const guild = await client.guilds.fetch(serverId);
+      await guild.channels.fetch();
+
+      const allChans = [...guild.channels.cache
+        .filter(c => c && c.type !== 4)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .values()
+      ];
+
+      await updateStatus(`Found **${allChans.length}** channels. Creating categories...`);
+
+      const half = Math.ceil(allChans.length / 2);
+      const half1 = allChans.slice(0, half);
+      const half2 = allChans.slice(half);
+
+      async function getOrCreateCat(name) {
+        const existing = guild.channels.cache.find(c => c.type === 4 && c.name === name);
+        if (existing) return existing.id;
+        const newCat = await guild.channels.create({ name, type: 4, reason: "[sortchannels]" });
+        await new Promise(r => setTimeout(r, 800));
+        return newCat.id;
+      }
+
+      async function moveToTracker(ch, tracker) {
+        if (tracker.count >= 50) {
+          const overflowNum = Math.floor(tracker.count / 50) + 1;
+          const newName = `${tracker.baseName} ${overflowNum + 1}`;
+          log(`[sortchannels] overflow: creating "${newName}"`, "info");
+          const newCat = await guild.channels.create({ name: newName, type: 4, reason: "[sortchannels overflow]" });
+          await new Promise(r => setTimeout(r, 800));
+          tracker.currentCatId = newCat.id;
+          tracker.count = 0;
+        }
+        await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[sortchannels]" });
+        tracker.count++;
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      const cat1Id = await getOrCreateCat(cat1Name);
+      const cat2Id = await getOrCreateCat(cat2Name);
+      const tracker1 = { baseName: cat1Name, currentCatId: cat1Id, count: 0 };
+      const tracker2 = { baseName: cat2Name, currentCatId: cat2Id, count: 0 };
+
+      await updateStatus(`Moving **${half1.length}** channels → **${cat1Name}**...`);
+      for (const ch of half1) {
+        try { await moveToTracker(ch, tracker1); }
+        catch (e) { log(`[sortchannels] failed #${ch.name}: ${e.message}`, "error"); }
+      }
+
+      await updateStatus(`Moving **${half2.length}** channels → **${cat2Name}**...`);
+      for (const ch of half2) {
+        try { await moveToTracker(ch, tracker2); }
+        catch (e) { log(`[sortchannels] failed #${ch.name}: ${e.message}`, "error"); }
+      }
+
+      await statusMsg?.edit({
+        embeds: [{
+          color: PINK, title: "🌸 Sort Complete",
+          description: `**${guild.name}** — ${allChans.length} channels distributed`,
+          fields: [
+            { name: cat1Name, value: `${tracker1.count} channels`, inline: true },
+            { name: cat2Name, value: `${tracker2.count} channels`, inline: true },
+          ],
+          timestamp: new Date()
+        }]
+      }).catch(() => {});
+    } catch (e) {
+      return err(message, `failed: ${e.message}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ,clonecategoryperks <sourceId> <targetId> <categoryName>
+  // Clones a specific category from source to target.
+  // Then collects ALL videos from those channels and distributes
+  // them 2-by-2 into "exclusive 1" and "exclusive 2" channels.
+  // ─────────────────────────────────────────────────────────
+  if (command === "clonecategoryperks") {
+    const sourceId = args[1];
+    const targetId = args[2];
+    const catName  = args.slice(3).join(" ").trim();
+    if (!sourceId || !targetId || !catName)
+      return err(message, "usage: `,clonecategoryperks <sourceId> <targetId> <categoryName>`");
+
+    let statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `🌸 Starting category clone...` }]
+    }).catch(() => null);
+    const updateStatus2 = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      async function discordREST2(path) {
+        const res = await fetch(`https://discord.com/api/v10${path}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        });
+        if (!res.ok) throw new Error(`REST ${path} → ${res.status}`);
+        return res.json();
+      }
+
+      const [rawChannels, targetGuild] = await Promise.all([
+        discordREST2(`/guilds/${sourceId}/channels`),
+        client.guilds.fetch(targetId),
+      ]);
+      await targetGuild.channels.fetch();
+
+      const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
+      if (!srcCat) return err(message, `Category **${catName}** not found in source server.`);
+
+      const srcChans = rawChannels
+        .filter(c => c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
+        .sort((a, b) => a.position - b.position);
+
+      await updateStatus2(`Found **${srcCat.name}** with **${srcChans.length}** channels. Cloning...`);
+
+      // Create target category (with overflow support)
+      let targetCatCh = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+      if (!targetCatCh) {
+        targetCatCh = await targetGuild.channels.create({ name: srcCat.name, type: 4, reason: "[clonecategoryperks]" });
+        await new Promise(r => setTimeout(r, 800));
+      }
+      const catTracker = { baseName: srcCat.name, currentCatId: targetCatCh.id, count: 0 };
+
+      async function getTargetCatId() {
+        if (catTracker.count >= 50) {
+          const n = Math.floor(catTracker.count / 50) + 1;
+          const newCat = await targetGuild.channels.create({ name: `${catTracker.baseName} ${n + 1}`, type: 4, reason: "[clonecategoryperks overflow]" });
+          await new Promise(r => setTimeout(r, 800));
+          catTracker.currentCatId = newCat.id;
+          catTracker.count = 0;
+        }
+        return catTracker.currentCatId;
+      }
+
+      // Clone channels
+      let clonedCount = 0;
+      const clonedChannels = [];
+
+      for (const ch of srcChans) {
+        try {
+          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+          let newCh = existing;
+          if (!newCh) {
+            const permissionOverwrites = (ch.permission_overwrites || [])
+              .filter(ow => ow.type === 0)
+              .map(ow => ({
+                id:    targetGuild.roles.everyone.id,
+                type:  0,
+                allow: BigInt(String(ow.allow || "0")),
+                deny:  BigInt(String(ow.deny  || "0")),
+              }));
+            const parentId = await getTargetCatId();
+            const opts = { name: ch.name, type: ch.type, parent: parentId, permissionOverwrites, reason: "[clonecategoryperks]" };
+            if (ch.topic)              opts.topic            = ch.topic;
+            if (ch.nsfw)               opts.nsfw             = ch.nsfw;
+            if (ch.rate_limit_per_user) opts.rateLimitPerUser = ch.rate_limit_per_user;
+            if (ch.bitrate)            opts.bitrate          = ch.bitrate;
+            if (ch.user_limit)         opts.userLimit        = ch.user_limit;
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try { newCh = await targetGuild.channels.create(opts); break; }
+              catch (e) {
+                if ((e.code === 429 || e.message?.includes("rate limit")) && attempt < 2) {
+                  await new Promise(r => setTimeout(r, (e.retryAfter ?? 2) * 1000 + 500));
+                } else { log(`[clonecategoryperks] failed #${ch.name}: ${e.message}`, "error"); break; }
+              }
+            }
+            if (newCh) { catTracker.count++; clonedCount++; }
+            await new Promise(r => setTimeout(r, 800));
+          }
+          if (newCh) clonedChannels.push({ srcId: ch.id, newCh });
+        } catch (e) { log(`[clonecategoryperks] ch ${ch.name}: ${e.message}`, "error"); }
+      }
+
+      await updateStatus2(`Cloned **${clonedCount}** channels. Collecting videos...`);
+
+      // Collect all video URLs from source channels (attachments + embeds + forwarded messages)
+      const allVideos = [];
+
+      function extractVideosFromMsg(msg) {
+        const urls = [];
+        // Direct attachments
+        for (const att of msg.attachments.values()) {
+          if (att.contentType?.startsWith("video") || /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.name || "")) {
+            urls.push(att.url);
+          }
+        }
+        // Embedded videos (includes forwarded video previews)
+        for (const embed of msg.embeds) {
+          if (embed.video?.url) urls.push(embed.video.url);
+          if (embed.url && /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(embed.url)) urls.push(embed.url);
+        }
+        // Forwarded messages (message_reference with type FORWARD = 1)
+        // Discord.js exposes the forwarded content via msg.reference + msg.fetchReference()
+        return urls;
+      }
+
+      for (const { srcId } of clonedChannels) {
+        try {
+          const srcCh = client.channels.cache.get(srcId)
+            ?? await client.channels.fetch(srcId).catch(() => null);
+          if (!srcCh) continue;
+          let before;
+          let hasMore = true;
+          while (hasMore) {
+            const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+            if (!batch || batch.size === 0) break;
+            for (const msg of batch.values()) {
+              if (msg.author?.bot) continue;
+
+              // Regular attachments + embeds
+              allVideos.push(...extractVideosFromMsg(msg));
+
+              // Forwarded messages: Discord stores them as a messageSnapshots array
+              // Each snapshot has attachments/embeds of the original message
+              if (msg.messageSnapshots?.size > 0) {
+                for (const snapshot of msg.messageSnapshots.values()) {
+                  // snapshot.message contains the forwarded content
+                  if (snapshot.attachments) {
+                    for (const att of snapshot.attachments.values()) {
+                      if (att.contentType?.startsWith("video") || /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.name || "")) {
+                        allVideos.push(att.url);
+                      }
+                    }
+                  }
+                  if (snapshot.embeds) {
+                    for (const embed of snapshot.embeds) {
+                      if (embed.video?.url) allVideos.push(embed.video.url);
+                    }
+                  }
+                }
+              }
+
+              // Fallback: if message is a forward (type 19) try fetching the referenced message
+              if (msg.type === 19 && msg.reference?.messageId && msg.messageSnapshots?.size === 0) {
+                try {
+                  const refMsg = await srcCh.messages.fetch(msg.reference.messageId).catch(() => null);
+                  if (refMsg) allVideos.push(...extractVideosFromMsg(refMsg));
+                } catch (_) {}
+              }
+            }
+            before = batch.last()?.id;
+            hasMore = batch.size === 100;
+            await new Promise(r => setTimeout(r, 300));
+          }
+        } catch (e) { log(`[clonecategoryperks] msgs: ${e.message}`, "error"); }
+      }
+
+      await updateStatus2(`Collected **${allVideos.length}** videos. Setting up exclusive channels...`);
+
+      // Get or create exclusive 1 and exclusive 2
+      async function getOrCreateExclusive(name) {
+        let ch = targetGuild.channels.cache.find(c => c.name.toLowerCase() === name.toLowerCase() && c.type === 0);
+        if (!ch) {
+          ch = await targetGuild.channels.create({ name, type: 0, reason: "[clonecategoryperks]" });
+          await new Promise(r => setTimeout(r, 800));
+        }
+        return ch;
+      }
+
+      const exc1 = await getOrCreateExclusive("exclusive 1");
+      const exc2 = await getOrCreateExclusive("exclusive 2");
+
+      // Shuffle videos randomly (Fisher-Yates)
+      for (let i = allVideos.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allVideos[i], allVideos[j]] = [allVideos[j], allVideos[i]];
+      }
+
+      // Send in groups of 2 per message: group 0 → exc1, group 1 → exc2, group 2 → exc1...
+      // Each Discord message contains 2 video URLs at once
+      await updateStatus2(`Sending **${allVideos.length}** videos in random groups of 2...`);
+      let sent1 = 0, sent2 = 0;
+      for (let i = 0; i < allVideos.length; i += 2) {
+        const groupIndex = Math.floor(i / 2);
+        const target = groupIndex % 2 === 0 ? exc1 : exc2;
+        // Build a message with up to 2 video URLs
+        const pair = allVideos.slice(i, i + 2);
+        try {
+          await target.send(pair.join("\n"));
+          if (groupIndex % 2 === 0) sent1 += pair.length; else sent2 += pair.length;
+          await new Promise(r => setTimeout(r, 700));
+        } catch (e) { log(`[clonecategoryperks] send group ${groupIndex}: ${e.message}`, "error"); }
+      }
+
+      await statusMsg?.edit({
+        embeds: [{
+          color: PINK,
+          title: "🌸 Clone Category Complete",
+          description: `**${srcCat.name}** → **${targetGuild.name}**`,
+          fields: [
+            { name: "Channels cloned", value: `${clonedCount}`, inline: true },
+            { name: "Videos found",    value: `${allVideos.length}`, inline: true },
+            { name: "exclusive 1",     value: `${sent1} videos`, inline: true },
+            { name: "exclusive 2",     value: `${sent2} videos`, inline: true },
+          ],
+          timestamp: new Date()
+        }]
+      }).catch(() => {});
+
+    } catch (e) {
+      return err(message, `failed: ${e.message}`);
+    }
+  }
+
 
   // ─────────────────────────────────────────────────────────
   // ,setuppaidperks <sourceId> <targetId> [exclusiveChannelName]
