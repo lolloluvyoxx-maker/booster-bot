@@ -8938,6 +8938,12 @@ client.on("messageCreate", async (message) => {
         return null;
       }
 
+      // Tracks how many channels have been placed in each target category
+      // so we can auto-create overflow categories when Discord's 50-channel limit is hit
+      const categoryChildCount = new Map(); // targetCategoryId → count
+      // When a category overflows, maps the original source category id to the current overflow category id
+      const categoryOverflowMap = new Map(); // sourceCatId → current target category id
+
       for (const ch of srcChans) {
         // Skip thread-like types
         if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
@@ -8945,11 +8951,8 @@ client.on("messageCreate", async (message) => {
           const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
           let newCh = existing;
           if (!newCh) {
-            // FIX: only keep ROLE overwrites (type 0) — user overwrites (type 1)
-            // cause "Unknown User" errors in the target guild and silently fail
-            // FIX: use BigInt(String(x || "0")) to handle null/undefined safely
             const permissionOverwrites = (ch.permission_overwrites || [])
-              .filter(ow => ow.type === 0) // roles only, skip user overwrites
+              .filter(ow => ow.type === 0)
               .map(ow => ({
                 id:    roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
                 type:  0,
@@ -8965,10 +8968,32 @@ client.on("messageCreate", async (message) => {
             if (ch.rate_limit_per_user)  createOpts.rateLimitPerUser = ch.rate_limit_per_user;
             if (ch.bitrate)             createOpts.bitrate          = ch.bitrate;
             if (ch.user_limit)          createOpts.userLimit        = ch.user_limit;
-            if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
+
+            // Resolve the target category, auto-creating overflow categories if full (Discord limit: 50)
+            if (ch.parent_id && categoryMap.has(ch.parent_id)) {
+              let targetCatId = categoryOverflowMap.get(ch.parent_id) ?? categoryMap.get(ch.parent_id);
+              const count = categoryChildCount.get(targetCatId) ?? 0;
+              if (count >= 50) {
+                // Find the original category name
+                const srcCat = srcCats.find(c => c.id === ch.parent_id);
+                const baseName = srcCat?.name ?? "overflow";
+                // Count how many overflow versions already exist to name the new one
+                const overflowNum = Math.floor(count / 50) + 1;
+                const newCatName = `${baseName} ${overflowNum + 1}`;
+                log(`[cloneperks] category "${baseName}" full (${count}), creating overflow: "${newCatName}"`, "info");
+                const overflowCat = await targetGuild.channels.create({ name: newCatName, type: 4, reason: "[cloneperks overflow]" });
+                await new Promise(r => setTimeout(r, 1000));
+                targetCatId = overflowCat.id;
+                categoryOverflowMap.set(ch.parent_id, targetCatId);
+                categoryChildCount.set(targetCatId, 0);
+              }
+              createOpts.parent = targetCatId;
+              categoryChildCount.set(targetCatId, (categoryChildCount.get(targetCatId) ?? 0) + 1);
+            }
+
             newCh = await createChannelWithRetry(targetGuild, createOpts);
             if (newCh) channelCount++;
-            await new Promise(r => setTimeout(r, 1000)); // 1s = safe under Discord's channel create rate limit
+            await new Promise(r => setTimeout(r, 1000));
           }
           if (newCh) channelMap.set(ch.id, newCh);
 
