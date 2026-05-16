@@ -8914,6 +8914,26 @@ client.on("messageCreate", async (message) => {
       const channelMap = new Map();
       let channelCount = 0, videoCopied = 0;
 
+      // Helper: create with automatic retry on rate-limit (429)
+      async function createChannelWithRetry(guild, opts, retries = 3) {
+        for (let attempt = 0; attempt < retries; attempt++) {
+          try {
+            return await guild.channels.create(opts);
+          } catch (e) {
+            const isRateLimit = e.code === 429 || (e.message && e.message.includes("rate limit"));
+            const retryAfter = e.retryAfter ?? 2000;
+            if (isRateLimit && attempt < retries - 1) {
+              log(`[cloneperks] rate limited creating #${opts.name}, waiting ${retryAfter}ms...`, "info");
+              await new Promise(r => setTimeout(r, retryAfter + 500));
+            } else {
+              log(`[cloneperks] failed to create #${opts.name}: ${e.message}`, "error");
+              return null;
+            }
+          }
+        }
+        return null;
+      }
+
       for (const ch of srcChans) {
         // Skip thread-like types
         if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
@@ -8935,11 +8955,11 @@ client.on("messageCreate", async (message) => {
             if (ch.bitrate)            createOpts.bitrate          = ch.bitrate;
             if (ch.user_limit)         createOpts.userLimit        = ch.user_limit;
             if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
-            newCh = await targetGuild.channels.create(createOpts);
-            channelCount++;
-            await new Promise(r => setTimeout(r, 350));
+            newCh = await createChannelWithRetry(targetGuild, createOpts);
+            if (newCh) channelCount++;
+            await new Promise(r => setTimeout(r, 500)); // slightly longer delay to avoid hitting limits
           }
-          channelMap.set(ch.id, newCh);
+          if (newCh) channelMap.set(ch.id, newCh);
 
           // Copy ALL messages with attachments (full pagination, oldest→newest)
           if ([0, 5].includes(ch.type)) {
@@ -9100,27 +9120,45 @@ client.on("messageCreate", async (message) => {
         } catch (e) { /* skip */ }
       }
 
+      // Helper: create channel with automatic retry on rate-limit (429)
+      async function createChWithRetry(guild, opts, retries = 3) {
+        for (let attempt = 0; attempt < retries; attempt++) {
+          try {
+            return await guild.channels.create(opts);
+          } catch (e) {
+            const isRateLimit = e.code === 429 || (e.message && e.message.includes("rate limit"));
+            const retryAfter = (e.retryAfter ?? 2) * 1000;
+            if (isRateLimit && attempt < retries - 1) {
+              log(`[setuppaidperks] rate limited on #${opts.name}, attendo ${retryAfter}ms...`, "info");
+              await new Promise(r => setTimeout(r, retryAfter + 500));
+            } else {
+              log(`[setuppaidperks] errore creando #${opts.name}: ${e.message}`, "error");
+              return null;
+            }
+          }
+        }
+        return null;
+      }
+
       let channelCount = 0;
       for (const ch of srcChans) {
         if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
-        try {
-          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
-          if (existing) continue;
-          const permissionOverwrites = (ch.permission_overwrites || []).map(ow => ({
-            id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
-            type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
-          }));
-          const createOpts = { name: ch.name, type: ch.type, permissionOverwrites, reason: "[setuppaidperks]" };
-          if (ch.topic)              createOpts.topic            = ch.topic;
-          if (ch.nsfw)               createOpts.nsfw             = ch.nsfw;
-          if (ch.rate_limit_per_user) createOpts.rateLimitPerUser = ch.rate_limit_per_user;
-          if (ch.bitrate)            createOpts.bitrate          = ch.bitrate;
-          if (ch.user_limit)         createOpts.userLimit        = ch.user_limit;
-          if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
-          await targetGuild.channels.create(createOpts);
-          channelCount++;
-          await new Promise(r => setTimeout(r, 350));
-        } catch (e) { /* skip */ }
+        const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+        if (existing) continue;
+        const permissionOverwrites = (ch.permission_overwrites || []).map(ow => ({
+          id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
+          type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
+        }));
+        const createOpts = { name: ch.name, type: ch.type, permissionOverwrites, reason: "[setuppaidperks]" };
+        if (ch.topic)              createOpts.topic            = ch.topic;
+        if (ch.nsfw)               createOpts.nsfw             = ch.nsfw;
+        if (ch.rate_limit_per_user) createOpts.rateLimitPerUser = ch.rate_limit_per_user;
+        if (ch.bitrate)            createOpts.bitrate          = ch.bitrate;
+        if (ch.user_limit)         createOpts.userLimit        = ch.user_limit;
+        if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
+        const created = await createChWithRetry(targetGuild, createOpts);
+        if (created) channelCount++;
+        await new Promise(r => setTimeout(r, 500)); // increased delay to respect rate limits
       }
 
       // ── STEP 3: Exclusive channels + distribute videos ──
