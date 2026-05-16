@@ -311,11 +311,7 @@ const DENIED_ROLE_ID = "1426874194263805992";
 // Channel IDs
 const PERKS_CHANNEL_ID = "1475125441919455346";
 
-// ===== PAID PERKS SERVER CONFIG =====
-// ← Inserisci qui l'ID del tuo server paid perks
-const PAID_PERKS_GUILD_ID = "REPLACE_WITH_PAID_PERKS_SERVER_ID";
-
-// Tracks which channels have been hidden in the paid perks server (in-memory)
+// Tracks which channels have been hidden via ,hidepaidperks (in-memory)
 const hiddenPaidPerksChannels = new Set();
 
 // ===== CUSTOM MESSAGES (in-memory, editable with !setmsg) =====
@@ -8839,11 +8835,12 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
 
   // ─────────────────────────────────────────────────────────
-  // ,cloneperks [sourceId] [targetId]
+  // ,cloneperks <sourceId> <targetId>
   // ─────────────────────────────────────────────────────────
   if (command === "cloneperks") {
-    const sourceId = args[1] || SOURCE_GUILD_ID;
-    const targetId = args[2] || PAID_PERKS_GUILD_ID;
+    const sourceId = args[1];
+    const targetId = args[2];
+    if (!sourceId || !targetId) return err(message, "usage: `,cloneperks <sourceServerId> <targetServerId>`");
 
     // Running status message (edited in place during execution)
     let statusMsg = await message.reply({
@@ -8858,13 +8855,13 @@ client.on("messageCreate", async (message) => {
       const sourceGuild = await client.guilds.fetch(sourceId);
       const targetGuild = await client.guilds.fetch(targetId);
 
-      // Pre-fetch all channels and roles
-      await sourceGuild.channels.fetch();
-      await sourceGuild.roles.fetch();
+      // Pre-fetch all channels and roles (use returned value — .cache may be stale)
+      const allSourceChannels = await sourceGuild.channels.fetch();
+      const allSourceRoles    = await sourceGuild.roles.fetch();
 
-      const sourceRoles       = sourceGuild.roles.cache.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
-      const sourceCategories  = sourceGuild.channels.cache.filter(c => c.type === 4);
-      const sourceChannels    = sourceGuild.channels.cache.filter(c => c.type !== 4);
+      const sourceRoles      = allSourceRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
+      const sourceCategories = allSourceChannels.filter(c => c && c.type === 4);
+      const sourceChannels   = allSourceChannels.filter(c => c && c.type !== 4);
 
       await updateStatus(`Cloning **${sourceRoles.size}** roles, **${sourceCategories.size}** categories, **${sourceChannels.size}** channels from **${sourceGuild.name}** → **${targetGuild.name}**...`);
 
@@ -9010,11 +9007,12 @@ client.on("messageCreate", async (message) => {
   }
 
   // ─────────────────────────────────────────────────────────
-  // ,hidepaidperks [count=20] [targetGuildId]
+  // ,hidepaidperks <targetServerId> [count=20]
   // ─────────────────────────────────────────────────────────
   if (command === "hidepaidperks") {
-    const count    = Math.min(parseInt(args[1]) || 20, 50);
-    const targetId = args[2] || PAID_PERKS_GUILD_ID;
+    const targetId = args[1];
+    if (!targetId) return err(message, "usage: `,hidepaidperks <targetServerId> [count]`");
+    const count = Math.min(parseInt(args[2]) || 20, 50);
 
     try {
       const targetGuild = await client.guilds.fetch(targetId);
@@ -9065,16 +9063,15 @@ client.on("messageCreate", async (message) => {
   // ,setuppaidperks [exclusiveChannelName]
   //
   //  Full one-shot premium server setup:
-  //   1. Clones roles, categories & channels from the booster server
+  //   1. Clones roles, categories & channels from the source server
   //   2. Copies all video content from source channels into two
   //      "exclusive" channels (distributed alternately)
-  //   3. Hides 20 random channels so the paid server appears
-  //      larger and more complete than the free booster server
   // ─────────────────────────────────────────────────────────
   if (command === "setuppaidperks") {
-    const exclusiveName = args.slice(1).join(" ").trim() || "exclusive";
-    const sourceId      = SOURCE_GUILD_ID;
-    const targetId      = PAID_PERKS_GUILD_ID;
+    const sourceId      = args[1];
+    const targetId      = args[2];
+    const exclusiveName = args.slice(3).join(" ").trim() || "exclusive";
+    if (!sourceId || !targetId) return err(message, "usage: `,setuppaidperks <sourceServerId> <targetServerId> [exclusiveChannelName]`");
 
     let statusMsg = await message.reply({
       embeds: [{ color: PINK, description: `🌸 Starting full paid perks setup...` }]
@@ -9088,18 +9085,19 @@ client.on("messageCreate", async (message) => {
       const sourceGuild = await client.guilds.fetch(sourceId);
       const targetGuild = await client.guilds.fetch(targetId);
 
-      await sourceGuild.channels.fetch();
-      await sourceGuild.roles.fetch();
-      await targetGuild.channels.fetch();
+      // Fetch returns the live collection — use it directly, never .cache
+      const allSrcChannels = await sourceGuild.channels.fetch();
+      const allSrcRoles    = await sourceGuild.roles.fetch();
+      const allTgtChannels = await targetGuild.channels.fetch();
       await targetGuild.roles.fetch();
 
       // ───────────────────────────────────────────
       // STEP 1 — Clone roles
       // ───────────────────────────────────────────
-      await updateStatus(`**[1/4]** Cloning roles from **${sourceGuild.name}**...`);
+      await updateStatus(`**[1/3]** Cloning roles from **${sourceGuild.name}**...`);
 
       const roleMap = new Map();
-      const sourceRoles = sourceGuild.roles.cache
+      const sourceRoles = allSrcRoles
         .filter(r => !r.managed && r.name !== "@everyone")
         .sort((a, b) => b.position - a.position);
 
@@ -9120,12 +9118,12 @@ client.on("messageCreate", async (message) => {
       // ───────────────────────────────────────────
       // STEP 2 — Clone categories + channels
       // ───────────────────────────────────────────
-      await updateStatus(`**[2/4]** Cloning categories & channels...`);
+      await updateStatus(`**[2/3]** Cloning categories & channels...`);
 
       const categoryMap = new Map();
-      for (const [, cat] of sourceGuild.channels.cache.filter(c => c.type === 4).sort((a, b) => a.position - b.position)) {
+      for (const [, cat] of allSrcChannels.filter(c => c && c.type === 4).sort((a, b) => a.position - b.position)) {
         try {
-          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+          const existing = allTgtChannels.find(c => c && c.type === 4 && c.name === cat.name);
           if (existing) { categoryMap.set(cat.id, existing); continue; }
           const permOverwrites = cat.permissionOverwrites.cache.map(ow => ({
             id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
@@ -9140,9 +9138,9 @@ client.on("messageCreate", async (message) => {
       const channelMap  = new Map();
       let   channelCount = 0;
 
-      for (const [, ch] of sourceGuild.channels.cache.filter(c => c.type !== 4).sort((a, b) => (a.position || 0) - (b.position || 0))) {
+      for (const [, ch] of allSrcChannels.filter(c => c && c.type !== 4).sort((a, b) => (a.position || 0) - (b.position || 0))) {
         try {
-          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+          const existing = allTgtChannels.find(c => c && c.name === ch.name && c.type === ch.type);
           if (existing) { channelMap.set(ch.id, existing); continue; }
           const permOverwrites = ch.permissionOverwrites.cache.map(ow => ({
             id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
@@ -9165,7 +9163,7 @@ client.on("messageCreate", async (message) => {
       // ───────────────────────────────────────────
       // STEP 3 — Create exclusive channels & distribute videos
       // ───────────────────────────────────────────
-      await updateStatus(`**[3/4]** Creating exclusive channels & copying videos...`);
+      await updateStatus(`**[3/3]** Creating exclusive channels & copying videos...`);
 
       // Find or create the two exclusive destination channels
       const excl1Name = exclusiveName;
@@ -9180,8 +9178,8 @@ client.on("messageCreate", async (message) => {
       let videoCopied = 0;
       let toggle      = false; // alternate videos between excl1 and excl2
 
-      for (const [, sourceCh] of sourceGuild.channels.cache) {
-        if (![0, 5].includes(sourceCh.type)) continue;
+      for (const [, sourceCh] of allSrcChannels) {
+        if (!sourceCh || ![0, 5].includes(sourceCh.type)) continue;
 
         const messages = await sourceCh.messages.fetch({ limit: 100 }).catch(() => null);
         if (!messages) continue;
