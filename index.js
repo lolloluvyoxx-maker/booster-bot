@@ -8899,7 +8899,7 @@ client.on("messageCreate", async (message) => {
         try {
           const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
           if (existing) { categoryMap.set(cat.id, existing.id); continue; }
-          const permOverwrites = (cat.permission_overwrites || []).map(ow => ({
+          const permissionOverwrites = (cat.permission_overwrites || []).map(ow => ({
             id:    ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
             type:  ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
@@ -8921,7 +8921,7 @@ client.on("messageCreate", async (message) => {
           const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
           let newCh = existing;
           if (!newCh) {
-            const permOverwrites = (ch.permission_overwrites || []).map(ow => ({
+            const permissionOverwrites = (ch.permission_overwrites || []).map(ow => ({
               id:   ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
               type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
             }));
@@ -9075,7 +9075,7 @@ client.on("messageCreate", async (message) => {
         try {
           const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
           if (existing) { categoryMap.set(cat.id, existing.id); continue; }
-          const permOverwrites = (cat.permission_overwrites || []).map(ow => ({
+          const permissionOverwrites = (cat.permission_overwrites || []).map(ow => ({
             id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
             type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
@@ -9091,7 +9091,7 @@ client.on("messageCreate", async (message) => {
         try {
           const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
           if (existing) continue;
-          const permOverwrites = (ch.permission_overwrites || []).map(ow => ({
+          const permissionOverwrites = (ch.permission_overwrites || []).map(ow => ({
             id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
             type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
