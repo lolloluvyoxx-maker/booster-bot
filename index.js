@@ -8941,22 +8941,37 @@ client.on("messageCreate", async (message) => {
           }
           channelMap.set(ch.id, newCh);
 
-          // Copy videos from this channel
+          // Copy ALL messages with attachments (full pagination, oldest→newest)
           if ([0, 5].includes(ch.type)) {
             const srcCh = client.channels.cache.get(ch.id)
               ?? await client.channels.fetch(ch.id).catch(() => null);
             if (srcCh) {
-              const msgs = await srcCh.messages.fetch({ limit: 50 }).catch(() => null);
-              if (msgs) {
-                for (const [, msg] of msgs) {
-                  const vids = [...msg.attachments.values()].filter(a =>
-                    a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
-                  );
-                  if (!vids.length) continue;
-                  await newCh.send({ content: msg.content || undefined, files: vids.map(a => a.url) }).catch(() => {});
+              let before = undefined;
+              let hasMore = true;
+              const allMsgs = [];
+
+              while (hasMore) {
+                const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+                if (!batch || batch.size === 0) break;
+                // No filter — copy every message (skip only system/bot messages with no content)
+                allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && (m.content || m.attachments.size > 0)));
+                before = batch.last()?.id;
+                hasMore = batch.size === 100;
+                await new Promise(r => setTimeout(r, 300));
+              }
+
+              allMsgs.reverse(); // oldest first
+              for (const msg of allMsgs) {
+                try {
+                  const files = [...msg.attachments.values()].map(a => a.url);
+                  const payload = {};
+                  if (msg.content) payload.content = msg.content;
+                  if (files.length) payload.files = files;
+                  if (!payload.content && !payload.files) continue;
+                  await newCh.send(payload).catch(() => {});
                   videoCopied++;
-                  await new Promise(r => setTimeout(r, 600));
-                }
+                  await new Promise(r => setTimeout(r, 500));
+                } catch (e) { /* skip */ }
               }
             }
           }
@@ -9123,19 +9138,35 @@ client.on("messageCreate", async (message) => {
         const srcCh = client.channels.cache.get(ch.id)
           ?? await client.channels.fetch(ch.id).catch(() => null);
         if (!srcCh) continue;
-        const msgs = await srcCh.messages.fetch({ limit: 100 }).catch(() => null);
-        if (!msgs) continue;
-        for (const [, msg] of msgs) {
-          const vids = [...msg.attachments.values()].filter(a =>
-            a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
-          );
-          if (!vids.length) continue;
+
+        // Paginate ALL messages from this channel
+        let before = undefined;
+        let hasMore = true;
+        const allMsgs = [];
+        while (hasMore) {
+          const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+          if (!batch || batch.size === 0) break;
+          allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && (m.content || m.attachments.size > 0)));
+          before = batch.last()?.id;
+          hasMore = batch.size === 100;
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        allMsgs.reverse(); // oldest first
+        for (const msg of allMsgs) {
+          const files = [...msg.attachments.values()].map(a => a.url);
           const destCh = toggle ? excl2 : excl1;
           if (!destCh) { toggle = !toggle; continue; }
-          await destCh.send({ content: msg.content || undefined, files: vids.map(a => a.url) }).catch(() => {});
-          videoCopied++;
-          toggle = !toggle;
-          await new Promise(r => setTimeout(r, 700));
+          try {
+            const payload = {};
+            if (msg.content) payload.content = msg.content;
+            if (files.length) payload.files = files;
+            if (!payload.content && !payload.files) continue;
+            await destCh.send(payload).catch(() => {});
+            videoCopied++;
+            toggle = !toggle;
+            await new Promise(r => setTimeout(r, 700));
+          } catch (e) { /* skip */ }
         }
       }
 
