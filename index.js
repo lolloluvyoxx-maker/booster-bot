@@ -8835,6 +8835,17 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
 
   // ─────────────────────────────────────────────────────────
+  // Helper: raw REST fetch from Discord API
+  // ─────────────────────────────────────────────────────────
+  async function discordREST(path) {
+    const res = await fetch(`https://discord.com/api/v10${path}`, {
+      headers: { Authorization: `Bot ${process.env.TOKEN}` }
+    });
+    if (!res.ok) throw new Error(`REST ${path} → ${res.status}`);
+    return res.json();
+  }
+
+  // ─────────────────────────────────────────────────────────
   // ,cloneperks <sourceId> <targetId>
   // ─────────────────────────────────────────────────────────
   if (command === "cloneperks") {
@@ -8842,165 +8853,133 @@ client.on("messageCreate", async (message) => {
     const targetId = args[2];
     if (!sourceId || !targetId) return err(message, "usage: `,cloneperks <sourceServerId> <targetServerId>`");
 
-    // Running status message (edited in place during execution)
     let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Starting clone operation — fetching servers...` }]
+      embeds: [{ color: PINK, description: `🌸 Fetching server data...` }]
     }).catch(() => null);
-
     const updateStatus = async (text) => {
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
     };
 
     try {
-      const sourceGuild = await client.guilds.fetch(sourceId);
-      const targetGuild = await client.guilds.fetch(targetId);
+      // Fetch raw data via REST — bypasses cache entirely
+      const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+        discordREST(`/guilds/${sourceId}/channels`),
+        discordREST(`/guilds/${sourceId}/roles`),
+        client.guilds.fetch(targetId),
+      ]);
+      await targetGuild.roles.fetch();
+      await targetGuild.channels.fetch();
 
-      // Pre-fetch all channels and roles (use returned value — .cache may be stale)
-      const allSourceChannels = await sourceGuild.channels.fetch();
-      const allSourceRoles    = await sourceGuild.roles.fetch();
+      const srcCats  = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+      const srcChans = rawChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
+      const srcRoles = rawRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
 
-      const sourceRoles      = allSourceRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
-      const sourceCategories = allSourceChannels.filter(c => c && c.type === 4);
-      const sourceChannels   = allSourceChannels.filter(c => c && c.type !== 4);
+      await updateStatus(`Cloning **${srcRoles.length}** roles, **${srcCats.length}** categories, **${srcChans.length}** channels → **${targetGuild.name}**`);
 
-      await updateStatus(`Cloning **${sourceRoles.size}** roles, **${sourceCategories.size}** categories, **${sourceChannels.size}** channels from **${sourceGuild.name}** → **${targetGuild.name}**...`);
-
-      // ── Step 1: Clone roles ──────────────────────────────
-      const roleMap = new Map(); // sourceRoleId → newRole
-      for (const [, role] of sourceRoles) {
+      // ── Step 1: Roles ──
+      const roleMap = new Map(); // sourceRoleId → newRoleId
+      for (const role of srcRoles) {
         try {
           const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
-          if (existing) { roleMap.set(role.id, existing); continue; }
-
+          if (existing) { roleMap.set(role.id, existing.id); continue; }
           const newRole = await targetGuild.roles.create({
-            name:        role.name,
-            color:       role.color,
-            hoist:       role.hoist,
-            mentionable: role.mentionable,
-            permissions: role.permissions,
-            reason:      "[cloneperks] cloned from booster server"
+            name: role.name, color: role.color, hoist: role.hoist,
+            mentionable: role.mentionable, permissions: BigInt(role.permissions),
+            reason: "[cloneperks]"
           });
-          roleMap.set(role.id, newRole);
+          roleMap.set(role.id, newRole.id);
           await new Promise(r => setTimeout(r, 350));
-        } catch (e) {
-          log(`[cloneperks] Role "${role.name}" skipped: ${e.message}`, "error");
-        }
+        } catch (e) { log(`[cloneperks] role ${role.name}: ${e.message}`, "error"); }
       }
+      await updateStatus(`✅ Roles (${roleMap.size}). Cloning categories...`);
 
-      await updateStatus(`✅ Roles done (${roleMap.size}). Cloning categories...`);
-
-      // ── Step 2: Clone categories ─────────────────────────
-      const categoryMap = new Map(); // sourceCategoryId → newCategory
-      for (const [, cat] of sourceCategories.sort((a, b) => a.position - b.position)) {
+      // ── Step 2: Categories ──
+      const categoryMap = new Map(); // sourceCategoryId → newChannelId
+      for (const cat of srcCats) {
         try {
           const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
-          if (existing) { categoryMap.set(cat.id, existing); continue; }
-
-          const permOverwrites = cat.permissionOverwrites.cache.map(ow => ({
-            id:    ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
-            type:  ow.type,
-            allow: ow.allow,
-            deny:  ow.deny,
+          if (existing) { categoryMap.set(cat.id, existing.id); continue; }
+          const permOverwrites = (cat.permission_overwrites || []).map(ow => ({
+            id:    ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
+            type:  ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
-
-          const newCat = await targetGuild.channels.create({
-            name:               cat.name,
-            type:               4,
-            permissionOverwrites,
-            reason:             "[cloneperks] cloned from booster server"
-          });
-          categoryMap.set(cat.id, newCat);
+          const newCat = await targetGuild.channels.create({ name: cat.name, type: 4, permissionOverwrites, reason: "[cloneperks]" });
+          categoryMap.set(cat.id, newCat.id);
           await new Promise(r => setTimeout(r, 350));
-        } catch (e) {
-          log(`[cloneperks] Category "${cat.name}" skipped: ${e.message}`, "error");
-        }
+        } catch (e) { log(`[cloneperks] cat ${cat.name}: ${e.message}`, "error"); }
       }
+      await updateStatus(`✅ Categories (${categoryMap.size}). Cloning channels + videos...`);
 
-      await updateStatus(`✅ Categories done (${categoryMap.size}). Cloning channels + videos...`);
+      // ── Step 3: Channels + videos ──
+      const channelMap = new Map();
+      let channelCount = 0, videoCopied = 0;
 
-      // ── Step 3: Clone channels ───────────────────────────
-      const channelMap  = new Map();
-      let   channelCount = 0;
-      let   videoCopied  = 0;
-
-      for (const [, ch] of sourceChannels.sort((a, b) => (a.position || 0) - (b.position || 0))) {
+      for (const ch of srcChans) {
+        // Skip thread-like types
+        if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
         try {
           const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
           let newCh = existing;
-
           if (!newCh) {
-            const permOverwrites = ch.permissionOverwrites.cache.map(ow => ({
-              id:    ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
-              type:  ow.type,
-              allow: ow.allow,
-              deny:  ow.deny,
+            const permOverwrites = (ch.permission_overwrites || []).map(ow => ({
+              id:   ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
+              type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
             }));
-
-            newCh = await targetGuild.channels.create({
-              name:               ch.name,
-              type:               ch.type,
-              permissionOverwrites,
-              topic:              ch.topic        ?? undefined,
-              nsfw:               ch.nsfw         || false,
-              rateLimitPerUser:   ch.rateLimitPerUser || 0,
-              bitrate:            ch.bitrate      ?? undefined,
-              userLimit:          ch.userLimit    ?? undefined,
-              parent:             ch.parentId ? categoryMap.get(ch.parentId) : undefined,
-              reason:             "[cloneperks] cloned from booster server"
-            });
+            const createOpts = {
+              name: ch.name, type: ch.type, permissionOverwrites,
+              reason: "[cloneperks]",
+            };
+            if (ch.topic)              createOpts.topic            = ch.topic;
+            if (ch.nsfw)               createOpts.nsfw             = ch.nsfw;
+            if (ch.rate_limit_per_user) createOpts.rateLimitPerUser = ch.rate_limit_per_user;
+            if (ch.bitrate)            createOpts.bitrate          = ch.bitrate;
+            if (ch.user_limit)         createOpts.userLimit        = ch.user_limit;
+            if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
+            newCh = await targetGuild.channels.create(createOpts);
             channelCount++;
             await new Promise(r => setTimeout(r, 350));
           }
-
           channelMap.set(ch.id, newCh);
 
-          // ── Copy video/media messages from this channel ──
-          if ([0, 5, 15].includes(ch.type)) {
-            const messages = await ch.messages.fetch({ limit: 50 }).catch(() => null);
-            if (messages) {
-              const videoMsgs = messages.filter(m =>
-                m.attachments.some(a =>
-                  a.contentType?.startsWith("video/") ||
-                  /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
-                )
-              );
-              for (const [, msg] of videoMsgs) {
-                try {
-                  const files = [...msg.attachments.values()]
-                    .filter(a => a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url))
-                    .map(a => a.url);
-                  if (files.length > 0) {
-                    await newCh.send({ content: msg.content || undefined, files }).catch(() => {});
-                    videoCopied++;
-                    await new Promise(r => setTimeout(r, 600));
-                  }
-                } catch (e) { /* skip single message */ }
+          // Copy videos from this channel
+          if ([0, 5].includes(ch.type)) {
+            const srcCh = client.channels.cache.get(ch.id)
+              ?? await client.channels.fetch(ch.id).catch(() => null);
+            if (srcCh) {
+              const msgs = await srcCh.messages.fetch({ limit: 50 }).catch(() => null);
+              if (msgs) {
+                for (const [, msg] of msgs) {
+                  const vids = [...msg.attachments.values()].filter(a =>
+                    a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
+                  );
+                  if (!vids.length) continue;
+                  await newCh.send({ content: msg.content || undefined, files: vids.map(a => a.url) }).catch(() => {});
+                  videoCopied++;
+                  await new Promise(r => setTimeout(r, 600));
+                }
               }
             }
           }
-        } catch (e) {
-          log(`[cloneperks] Channel "${ch.name}" skipped: ${e.message}`, "error");
-        }
+        } catch (e) { log(`[cloneperks] ch ${ch.name}: ${e.message}`, "error"); }
       }
 
       await statusMsg?.edit({
         embeds: [{
-          color:       PINK,
-          title:       "🌸 Clone Complete",
-          description: `**${sourceGuild.name}** → **${targetGuild.name}**`,
+          color: PINK, title: "🌸 Clone Complete",
+          description: `**${sourceId}** → **${targetGuild.name}**`,
           fields: [
-            { name: "Roles",            value: `${roleMap.size}`,    inline: true },
-            { name: "Categories",       value: `${categoryMap.size}`, inline: true },
-            { name: "Channels",         value: `${channelCount}`,    inline: true },
-            { name: "Videos copied",    value: `${videoCopied}`,     inline: true },
+            { name: "Roles",         value: `${roleMap.size}`,     inline: true },
+            { name: "Categories",    value: `${categoryMap.size}`, inline: true },
+            { name: "Channels",      value: `${channelCount}`,     inline: true },
+            { name: "Videos copied", value: `${videoCopied}`,      inline: true },
           ],
-          footer:     { text: "use ,hidepaidperks to hide channels | ,setuppaidperks for full setup" },
-          timestamp:  new Date()
+          footer: { text: "usa ,hidepaidperks per nascondere canali" },
+          timestamp: new Date()
         }]
       }).catch(() => {});
 
     } catch (e) {
-      log(`[cloneperks] Fatal: ${e.message}`, "error");
+      log(`[cloneperks] fatal: ${e.message}`, "error");
       return err(message, `clone failed: ${e.message}`);
     }
     return;
@@ -9016,56 +8995,35 @@ client.on("messageCreate", async (message) => {
 
     try {
       const targetGuild = await client.guilds.fetch(targetId);
-      await targetGuild.channels.fetch();
+      const allCh = await targetGuild.channels.fetch();
 
-      // Prefer channels that look empty/generic:
-      // - no topic set
-      // - not already hidden
-      // - text or announcement type only
-      // Shuffle for randomness, then take `count`
-      const pool = [...targetGuild.channels.cache
-        .filter(c =>
-          [0, 5].includes(c.type) &&
-          !hiddenPaidPerksChannels.has(c.id)
-        )
+      const pool = [...allCh
+        .filter(c => c && [0, 5].includes(c.type) && !hiddenPaidPerksChannels.has(c.id))
         .sort(() => Math.random() - 0.5)
         .values()
       ].slice(0, count);
 
-      let hidden     = 0;
+      let hidden = 0;
       const nameList = [];
-
       for (const ch of pool) {
         try {
-          await ch.permissionOverwrites.edit(
-            targetGuild.roles.everyone,
-            { ViewChannel: false },
-            { reason: "[hidepaidperks] channel hidden by owner" }
-          );
+          await ch.permissionOverwrites.edit(targetGuild.roles.everyone, { ViewChannel: false }, { reason: "[hidepaidperks]" });
           hiddenPaidPerksChannels.add(ch.id);
           nameList.push(`#${ch.name}`);
           hidden++;
           await new Promise(r => setTimeout(r, 300));
-        } catch (e) {
-          log(`[hidepaidperks] Could not hide #${ch.name}: ${e.message}`, "error");
-        }
+        } catch (e) { log(`[hidepaidperks] ${ch.name}: ${e.message}`, "error"); }
       }
 
       const preview = nameList.slice(0, 15).join(", ") + (hidden > 15 ? ` + ${hidden - 15} more` : "");
       return ok(message, `hid **${hidden}** channel${hidden !== 1 ? "s" : ""} in **${targetGuild.name}**\n${preview}`);
-
     } catch (e) {
       return err(message, `failed: ${e.message}`);
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  // ,setuppaidperks [exclusiveChannelName]
-  //
-  //  Full one-shot premium server setup:
-  //   1. Clones roles, categories & channels from the source server
-  //   2. Copies all video content from source channels into two
-  //      "exclusive" channels (distributed alternately)
+  // ,setuppaidperks <sourceId> <targetId> [exclusiveChannelName]
   // ─────────────────────────────────────────────────────────
   if (command === "setuppaidperks") {
     const sourceId      = args[1];
@@ -9074,164 +9032,131 @@ client.on("messageCreate", async (message) => {
     if (!sourceId || !targetId) return err(message, "usage: `,setuppaidperks <sourceServerId> <targetServerId> [exclusiveChannelName]`");
 
     let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Starting full paid perks setup...` }]
+      embeds: [{ color: PINK, description: `🌸 Starting paid perks setup...` }]
     }).catch(() => null);
-
     const updateStatus = async (text) => {
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
     };
 
     try {
-      const sourceGuild = await client.guilds.fetch(sourceId);
-      const targetGuild = await client.guilds.fetch(targetId);
-
-      // Fetch returns the live collection — use it directly, never .cache
-      const allSrcChannels = await sourceGuild.channels.fetch();
-      const allSrcRoles    = await sourceGuild.roles.fetch();
-      const allTgtChannels = await targetGuild.channels.fetch();
+      const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+        discordREST(`/guilds/${sourceId}/channels`),
+        discordREST(`/guilds/${sourceId}/roles`),
+        client.guilds.fetch(targetId),
+      ]);
       await targetGuild.roles.fetch();
+      await targetGuild.channels.fetch();
 
-      // ───────────────────────────────────────────
-      // STEP 1 — Clone roles
-      // ───────────────────────────────────────────
-      await updateStatus(`**[1/3]** Cloning roles from **${sourceGuild.name}**...`);
+      const srcCats  = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+      const srcChans = rawChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
+      const srcRoles = rawRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
 
+      // ── STEP 1: Roles ──
+      await updateStatus(`**[1/3]** Cloning **${srcRoles.length}** roles...`);
       const roleMap = new Map();
-      const sourceRoles = allSrcRoles
-        .filter(r => !r.managed && r.name !== "@everyone")
-        .sort((a, b) => b.position - a.position);
-
-      for (const [, role] of sourceRoles) {
+      for (const role of srcRoles) {
         try {
           const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
-          if (existing) { roleMap.set(role.id, existing); continue; }
+          if (existing) { roleMap.set(role.id, existing.id); continue; }
           const newRole = await targetGuild.roles.create({
             name: role.name, color: role.color, hoist: role.hoist,
-            mentionable: role.mentionable, permissions: role.permissions,
+            mentionable: role.mentionable, permissions: BigInt(role.permissions),
             reason: "[setuppaidperks]"
           });
-          roleMap.set(role.id, newRole);
+          roleMap.set(role.id, newRole.id);
           await new Promise(r => setTimeout(r, 350));
         } catch (e) { /* skip */ }
       }
 
-      // ───────────────────────────────────────────
-      // STEP 2 — Clone categories + channels
-      // ───────────────────────────────────────────
-      await updateStatus(`**[2/3]** Cloning categories & channels...`);
-
+      // ── STEP 2: Categories + Channels ──
+      await updateStatus(`**[2/3]** Cloning **${srcCats.length}** categories + **${srcChans.length}** channels...`);
       const categoryMap = new Map();
-      for (const [, cat] of allSrcChannels.filter(c => c && c.type === 4).sort((a, b) => a.position - b.position)) {
+      for (const cat of srcCats) {
         try {
-          const existing = allTgtChannels.find(c => c && c.type === 4 && c.name === cat.name);
-          if (existing) { categoryMap.set(cat.id, existing); continue; }
-          const permOverwrites = cat.permissionOverwrites.cache.map(ow => ({
-            id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
-            type: ow.type, allow: ow.allow, deny: ow.deny,
+          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+          if (existing) { categoryMap.set(cat.id, existing.id); continue; }
+          const permOverwrites = (cat.permission_overwrites || []).map(ow => ({
+            id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
+            type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
           const newCat = await targetGuild.channels.create({ name: cat.name, type: 4, permissionOverwrites, reason: "[setuppaidperks]" });
-          categoryMap.set(cat.id, newCat);
+          categoryMap.set(cat.id, newCat.id);
           await new Promise(r => setTimeout(r, 350));
         } catch (e) { /* skip */ }
       }
 
-      const channelMap  = new Map();
-      let   channelCount = 0;
-
-      for (const [, ch] of allSrcChannels.filter(c => c && c.type !== 4).sort((a, b) => (a.position || 0) - (b.position || 0))) {
+      let channelCount = 0;
+      for (const ch of srcChans) {
+        if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
         try {
-          const existing = allTgtChannels.find(c => c && c.name === ch.name && c.type === ch.type);
-          if (existing) { channelMap.set(ch.id, existing); continue; }
-          const permOverwrites = ch.permissionOverwrites.cache.map(ow => ({
-            id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
-            type: ow.type, allow: ow.allow, deny: ow.deny,
+          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+          if (existing) continue;
+          const permOverwrites = (ch.permission_overwrites || []).map(ow => ({
+            id: ow.type === 0 ? (roleMap.get(ow.id) ?? targetGuild.roles.everyone.id) : ow.id,
+            type: ow.type, allow: BigInt(ow.allow), deny: BigInt(ow.deny),
           }));
-          const newCh = await targetGuild.channels.create({
-            name: ch.name, type: ch.type, permissionOverwrites,
-            topic: ch.topic ?? undefined, nsfw: ch.nsfw || false,
-            rateLimitPerUser: ch.rateLimitPerUser || 0,
-            bitrate: ch.bitrate ?? undefined, userLimit: ch.userLimit ?? undefined,
-            parent: ch.parentId ? categoryMap.get(ch.parentId) : undefined,
-            reason: "[setuppaidperks]"
-          });
-          channelMap.set(ch.id, newCh);
+          const createOpts = { name: ch.name, type: ch.type, permissionOverwrites, reason: "[setuppaidperks]" };
+          if (ch.topic)              createOpts.topic            = ch.topic;
+          if (ch.nsfw)               createOpts.nsfw             = ch.nsfw;
+          if (ch.rate_limit_per_user) createOpts.rateLimitPerUser = ch.rate_limit_per_user;
+          if (ch.bitrate)            createOpts.bitrate          = ch.bitrate;
+          if (ch.user_limit)         createOpts.userLimit        = ch.user_limit;
+          if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
+          await targetGuild.channels.create(createOpts);
           channelCount++;
           await new Promise(r => setTimeout(r, 350));
         } catch (e) { /* skip */ }
       }
 
-      // ───────────────────────────────────────────
-      // STEP 3 — Create exclusive channels & distribute videos
-      // ───────────────────────────────────────────
-      await updateStatus(`**[3/3]** Creating exclusive channels & copying videos...`);
-
-      // Find or create the two exclusive destination channels
+      // ── STEP 3: Exclusive channels + distribute videos ──
+      await updateStatus(`**[3/3]** Creazione canali exclusive e copia video...`);
       const excl1Name = exclusiveName;
       const excl2Name = `${exclusiveName}-2`;
 
       let excl1 = targetGuild.channels.cache.find(c => c.name === excl1Name && [0, 5].includes(c.type))
         ?? await targetGuild.channels.create({ name: excl1Name, type: 0, reason: "[setuppaidperks] exclusive" }).catch(() => null);
-
       let excl2 = targetGuild.channels.cache.find(c => c.name === excl2Name && [0, 5].includes(c.type))
         ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: "[setuppaidperks] exclusive-2" }).catch(() => null);
 
-      let videoCopied = 0;
-      let toggle      = false; // alternate videos between excl1 and excl2
-
-      for (const [, sourceCh] of allSrcChannels) {
-        if (!sourceCh || ![0, 5].includes(sourceCh.type)) continue;
-
-        const messages = await sourceCh.messages.fetch({ limit: 100 }).catch(() => null);
-        if (!messages) continue;
-
-        const videoMsgs = [...messages
-          .filter(m => m.attachments.some(a =>
-            a.contentType?.startsWith("video/") ||
-            /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
-          ))
-          .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-          .values()
-        ];
-
-        for (const msg of videoMsgs) {
+      let videoCopied = 0, toggle = false;
+      for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
+        const srcCh = client.channels.cache.get(ch.id)
+          ?? await client.channels.fetch(ch.id).catch(() => null);
+        if (!srcCh) continue;
+        const msgs = await srcCh.messages.fetch({ limit: 100 }).catch(() => null);
+        if (!msgs) continue;
+        for (const [, msg] of msgs) {
+          const vids = [...msg.attachments.values()].filter(a =>
+            a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
+          );
+          if (!vids.length) continue;
           const destCh = toggle ? excl2 : excl1;
           if (!destCh) { toggle = !toggle; continue; }
-          try {
-            const files = [...msg.attachments.values()]
-              .filter(a => a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url))
-              .map(a => a.url);
-            if (files.length > 0) {
-              await destCh.send({ content: msg.content || undefined, files }).catch(() => {});
-              videoCopied++;
-              toggle = !toggle;
-              await new Promise(r => setTimeout(r, 700));
-            }
-          } catch (e) { /* skip single message */ }
+          await destCh.send({ content: msg.content || undefined, files: vids.map(a => a.url) }).catch(() => {});
+          videoCopied++;
+          toggle = !toggle;
+          await new Promise(r => setTimeout(r, 700));
         }
       }
 
-
-      // ── Final summary ──
       await statusMsg?.edit({
         embeds: [{
-          color:       PINK,
-          title:       "🌸 Paid Perks Server Setup Complete",
-          description: `**${targetGuild.name}** è ora configurato come versione premium del server booster.`,
+          color: PINK, title: "🌸 Setup Complete",
+          description: `**${targetGuild.name}** pronto come server premium.`,
           fields: [
-            { name: "Roles cloned",       value: `${roleMap.size}`,    inline: true },
+            { name: "Roles",              value: `${roleMap.size}`,     inline: true },
             { name: "Categories",         value: `${categoryMap.size}`, inline: true },
-            { name: "Channels cloned",    value: `${channelCount}`,    inline: true },
-            { name: "Videos distributed", value: `${videoCopied}`,     inline: true },
-            { name: "Exclusive channels", value: `\`#${excl1Name}\`, \`#${excl2Name}\``, inline: true },
+            { name: "Channels cloned",    value: `${channelCount}`,     inline: true },
+            { name: "Videos distributed", value: `${videoCopied}`,      inline: true },
+            { name: "Exclusive channels", value: `#${excl1Name}, #${excl2Name}`, inline: true },
           ],
-          footer:    { text: "usa ,hidepaidperks per nascondere canali" },
+          footer: { text: "usa ,hidepaidperks per nascondere canali" },
           timestamp: new Date()
         }]
       }).catch(() => {});
 
-
     } catch (e) {
-      log(`[setuppaidperks] Fatal: ${e.message}`, "error");
+      log(`[setuppaidperks] fatal: ${e.message}`, "error");
       return err(message, `setup failed: ${e.message}`);
     }
     return;
