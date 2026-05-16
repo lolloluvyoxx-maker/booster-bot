@@ -53,7 +53,6 @@ function buildConfigSnapshot() {
     automodExempt,
     warnThresholds,
     userTimezones,
-    twitterConfig,
   };
 }
 
@@ -154,15 +153,6 @@ async function loadAllConfigs() {
     if (data.automodExempt instanceof Map) { automodExempt.clear(); data.automodExempt.forEach((v,k) => automodExempt.set(k,v)); }
     if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
     if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
-    if (data.twitterConfig instanceof Map) {
-      twitterConfig.clear();
-      data.twitterConfig.forEach((v, k) => {
-        if (v && typeof v === "object") {
-          if (!(v.accounts instanceof Set)) v.accounts = new Set(Array.isArray(v.accounts) ? v.accounts : []);
-          twitterConfig.set(k, v);
-        }
-      });
-    }
 
     console.log("[Config] ✅ All configs restored from Discord");
   } catch (e) {
@@ -320,6 +310,13 @@ const DENIED_ROLE_ID = "1426874194263805992";
 
 // Channel IDs
 const PERKS_CHANNEL_ID = "1475125441919455346";
+
+// ===== PAID PERKS SERVER CONFIG =====
+// ← Inserisci qui l'ID del tuo server paid perks
+const PAID_PERKS_GUILD_ID = "REPLACE_WITH_PAID_PERKS_SERVER_ID";
+
+// Tracks which channels have been hidden in the paid perks server (in-memory)
+const hiddenPaidPerksChannels = new Set();
 
 // ===== CUSTOM MESSAGES (in-memory, editable with !setmsg) =====
 const customMessages = {
@@ -2317,7 +2314,6 @@ client.on("messageCreate", async (message) => {
           [",warnthreshold <n> <action>", "Auto punish on warns"],
           [",birthday channel #channel", "Birthday announcements"],
           [",antinuke / ,antiraid / ,vanitylock", "Security systems"],
-          [",config-panel", "Twitter repost panel (add/remove accounts)"],
         ]
       },
       economy: {
@@ -2470,7 +2466,6 @@ client.on("messageCreate", async (message) => {
           [",addc #channel", "Add channel to minor monitoring"],
           [",delc #channel", "Remove channel from monitoring"],
           [",list", "Show all monitored channels & config"],
-          [",config-panel", "Twitter repost panel"],
           [",reqattach #channel", "Require media — deletes text-only messages"],
           [",unreqattach #channel", "Remove media requirement"],
           [",modr @role", "Role pinged on minor detections"],
@@ -8813,13 +8808,434 @@ client.on("messageCreate", async (message) => {
     saveAllConfigs();
     return ok(message, `minor warnings will be sent to **#${ch.name}**`);
   }
+});
 
-  // ,config-panel / ,twconfig — Twitter repost panel
-  if (command === "config-panel" || command === "twconfig") {
-    const isOwner = message.author.id === OWNER_ID || message.author.id === message.guild.ownerId;
-    if (!isOwner) return err(message, "Only the bot owner can use this command.");
-    const twCfg = getTwitterConfig(message.guild.id);
-    await showTwitterPanel(message, twCfg, message.guild.id);
+// ===================================================
+// ===== PAID PERKS COMMANDS (OWNER ONLY) ============
+// ===================================================
+//
+//  ,cloneperks [sourceGuildId] [targetGuildId]
+//    → Clones ALL structure (roles, categories, channels, videos)
+//      from the booster perks server into the paid perks server.
+//
+//  ,hidepaidperks [count=20] [targetGuildId]
+//    → Hides N channels in the paid perks server by denying
+//      @everyone ViewChannel (prefers empty/generic channels).
+//
+//  ,setuppaidperks [exclusiveChannelName]
+//    → Full one-shot setup: clones booster server structure,
+//      distributes videos into two "exclusive" channels,
+//      then hides 20 random channels so the paid server
+//      appears larger and more exclusive than the booster server.
+//
+// ===================================================
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (message.author.id !== OWNER_ID) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  // ─────────────────────────────────────────────────────────
+  // ,cloneperks [sourceId] [targetId]
+  // ─────────────────────────────────────────────────────────
+  if (command === "cloneperks") {
+    const sourceId = args[1] || SOURCE_GUILD_ID;
+    const targetId = args[2] || PAID_PERKS_GUILD_ID;
+
+    // Running status message (edited in place during execution)
+    let statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `🌸 Starting clone operation — fetching servers...` }]
+    }).catch(() => null);
+
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      const sourceGuild = await client.guilds.fetch(sourceId);
+      const targetGuild = await client.guilds.fetch(targetId);
+
+      // Pre-fetch all channels and roles
+      await sourceGuild.channels.fetch();
+      await sourceGuild.roles.fetch();
+
+      const sourceRoles       = sourceGuild.roles.cache.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
+      const sourceCategories  = sourceGuild.channels.cache.filter(c => c.type === 4);
+      const sourceChannels    = sourceGuild.channels.cache.filter(c => c.type !== 4);
+
+      await updateStatus(`Cloning **${sourceRoles.size}** roles, **${sourceCategories.size}** categories, **${sourceChannels.size}** channels from **${sourceGuild.name}** → **${targetGuild.name}**...`);
+
+      // ── Step 1: Clone roles ──────────────────────────────
+      const roleMap = new Map(); // sourceRoleId → newRole
+      for (const [, role] of sourceRoles) {
+        try {
+          const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
+          if (existing) { roleMap.set(role.id, existing); continue; }
+
+          const newRole = await targetGuild.roles.create({
+            name:        role.name,
+            color:       role.color,
+            hoist:       role.hoist,
+            mentionable: role.mentionable,
+            permissions: role.permissions,
+            reason:      "[cloneperks] cloned from booster server"
+          });
+          roleMap.set(role.id, newRole);
+          await new Promise(r => setTimeout(r, 350));
+        } catch (e) {
+          log(`[cloneperks] Role "${role.name}" skipped: ${e.message}`, "error");
+        }
+      }
+
+      await updateStatus(`✅ Roles done (${roleMap.size}). Cloning categories...`);
+
+      // ── Step 2: Clone categories ─────────────────────────
+      const categoryMap = new Map(); // sourceCategoryId → newCategory
+      for (const [, cat] of sourceCategories.sort((a, b) => a.position - b.position)) {
+        try {
+          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+          if (existing) { categoryMap.set(cat.id, existing); continue; }
+
+          const permOverwrites = cat.permissionOverwrites.cache.map(ow => ({
+            id:    ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
+            type:  ow.type,
+            allow: ow.allow,
+            deny:  ow.deny,
+          }));
+
+          const newCat = await targetGuild.channels.create({
+            name:               cat.name,
+            type:               4,
+            permissionOverwrites,
+            reason:             "[cloneperks] cloned from booster server"
+          });
+          categoryMap.set(cat.id, newCat);
+          await new Promise(r => setTimeout(r, 350));
+        } catch (e) {
+          log(`[cloneperks] Category "${cat.name}" skipped: ${e.message}`, "error");
+        }
+      }
+
+      await updateStatus(`✅ Categories done (${categoryMap.size}). Cloning channels + videos...`);
+
+      // ── Step 3: Clone channels ───────────────────────────
+      const channelMap  = new Map();
+      let   channelCount = 0;
+      let   videoCopied  = 0;
+
+      for (const [, ch] of sourceChannels.sort((a, b) => (a.position || 0) - (b.position || 0))) {
+        try {
+          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+          let newCh = existing;
+
+          if (!newCh) {
+            const permOverwrites = ch.permissionOverwrites.cache.map(ow => ({
+              id:    ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
+              type:  ow.type,
+              allow: ow.allow,
+              deny:  ow.deny,
+            }));
+
+            newCh = await targetGuild.channels.create({
+              name:               ch.name,
+              type:               ch.type,
+              permissionOverwrites,
+              topic:              ch.topic        ?? undefined,
+              nsfw:               ch.nsfw         || false,
+              rateLimitPerUser:   ch.rateLimitPerUser || 0,
+              bitrate:            ch.bitrate      ?? undefined,
+              userLimit:          ch.userLimit    ?? undefined,
+              parent:             ch.parentId ? categoryMap.get(ch.parentId) : undefined,
+              reason:             "[cloneperks] cloned from booster server"
+            });
+            channelCount++;
+            await new Promise(r => setTimeout(r, 350));
+          }
+
+          channelMap.set(ch.id, newCh);
+
+          // ── Copy video/media messages from this channel ──
+          if ([0, 5, 15].includes(ch.type)) {
+            const messages = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+            if (messages) {
+              const videoMsgs = messages.filter(m =>
+                m.attachments.some(a =>
+                  a.contentType?.startsWith("video/") ||
+                  /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
+                )
+              );
+              for (const [, msg] of videoMsgs) {
+                try {
+                  const files = [...msg.attachments.values()]
+                    .filter(a => a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url))
+                    .map(a => a.url);
+                  if (files.length > 0) {
+                    await newCh.send({ content: msg.content || undefined, files }).catch(() => {});
+                    videoCopied++;
+                    await new Promise(r => setTimeout(r, 600));
+                  }
+                } catch (e) { /* skip single message */ }
+              }
+            }
+          }
+        } catch (e) {
+          log(`[cloneperks] Channel "${ch.name}" skipped: ${e.message}`, "error");
+        }
+      }
+
+      await statusMsg?.edit({
+        embeds: [{
+          color:       PINK,
+          title:       "🌸 Clone Complete",
+          description: `**${sourceGuild.name}** → **${targetGuild.name}**`,
+          fields: [
+            { name: "Roles",            value: `${roleMap.size}`,    inline: true },
+            { name: "Categories",       value: `${categoryMap.size}`, inline: true },
+            { name: "Channels",         value: `${channelCount}`,    inline: true },
+            { name: "Videos copied",    value: `${videoCopied}`,     inline: true },
+          ],
+          footer:     { text: "use ,hidepaidperks to hide channels | ,setuppaidperks for full setup" },
+          timestamp:  new Date()
+        }]
+      }).catch(() => {});
+
+    } catch (e) {
+      log(`[cloneperks] Fatal: ${e.message}`, "error");
+      return err(message, `clone failed: ${e.message}`);
+    }
+    return;
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ,hidepaidperks [count=20] [targetGuildId]
+  // ─────────────────────────────────────────────────────────
+  if (command === "hidepaidperks") {
+    const count    = Math.min(parseInt(args[1]) || 20, 50);
+    const targetId = args[2] || PAID_PERKS_GUILD_ID;
+
+    try {
+      const targetGuild = await client.guilds.fetch(targetId);
+      await targetGuild.channels.fetch();
+
+      // Prefer channels that look empty/generic:
+      // - no topic set
+      // - not already hidden
+      // - text or announcement type only
+      // Shuffle for randomness, then take `count`
+      const pool = [...targetGuild.channels.cache
+        .filter(c =>
+          [0, 5].includes(c.type) &&
+          !hiddenPaidPerksChannels.has(c.id)
+        )
+        .sort(() => Math.random() - 0.5)
+        .values()
+      ].slice(0, count);
+
+      let hidden     = 0;
+      const nameList = [];
+
+      for (const ch of pool) {
+        try {
+          await ch.permissionOverwrites.edit(
+            targetGuild.roles.everyone,
+            { ViewChannel: false },
+            { reason: "[hidepaidperks] channel hidden by owner" }
+          );
+          hiddenPaidPerksChannels.add(ch.id);
+          nameList.push(`#${ch.name}`);
+          hidden++;
+          await new Promise(r => setTimeout(r, 300));
+        } catch (e) {
+          log(`[hidepaidperks] Could not hide #${ch.name}: ${e.message}`, "error");
+        }
+      }
+
+      const preview = nameList.slice(0, 15).join(", ") + (hidden > 15 ? ` + ${hidden - 15} more` : "");
+      return ok(message, `hid **${hidden}** channel${hidden !== 1 ? "s" : ""} in **${targetGuild.name}**\n${preview}`);
+
+    } catch (e) {
+      return err(message, `failed: ${e.message}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ,setuppaidperks [exclusiveChannelName]
+  //
+  //  Full one-shot premium server setup:
+  //   1. Clones roles, categories & channels from the booster server
+  //   2. Copies all video content from source channels into two
+  //      "exclusive" channels (distributed alternately)
+  //   3. Hides 20 random channels so the paid server appears
+  //      larger and more complete than the free booster server
+  // ─────────────────────────────────────────────────────────
+  if (command === "setuppaidperks") {
+    const exclusiveName = args.slice(1).join(" ").trim() || "exclusive";
+    const sourceId      = SOURCE_GUILD_ID;
+    const targetId      = PAID_PERKS_GUILD_ID;
+
+    let statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `🌸 Starting full paid perks setup...` }]
+    }).catch(() => null);
+
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      const sourceGuild = await client.guilds.fetch(sourceId);
+      const targetGuild = await client.guilds.fetch(targetId);
+
+      await sourceGuild.channels.fetch();
+      await sourceGuild.roles.fetch();
+      await targetGuild.channels.fetch();
+      await targetGuild.roles.fetch();
+
+      // ───────────────────────────────────────────
+      // STEP 1 — Clone roles
+      // ───────────────────────────────────────────
+      await updateStatus(`**[1/4]** Cloning roles from **${sourceGuild.name}**...`);
+
+      const roleMap = new Map();
+      const sourceRoles = sourceGuild.roles.cache
+        .filter(r => !r.managed && r.name !== "@everyone")
+        .sort((a, b) => b.position - a.position);
+
+      for (const [, role] of sourceRoles) {
+        try {
+          const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
+          if (existing) { roleMap.set(role.id, existing); continue; }
+          const newRole = await targetGuild.roles.create({
+            name: role.name, color: role.color, hoist: role.hoist,
+            mentionable: role.mentionable, permissions: role.permissions,
+            reason: "[setuppaidperks]"
+          });
+          roleMap.set(role.id, newRole);
+          await new Promise(r => setTimeout(r, 350));
+        } catch (e) { /* skip */ }
+      }
+
+      // ───────────────────────────────────────────
+      // STEP 2 — Clone categories + channels
+      // ───────────────────────────────────────────
+      await updateStatus(`**[2/4]** Cloning categories & channels...`);
+
+      const categoryMap = new Map();
+      for (const [, cat] of sourceGuild.channels.cache.filter(c => c.type === 4).sort((a, b) => a.position - b.position)) {
+        try {
+          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+          if (existing) { categoryMap.set(cat.id, existing); continue; }
+          const permOverwrites = cat.permissionOverwrites.cache.map(ow => ({
+            id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
+            type: ow.type, allow: ow.allow, deny: ow.deny,
+          }));
+          const newCat = await targetGuild.channels.create({ name: cat.name, type: 4, permissionOverwrites, reason: "[setuppaidperks]" });
+          categoryMap.set(cat.id, newCat);
+          await new Promise(r => setTimeout(r, 350));
+        } catch (e) { /* skip */ }
+      }
+
+      const channelMap  = new Map();
+      let   channelCount = 0;
+
+      for (const [, ch] of sourceGuild.channels.cache.filter(c => c.type !== 4).sort((a, b) => (a.position || 0) - (b.position || 0))) {
+        try {
+          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
+          if (existing) { channelMap.set(ch.id, existing); continue; }
+          const permOverwrites = ch.permissionOverwrites.cache.map(ow => ({
+            id: ow.type === 0 ? (roleMap.get(ow.id)?.id ?? targetGuild.roles.everyone.id) : ow.id,
+            type: ow.type, allow: ow.allow, deny: ow.deny,
+          }));
+          const newCh = await targetGuild.channels.create({
+            name: ch.name, type: ch.type, permissionOverwrites,
+            topic: ch.topic ?? undefined, nsfw: ch.nsfw || false,
+            rateLimitPerUser: ch.rateLimitPerUser || 0,
+            bitrate: ch.bitrate ?? undefined, userLimit: ch.userLimit ?? undefined,
+            parent: ch.parentId ? categoryMap.get(ch.parentId) : undefined,
+            reason: "[setuppaidperks]"
+          });
+          channelMap.set(ch.id, newCh);
+          channelCount++;
+          await new Promise(r => setTimeout(r, 350));
+        } catch (e) { /* skip */ }
+      }
+
+      // ───────────────────────────────────────────
+      // STEP 3 — Create exclusive channels & distribute videos
+      // ───────────────────────────────────────────
+      await updateStatus(`**[3/4]** Creating exclusive channels & copying videos...`);
+
+      // Find or create the two exclusive destination channels
+      const excl1Name = exclusiveName;
+      const excl2Name = `${exclusiveName}-2`;
+
+      let excl1 = targetGuild.channels.cache.find(c => c.name === excl1Name && [0, 5].includes(c.type))
+        ?? await targetGuild.channels.create({ name: excl1Name, type: 0, reason: "[setuppaidperks] exclusive" }).catch(() => null);
+
+      let excl2 = targetGuild.channels.cache.find(c => c.name === excl2Name && [0, 5].includes(c.type))
+        ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: "[setuppaidperks] exclusive-2" }).catch(() => null);
+
+      let videoCopied = 0;
+      let toggle      = false; // alternate videos between excl1 and excl2
+
+      for (const [, sourceCh] of sourceGuild.channels.cache) {
+        if (![0, 5].includes(sourceCh.type)) continue;
+
+        const messages = await sourceCh.messages.fetch({ limit: 100 }).catch(() => null);
+        if (!messages) continue;
+
+        const videoMsgs = [...messages
+          .filter(m => m.attachments.some(a =>
+            a.contentType?.startsWith("video/") ||
+            /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url)
+          ))
+          .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+          .values()
+        ];
+
+        for (const msg of videoMsgs) {
+          const destCh = toggle ? excl2 : excl1;
+          if (!destCh) { toggle = !toggle; continue; }
+          try {
+            const files = [...msg.attachments.values()]
+              .filter(a => a.contentType?.startsWith("video/") || /\.(mp4|mov|webm|mkv|avi)$/i.test(a.url))
+              .map(a => a.url);
+            if (files.length > 0) {
+              await destCh.send({ content: msg.content || undefined, files }).catch(() => {});
+              videoCopied++;
+              toggle = !toggle;
+              await new Promise(r => setTimeout(r, 700));
+            }
+          } catch (e) { /* skip single message */ }
+        }
+      }
+
+
+      // ── Final summary ──
+      await statusMsg?.edit({
+        embeds: [{
+          color:       PINK,
+          title:       "🌸 Paid Perks Server Setup Complete",
+          description: `**${targetGuild.name}** è ora configurato come versione premium del server booster.`,
+          fields: [
+            { name: "Roles cloned",       value: `${roleMap.size}`,    inline: true },
+            { name: "Categories",         value: `${categoryMap.size}`, inline: true },
+            { name: "Channels cloned",    value: `${channelCount}`,    inline: true },
+            { name: "Videos distributed", value: `${videoCopied}`,     inline: true },
+            { name: "Exclusive channels", value: `\`#${excl1Name}\`, \`#${excl2Name}\``, inline: true },
+          ],
+          footer:    { text: "usa ,hidepaidperks per nascondere canali" },
+          timestamp: new Date()
+        }]
+      }).catch(() => {});
+
+
+    } catch (e) {
+      log(`[setuppaidperks] Fatal: ${e.message}`, "error");
+      return err(message, `setup failed: ${e.message}`);
+    }
     return;
   }
 });
@@ -8841,362 +9257,5 @@ process.on("uncaughtException", (error) => {
 });
 
 // Clean up handled messages cache every 30 seconds
-
-// ===================================================
-// ===== TWITTER REPOST SYSTEM =======================
-// ===================================================
-
-// twitterConfig[guildId] = { accounts: Set<string>, channelId: string|null }
-const twitterConfig = new Map();
-// lastTweetId[username] = tweetId string (to avoid double-posting)
-const lastTweetId = {};
-
-function getTwitterConfig(guildId) {
-  if (!twitterConfig.has(guildId)) {
-    twitterConfig.set(guildId, { accounts: new Set(), channelId: null });
-  }
-  return twitterConfig.get(guildId);
-}
-
-// Nitter instances (free, no API key needed)
-const NITTER_INSTANCES = [
-  "https://nitter.privacydev.net",
-  "https://nitter.poast.org",
-  "https://nitter.1d4.us",
-  "https://nitter.adminforge.de",
-];
-
-async function fetchNitterRSS(username) {
-  for (const instance of NITTER_INSTANCES) {
-    try {
-      const res = await fetch(`${instance}/${username}/rss`, {
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; Discordbot/1.0)" },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) {
-        const text = await res.text();
-        if (text.includes("<item>")) return text;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-async function pollTwitterAccounts() {
-  log(`[Twitter] Polling ${twitterConfig.size} guild(s)...`, "info");
-  for (const [guildId, cfg] of twitterConfig.entries()) {
-    log(`[Twitter] Guild ${guildId} — channelId: ${cfg.channelId}, accounts: ${[...cfg.accounts].join(", ")}`, "info");
-    if (!cfg.channelId || cfg.accounts.size === 0) {
-      log(`[Twitter] Skipping guild ${guildId} — no channel or no accounts`, "info");
-      continue;
-    }
-    const channel = client.channels.cache.get(cfg.channelId) || await client.channels.fetch(cfg.channelId).catch(() => null);
-    if (!channel) {
-      log(`[Twitter] Channel ${cfg.channelId} not found for guild ${guildId}`, "error");
-      continue;
-    }
-    log(`[Twitter] Found channel #${channel.name}`, "info");
-
-    for (const username of cfg.accounts) {
-      try {
-        log(`[Twitter] Fetching RSS for @${username}...`, "info");
-        const rss = await fetchNitterRSS(username);
-        if (!rss) {
-          log(`[Twitter] No RSS returned for @${username}`, "error");
-          continue;
-        }
-
-        const items = [...rss.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-        log(`[Twitter] @${username} — ${items.length} items in RSS`, "info");
-        if (items.length === 0) continue;
-
-        // First item = newest tweet
-        const item = items[0][1];
-        const linkMatch = item.match(/<link>(.*?)<\/link>/);
-        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>(.*?)<\/title>/);
-        const pubDateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
-        const mediaMatch = item.match(/<media:thumbnail[^>]*url="([^"]+)"/);
-
-        if (!linkMatch) continue;
-
-        // Convert nitter link → real Twitter link
-        const rawLink = linkMatch[1].replace(/&amp;/g, "&");
-        const tweetIdMatch = rawLink.match(/\/status\/(\d+)/);
-        if (!tweetIdMatch) continue;
-
-        const tweetId = tweetIdMatch[1];
-
-        log(`[Twitter] @${username} — latest tweet: ${tweetId}, last known: ${lastTweetId[username] || "none"}`, "info");
-
-        // First poll — just record without posting
-        if (!lastTweetId[username]) {
-          lastTweetId[username] = tweetId;
-          log(`[Twitter] Tracking @${username}, latest tweet: ${tweetId}`, "info");
-          continue;
-        }
-
-        // No new tweet
-        if (tweetId === lastTweetId[username]) {
-          log(`[Twitter] @${username} — no new tweet`, "info");
-          continue;
-        }
-
-        // New tweet found!
-        lastTweetId[username] = tweetId;
-
-        const tweetUrl = `https://twitter.com/${username}/status/${tweetId}`;
-        const title = (titleMatch ? titleMatch[1] : "")
-          .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-
-        // Skip retweets if desired (RT @...) — comment this out to include them
-        // if (title.startsWith("RT @")) continue;
-
-        const embed = {
-          color: PINK,
-          author: {
-            name: `@${username}`,
-            url: `https://twitter.com/${username}`,
-            icon_url: "https://abs.twimg.com/icons/apple-touch-icon-192x192.png",
-          },
-          description: title.length > 500 ? title.substring(0, 497) + "…" : title || null,
-          url: tweetUrl,
-          image: mediaMatch ? { url: mediaMatch[1] } : null,
-          footer: { text: "Twitter / X" },
-          timestamp: pubDateMatch ? new Date(pubDateMatch[1]) : new Date(),
-        };
-
-        await channel.send({ content: tweetUrl, embeds: [embed] }).catch(() => {});
-        log(`[Twitter] Reposted tweet from @${username} → ${tweetUrl}`, "success");
-
-      } catch (e) {
-        log(`[Twitter] Error polling @${username}: ${e.message}`, "error");
-      }
-    }
-  }
-}
-
-// Poll every 60 seconds
-setInterval(pollTwitterAccounts, 60 * 1000);
-
-// ── CONFIG PANEL EMBED BUILDER ───────────────────────
-async function showTwitterPanel(target, cfg, guildId, editTarget = null) {
-  const accounts = [...cfg.accounts];
-  const channelStr = cfg.channelId ? `<#${cfg.channelId}>` : "❌ not set";
-
-  const panelEmbed = {
-    color: PINK,
-    title: "🐦  Twitter Repost Panel",
-    description: "Manage which Twitter accounts get reposted automatically in your server.",
-    fields: [
-      { name: "📌 Repost Channel", value: channelStr, inline: true },
-      { name: "🔄 Poll Interval", value: "every 60s", inline: true },
-      { name: "\u200b", value: "\u200b", inline: true },
-      {
-        name: `👥 Followed Accounts (${accounts.length})`,
-        value: accounts.length > 0
-          ? accounts.map(a => `\`@${a}\``).join("  ·  ")
-          : "none — add one below",
-        inline: false,
-      },
-    ],
-    footer: { text: "v3.9 | Made by hrodvitnir_fenrir" },
-    timestamp: new Date(),
-  };
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("tw_add").setLabel("➕ Add Account").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("tw_remove").setLabel("➖ Remove").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId("tw_setchannel").setLabel("📌 Set Channel").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("tw_refresh").setLabel("🔄 Refresh").setStyle(ButtonStyle.Secondary),
-  );
-
-  if (editTarget) {
-    return editTarget.edit({ embeds: [panelEmbed], components: [row] }).catch(() => null);
-  } else {
-    return target.reply({ embeds: [panelEmbed], components: [row] }).catch(() => null);
-  }
-}
-
-// ── TWITTER PANEL BUTTON INTERACTIONS ───────────────
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-  if (!interaction.customId.startsWith("tw_")) return;
-
-  const isOwner = interaction.user.id === OWNER_ID || interaction.user.id === interaction.guild.ownerId;
-  if (!isOwner) {
-    return interaction.reply({
-      embeds: [{ color: PINK, description: "✖ Only the bot owner can use this panel." }],
-      flags: 64,
-    });
-  }
-
-  const cfg = getTwitterConfig(interaction.guild.id);
-  const guildId = interaction.guild.id;
-
-  // 🔄 Refresh
-  if (interaction.customId === "tw_refresh") {
-    await interaction.deferUpdate();
-    await showTwitterPanel(null, cfg, guildId, interaction.message);
-    return;
-  }
-
-  // ➕ Add account
-  if (interaction.customId === "tw_add") {
-    await interaction.reply({
-      embeds: [{ color: PINK, description: "🌸 Type the **Twitter username** to add (e.g. `elonmusk` or `@elonmusk`). You have **30 seconds**." }],
-      flags: 64,
-    });
-
-    const collector = interaction.channel.createMessageCollector({
-      filter: m => m.author.id === OWNER_ID,
-      time: 30000,
-      max: 1,
-    });
-
-    collector.on("collect", async m => {
-      const username = m.content.trim().replace(/^@/, "").toLowerCase();
-      m.delete().catch(() => {});
-
-      if (!username || !/^[a-zA-Z0-9_]{1,50}$/.test(username)) {
-        return interaction.followUp({ embeds: [{ color: PINK, description: "✖ Invalid username." }], flags: 64 });
-      }
-      if (cfg.accounts.has(username)) {
-        return interaction.followUp({ embeds: [{ color: PINK, description: `✖ **@${username}** is already in the list.` }], flags: 64 });
-      }
-
-      cfg.accounts.add(username);
-      saveAllConfigs();
-
-      // Immediately fetch and repost the latest tweet
-      fetchNitterRSS(username).then(async rss => {
-        if (!rss) return;
-        const items = [...rss.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-        if (items.length === 0) return;
-        const item = items[0][1];
-        const linkMatch = item.match(/<link>(.*?)<\/link>/);
-        const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>(.*?)<\/title>/);
-        const pubDateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
-        const mediaMatch = item.match(/<media:thumbnail[^>]*url="([^"]+)"/);
-        if (!linkMatch) return;
-        const rawLink = linkMatch[1].replace(/&amp;/g, "&");
-        const tweetIdMatch = rawLink.match(/\/status\/(\d+)/);
-        if (!tweetIdMatch) return;
-        const tweetId = tweetIdMatch[1];
-        lastTweetId[username] = tweetId;
-        if (cfg.channelId) {
-          const ch = client.channels.cache.get(cfg.channelId) || await client.channels.fetch(cfg.channelId).catch(() => null);
-          if (ch) {
-            const tweetUrl = `https://twitter.com/${username}/status/${tweetId}`;
-            const title = (titleMatch ? titleMatch[1] : "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-            const embed = {
-              color: PINK,
-              author: { name: `@${username}`, url: `https://twitter.com/${username}`, icon_url: "https://abs.twimg.com/icons/apple-touch-icon-192x192.png" },
-              description: title.length > 500 ? title.substring(0, 497) + "…" : title || null,
-              url: tweetUrl,
-              image: mediaMatch ? { url: mediaMatch[1] } : null,
-              footer: { text: "Twitter / X" },
-              timestamp: pubDateMatch ? new Date(pubDateMatch[1]) : new Date(),
-            };
-            await ch.send({ content: tweetUrl, embeds: [embed] }).catch(() => {});
-          }
-        }
-      }).catch(() => {});
-
-      await showTwitterPanel(null, cfg, guildId, interaction.message);
-      await interaction.followUp({
-        embeds: [{ color: PINK, description: `🌸 Now following **@${username}** — new tweets will be reposted in <#${cfg.channelId || "???"}>!` }],
-        flags: 64,
-      });
-    });
-
-    collector.on("end", collected => {
-      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out — no username received." }], flags: 64 }).catch(() => {});
-    });
-    return;
-  }
-
-  // ➖ Remove account
-  if (interaction.customId === "tw_remove") {
-    if (cfg.accounts.size === 0) {
-      return interaction.reply({ embeds: [{ color: PINK, description: "✖ No accounts to remove." }], flags: 64 });
-    }
-
-    await interaction.reply({
-      embeds: [{
-        color: PINK,
-        description: `🌸 Type the username to **remove**:\n${[...cfg.accounts].map(a => `\`@${a}\``).join("  ·  ")}\n\nYou have **30 seconds**.`,
-      }],
-      flags: 64,
-    });
-
-    const collector = interaction.channel.createMessageCollector({
-      filter: m => m.author.id === OWNER_ID,
-      time: 30000,
-      max: 1,
-    });
-
-    collector.on("collect", async m => {
-      const username = m.content.trim().replace(/^@/, "").toLowerCase();
-      m.delete().catch(() => {});
-
-      if (!cfg.accounts.has(username)) {
-        return interaction.followUp({ embeds: [{ color: PINK, description: `✖ **@${username}** is not in the list.` }], flags: 64 });
-      }
-
-      cfg.accounts.delete(username);
-      delete lastTweetId[username];
-      saveAllConfigs();
-
-      await showTwitterPanel(null, cfg, guildId, interaction.message);
-      await interaction.followUp({
-        embeds: [{ color: PINK, description: `🌸 Removed **@${username}** — no longer reposting their tweets.` }],
-        flags: 64,
-      });
-    });
-
-    collector.on("end", collected => {
-      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out." }], flags: 64 }).catch(() => {});
-    });
-    return;
-  }
-
-  // 📌 Set channel
-  if (interaction.customId === "tw_setchannel") {
-    await interaction.reply({
-      embeds: [{ color: PINK, description: "🌸 Mention the **channel** where tweets should be reposted (e.g. `#auto`). You have **30 seconds**." }],
-      flags: 64,
-    });
-
-    const collector = interaction.channel.createMessageCollector({
-      filter: m => m.author.id === OWNER_ID,
-      time: 30000,
-      max: 1,
-    });
-
-    collector.on("collect", async m => {
-      const ch = m.mentions.channels.first() || interaction.guild.channels.cache.get(m.content.trim());
-      m.delete().catch(() => {});
-
-      if (!ch) {
-        return interaction.followUp({ embeds: [{ color: PINK, description: "✖ Channel not found. Mention it like `#auto`." }], flags: 64 });
-      }
-
-      cfg.channelId = ch.id;
-      saveAllConfigs();
-
-      await showTwitterPanel(null, cfg, guildId, interaction.message);
-      await interaction.followUp({
-        embeds: [{ color: PINK, description: `🌸 Tweets will now be reposted in **#${ch.name}**!` }],
-        flags: 64,
-      });
-    });
-
-    collector.on("end", collected => {
-      if (collected.size === 0) interaction.followUp({ embeds: [{ color: PINK, description: "✖ Timed out." }], flags: 64 }).catch(() => {});
-    });
-    return;
-  }
-});
 
 client.login(process.env.TOKEN);
