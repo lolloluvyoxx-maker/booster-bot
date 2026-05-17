@@ -9284,6 +9284,228 @@ client.on("messageCreate", async (message) => {
   }
 
   // ─────────────────────────────────────────────────────────
+  // ,cloneperks channel <srcChannelId> [dstChannelId]
+  //   Downloads every image/video from a source channel and
+  //   re-uploads each file to the destination channel with the
+  //   filename SENSATIONAL_sent_downloaded.<ext> — no CDN links
+  //   are forwarded. dstChannelId is optional; if omitted a new
+  //   channel (same name) is auto-created on TARGET_GUILD.
+  // ─────────────────────────────────────────────────────────
+  if (command === "cloneperks" && args[1]?.toLowerCase() === "channel") {
+    const srcChannelId = args[2];
+    const dstChannelId = args[3] ?? null;
+    if (!srcChannelId)
+      return err(message, "usage: `,cloneperks channel <srcChannelId> [dstChannelId]`");
+
+    // Live status embed
+    let cpMsg = await message.reply({
+      embeds: [{ color: PINK, description: "\uD83C\uDF38 Starting channel clone..." }]
+    }).catch(() => null);
+    const cpStatus = async (text) => {
+      if (cpMsg) await cpMsg.edit({ embeds: [{ color: PINK, description: `\uD83C\uDF38 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      // ── 1. Resolve source channel ─────────────────────────
+      const srcCh = client.channels.cache.get(srcChannelId)
+        ?? await client.channels.fetch(srcChannelId).catch(() => null);
+      if (!srcCh)
+        return err(message, `source channel \`${srcChannelId}\` not found — check the ID or bot permissions`);
+
+      // ── 2. Resolve / create destination channel ───────────
+      let dstCh = null;
+      if (dstChannelId) {
+        dstCh = client.channels.cache.get(dstChannelId)
+          ?? await client.channels.fetch(dstChannelId).catch(() => null);
+        if (!dstCh) return err(message, `destination channel \`${dstChannelId}\` not found`);
+      } else {
+        const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+        if (!targetGuild) return err(message, "TARGET_GUILD not accessible");
+        dstCh = await targetGuild.channels.create({
+          name: srcCh.name,
+          type: 0,
+          reason: "[cloneperks channel]"
+        }).catch(() => null);
+        if (!dstCh) return err(message, "failed to auto-create destination channel");
+      }
+
+      await cpStatus(`Scanning **#${srcCh.name}** → **#${dstCh.name}**...`);
+
+      // ── 3. Paginate ALL messages and collect media ─────────
+      const MEDIA_RE = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i;
+
+      function extractMedia(msg) {
+        const items = [];
+        // Direct attachments
+        for (const att of msg.attachments.values()) {
+          if (
+            att.contentType?.startsWith("image") ||
+            att.contentType?.startsWith("video") ||
+            MEDIA_RE.test(att.name || "")
+          ) items.push({ url: att.url, originalName: att.name || "file" });
+        }
+        // Embedded images / videos (previews, rich embeds)
+        for (const emb of msg.embeds) {
+          if (emb.video?.url)     items.push({ url: emb.video.url,     originalName: "video"     });
+          if (emb.image?.url)     items.push({ url: emb.image.url,     originalName: "image"     });
+          if (emb.thumbnail?.url) items.push({ url: emb.thumbnail.url, originalName: "thumbnail" });
+        }
+        // Forwarded message snapshots (Discord.js 14.15+)
+        if (msg.messageSnapshots?.size > 0) {
+          for (const snap of msg.messageSnapshots.values()) {
+            for (const att of (snap.attachments ?? new Map()).values()) {
+              if (
+                att.contentType?.startsWith("image") ||
+                att.contentType?.startsWith("video") ||
+                MEDIA_RE.test(att.name || "")
+              ) items.push({ url: att.url, originalName: att.name || "file" });
+            }
+            for (const emb of (snap.embeds ?? [])) {
+              if (emb.video?.url) items.push({ url: emb.video.url, originalName: "video" });
+              if (emb.image?.url) items.push({ url: emb.image.url, originalName: "image" });
+            }
+          }
+        }
+        return items;
+      }
+
+      const collected = [];
+      let before   = undefined;
+      let hasMore  = true;
+      let scanned  = 0;
+
+      while (hasMore) {
+        const batch = await srcCh.messages
+          .fetch({ limit: 100, ...(before ? { before } : {}) })
+          .catch(() => null);
+        if (!batch || batch.size === 0) break;
+
+        for (const msg of batch.values()) {
+          if (msg.author?.bot) continue;
+
+          // Type-19 forward with no cached snapshot — fetch the original
+          if (msg.type === 19 && msg.reference?.messageId && !msg.messageSnapshots?.size) {
+            const ref = await srcCh.messages
+              .fetch(msg.reference.messageId).catch(() => null);
+            if (ref) collected.push(...extractMedia(ref));
+          }
+
+          collected.push(...extractMedia(msg));
+          scanned++;
+        }
+
+        before  = batch.last()?.id;
+        hasMore = batch.size === 100;
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      // Deduplicate — strip CDN expiry tokens before comparing
+      const seenUrls = new Set();
+      const uniqueMedia = collected.filter(({ url }) => {
+        const base = url.split("?")[0];
+        if (seenUrls.has(base)) return false;
+        seenUrls.add(base);
+        return true;
+      });
+
+      if (uniqueMedia.length === 0) {
+        await cpMsg?.edit({
+          embeds: [{ color: PINK, description: "\u2716 No images or videos found in that channel." }]
+        }).catch(() => {});
+        return;
+      }
+
+      await cpStatus(
+        `Found **${uniqueMedia.length}** media files across **${scanned}** messages. Downloading & uploading...`
+      );
+
+      // ── 4. Download → rename → re-upload in batches of 5 ──
+      const { AttachmentBuilder } = require("discord.js");
+
+      async function buildAttachment({ url, originalName }) {
+        const res = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0" }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+        const buf      = Buffer.from(await res.arrayBuffer());
+        const rawName  = url.split("/").pop()?.split("?")[0] || originalName;
+        const extMatch = rawName.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
+        const ext      = extMatch ? extMatch[0].toLowerCase() : ".bin";
+        return new AttachmentBuilder(buf, { name: `SENSATIONAL_sent_downloaded${ext}` });
+      }
+
+      const BATCH = 5; // files per message (Discord allows up to 10; 5 is safer for size limits)
+      let uploaded = 0, failedCount = 0;
+
+      for (let i = 0; i < uniqueMedia.length; i += BATCH) {
+        const chunk   = uniqueMedia.slice(i, i + BATCH);
+        const results = await Promise.allSettled(chunk.map(m => buildAttachment(m)));
+
+        const attachments = results
+          .filter(r => r.status === "fulfilled")
+          .map(r => r.value);
+        failedCount += results.filter(r => r.status === "rejected").length;
+
+        if (attachments.length === 0) { await new Promise(r => setTimeout(r, 500)); continue; }
+
+        // Send with automatic 429 retry
+        let sent = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await dstCh.send({ files: attachments });
+            uploaded += attachments.length;
+            sent = true;
+            break;
+          } catch (e) {
+            const wait = (e.retryAfter ?? 2) * 1000 + 600;
+            if ((e.code === 429 || e.message?.includes("rate limit")) && attempt < 2) {
+              log(`[cloneperks channel] rate limit — waiting ${wait}ms`, "info");
+              await new Promise(r => setTimeout(r, wait));
+            } else {
+              failedCount += attachments.length;
+              log(`[cloneperks channel] send error: ${e.message}`, "error");
+              break;
+            }
+          }
+        }
+
+        // Rolling progress update every 25 files
+        if ((i + BATCH) % 25 < BATCH) {
+          const pct = Math.round(((i + BATCH) / uniqueMedia.length) * 100);
+          await cpStatus(
+            `Uploading… **${uploaded}** uploaded, **${failedCount}** failed (${pct}%)`
+          );
+        }
+
+        await new Promise(r => setTimeout(r, 900));
+      }
+
+      // ── 5. Final summary ───────────────────────────────────
+      await cpMsg?.edit({
+        embeds: [{
+          color: PINK,
+          title: "\uD83C\uDF38 Channel Clone Complete",
+          fields: [
+            { name: "Source",       value: `#${srcCh.name} (\`${srcCh.id}\`)`, inline: true },
+            { name: "Destination",  value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
+            { name: "\u200b",      value: "\u200b",                              inline: true },
+            { name: "Msgs scanned", value: `${scanned}`,                           inline: true },
+            { name: "Files sent",   value: `${uploaded}`,                          inline: true },
+            { name: "Failed",       value: `${failedCount}`,                       inline: true },
+          ],
+          footer: { text: "all files saved as SENSATIONAL_sent_downloaded • greed • pink edition" },
+          timestamp: new Date()
+        }]
+      }).catch(() => {});
+
+    } catch (e) {
+      log(`[cloneperks channel] fatal: ${e.message}`, "error");
+      return err(message, `clone failed: ${e.message}`);
+    }
+    return;
+  }
+
+  // ─────────────────────────────────────────────────────────
   // ,hidepaidperks <targetServerId> [count=20]
   // ─────────────────────────────────────────────────────────
   if (command === "hidepaidperks") {
