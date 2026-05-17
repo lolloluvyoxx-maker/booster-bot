@@ -1916,6 +1916,115 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${message.guild.memberCount}** members`);
   }
 
+  // ,videocount [#channel]
+  // Counts video/attachment messages in a specific channel or across the whole server
+  if (command === "videocount" || command === "vc") {
+    const targetChannel = message.mentions.channels.first() || null;
+
+    // Helper: count video/attachment messages in a single text channel
+    async function countVideosInChannel(ch) {
+      // Only scan text-based channels
+      if (!ch.isTextBased || !ch.isTextBased()) return 0;
+      // Bot needs read permission
+      const perms = ch.permissionsFor(message.guild.members.me);
+      if (!perms || !perms.has(PermissionFlagsBits.ReadMessageHistory)) return 0;
+
+      let total = 0;
+      let before = undefined;
+      let hasMore = true;
+
+      while (hasMore) {
+        const batch = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!batch || batch.size === 0) break;
+        for (const msg of batch.values()) {
+          if (msg.attachments.size > 0) {
+            for (const att of msg.attachments.values()) {
+              const ct = att.contentType || "";
+              const name = att.name?.toLowerCase() || "";
+              if (
+                ct.startsWith("video/") ||
+                name.endsWith(".mp4") || name.endsWith(".mov") ||
+                name.endsWith(".webm") || name.endsWith(".mkv") ||
+                name.endsWith(".avi") || name.endsWith(".gif")
+              ) total++;
+            }
+          }
+          // Also count embeds/links with a video component
+          if (msg.embeds.length > 0) {
+            for (const emb of msg.embeds) {
+              if (emb.video) total++;
+            }
+          }
+        }
+        before = batch.last()?.id;
+        hasMore = batch.size === 100;
+        await new Promise(r => setTimeout(r, 300)); // rate-limit safety
+      }
+      return total;
+    }
+
+    // ── SINGLE CHANNEL ──
+    if (targetChannel) {
+      const waitMsg = await message.reply({
+        embeds: [{ color: PINK, description: `🌸 Counting videos in <#${targetChannel.id}>... please wait.` }]
+      }).catch(() => null);
+
+      const count = await countVideosInChannel(targetChannel);
+
+      const resultEmbed = {
+        color: PINK,
+        title: `🎬 Video Count — #${targetChannel.name}`,
+        description: `Found **${count}** video${count !== 1 ? "s" : ""} in <#${targetChannel.id}>`,
+        footer: { text: "greed • pink edition" },
+        timestamp: new Date()
+      };
+      if (waitMsg) return waitMsg.edit({ embeds: [resultEmbed] }).catch(() => {});
+      return message.reply({ embeds: [resultEmbed] }).catch(() => {});
+    }
+
+    // ── WHOLE SERVER ──
+    const waitMsg = await message.reply({
+      embeds: [{ color: PINK, description: `🌸 Scanning **all channels** for videos... this may take a while.` }]
+    }).catch(() => null);
+
+    const textChannels = message.guild.channels.cache.filter(ch => ch.isTextBased && ch.isTextBased());
+    const results = []; // { name, id, count }
+    let serverTotal = 0;
+
+    for (const [, ch] of textChannels) {
+      const count = await countVideosInChannel(ch);
+      if (count > 0) results.push({ name: ch.name, id: ch.id, count });
+      serverTotal += count;
+    }
+
+    // Sort by count descending
+    results.sort((a, b) => b.count - a.count);
+
+    // Build fields (max 25 Discord fields)
+    const fields = results.slice(0, 24).map(r => ({
+      name: `#${r.name}`,
+      value: `**${r.count}** video${r.count !== 1 ? "s" : ""}`,
+      inline: true
+    }));
+    if (results.length > 24) {
+      fields.push({ name: `+ ${results.length - 24} more channels`, value: "(not shown)", inline: true });
+    }
+    if (fields.length === 0) {
+      fields.push({ name: "No videos found", value: "No video attachments were detected in any channel.", inline: false });
+    }
+
+    const resultEmbed = {
+      color: PINK,
+      title: `🎬 Video Count — ${message.guild.name}`,
+      description: `**Total: ${serverTotal}** video${serverTotal !== 1 ? "s" : ""} across **${textChannels.size}** channels`,
+      fields,
+      footer: { text: "greed • pink edition" },
+      timestamp: new Date()
+    };
+    if (waitMsg) return waitMsg.edit({ embeds: [resultEmbed] }).catch(() => {});
+    return message.reply({ embeds: [resultEmbed] }).catch(() => {});
+  }
+
   // ── FUN COMMANDS ─────────────────────────────────────────
 
   // ,coinflip
