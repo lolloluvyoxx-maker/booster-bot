@@ -9076,7 +9076,7 @@ client.on("messageCreate", async (message) => {
   // ─────────────────────────────────────────────────────────
   // ,cloneperks <sourceId> <targetId>
   // ─────────────────────────────────────────────────────────
-  if (command === "cloneperks") {
+  if (command === "cloneperks" && args[1]?.toLowerCase() !== "channel") {
     const sourceId = args[1];
     const targetId = args[2];
     if (!sourceId || !targetId) return err(message, "usage: `,cloneperks <sourceServerId> <targetServerId>`");
