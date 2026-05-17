@@ -1552,6 +1552,7 @@ const CMD_SCHEMA = {
   help: { usage: ",help", args: [] },
   botperms: { usage: ",botperms", args: [] },
   channellist: { usage: ",channellist", args: [] },
+  channel: { usage: ",channel list", args: [] },
   serverage: { usage: ",serverage", args: [] },
   joincount: { usage: ",joincount", args: [] },
   boostcount: { usage: ",boostcount", args: [] },
@@ -6358,6 +6359,112 @@ client.on("messageCreate", async (message) => {
       for (const ch of children.values()) desc += `  ${ch.type === 2 ? "🔊" : "#"} ${ch.name}\n`;
     }
     return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
+  }
+
+  // ,channel list — elenca tutti i canali del server raggruppati per categoria
+  if (command === "channel" && args[1]?.toLowerCase() === "list") {
+    const guild = message.guild;
+
+    // Raccogli categorie ordinate per posizione
+    const cats = guild.channels.cache
+      .filter(c => c.type === 4)
+      .sort((a, b) => a.position - b.position);
+
+    // Canali senza categoria
+    const uncategorized = guild.channels.cache
+      .filter(c => c.type !== 4 && !c.parentId)
+      .sort((a, b) => a.position - b.position);
+
+    // Costruisci le righe di testo
+    const lines = [];
+
+    if (uncategorized.size > 0) {
+      lines.push("**\u2014 Senza categoria \u2014**");
+      for (const ch of uncategorized.values()) {
+        const icon = ch.type === 2 ? "\uD83D\uDD0A" : ch.type === 5 ? "\uD83D\uDCE2" : ch.type === 15 ? "\uD83D\uDCCB" : "#";
+        lines.push(`${icon} ${ch.name}`);
+      }
+      lines.push("");
+    }
+
+    for (const cat of cats.values()) {
+      lines.push(`**${cat.name.toUpperCase()}**`);
+      const children = cat.children.cache.sort((a, b) => a.position - b.position);
+      if (children.size === 0) {
+        lines.push("  *(vuoto)*");
+      } else {
+        for (const ch of children.values()) {
+          const icon = ch.type === 2 ? "\uD83D\uDD0A" : ch.type === 5 ? "\uD83D\uDCE2" : ch.type === 13 ? "\uD83C\uDFA4" : ch.type === 15 ? "\uD83D\uDCCB" : "#";
+          lines.push(`  ${icon} ${ch.name}`);
+        }
+      }
+      lines.push("");
+    }
+
+    // Suddividi in pagine da ~3800 caratteri
+    const pages = [];
+    let current = "";
+    for (const line of lines) {
+      if (current.length + line.length + 1 > 3800) {
+        pages.push(current.trimEnd());
+        current = "";
+      }
+      current += line + "\n";
+    }
+    if (current.trim()) pages.push(current.trimEnd());
+
+    if (pages.length === 0) return err(message, "Nessun canale trovato nel server.");
+
+    const totalChannels = guild.channels.cache.filter(c => c.type !== 4).size;
+    let page = 0;
+
+    function buildChListEmbed(p) {
+      return {
+        color: PINK,
+        title: `\uD83D\uDCCB Canali del server \u2014 ${guild.name} (${totalChannels})`,
+        description: pages[p],
+        footer: { text: `Pagina ${p + 1}/${pages.length} \u2022 greed \u2022 pink edition` },
+        timestamp: new Date()
+      };
+    }
+
+    if (pages.length === 1) {
+      return message.reply({ embeds: [buildChListEmbed(0)] });
+    }
+
+    function buildChListRow(p) {
+      return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("chlist_prev")
+          .setLabel("\u25C0")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(p === 0),
+        new ButtonBuilder()
+          .setCustomId("chlist_next")
+          .setLabel("\u25B6")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(p >= pages.length - 1)
+      );
+    }
+
+    const chListMsg = await message.reply({ embeds: [buildChListEmbed(page)], components: [buildChListRow(page)] });
+    const chListCollector = chListMsg.createMessageComponentCollector({ filter: () => true, time: 60_000 });
+
+    chListCollector.on("collect", async i => {
+      try {
+        if (i.user.id !== message.author.id) {
+          return i.reply({ embeds: [{ color: PINK, description: "\u2716 Questo menu appartiene a qualcun altro." }], flags: 64 });
+        }
+        if (i.customId === "chlist_prev" && page > 0) page--;
+        else if (i.customId === "chlist_next" && page < pages.length - 1) page++;
+        await i.update({ embeds: [buildChListEmbed(page)], components: [buildChListRow(page)] });
+      } catch (e) {
+        chListMsg.edit({ components: [] }).catch(() => {});
+      }
+    });
+
+    chListCollector.on("end", () => chListMsg.edit({ components: [] }).catch(() => {}));
+    return;
   }
 
   // ,rolelist — alias for roles
