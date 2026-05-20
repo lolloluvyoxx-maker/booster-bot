@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -9034,37 +9034,362 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+
 // ===================================================
-// ===== PAID PERKS COMMANDS (OWNER ONLY) ============
+// ===== UNIFIED CONFIG PANEL (OWNER ONLY) ===========
 // ===================================================
 //
-//  ,cloneperks [sourceGuildId] [targetGuildId]
-//    → Clones ALL structure (roles, categories, channels, videos)
-//      from the booster perks server into the paid perks server.
+//  ,setup → Apre il Config Panel interattivo Discord
 //
-//  ,hidepaidperks [count=20] [targetGuildId]
-//    → Hides N channels in the paid perks server by denying
-//      @everyone ViewChannel (prefers empty/generic channels).
-//
-//  ,setuppaidperks [exclusiveChannelName]
-//    → Full one-shot setup: clones booster server structure,
-//      distributes videos into two "exclusive" channels,
-//      then hides 20 random channels so the paid server
-//      appears larger and more exclusive than the booster server.
+//  Sostituisce completamente:
+//    ,cloneperks          → Clone server completo
+//    ,cloneperks channel  → Clone singolo canale
+//    ,clonecategoryperks  → Clone categoria + video
+//    ,setuppaidperks      → Setup paid perks completo
+//    ,hidepaidperks       → Nascondi canali
+//    ,sortchannels        → Ordina canali in categorie
 //
 // ===================================================
 
+// Session storage (userId → session config)
+const setupSessions = new Map();
+
+function defaultSession() {
+  return {
+    operation:        "cloneperks",
+    sourceId:         "",
+    targetId:         "",
+    extraParam:       "",
+    msgId:            null,
+    channelId:        null,
+    // Clone options
+    cloneRoles:       true,
+    cloneCategories:  true,
+    cloneChannels:    true,
+    clonePermissions: true,
+    cloneMessages:    false,
+    skipExisting:     true,
+    maintainOrder:    true,
+    // Video rename
+    videoRenameMode:    "prefix",   // prefix | numbered | replace | suffix
+    videoPattern:       "SENSATIONAL",
+    videoPadZeros:      2,
+    videoCounterStart:  1,
+    videoExtension:     "keep",     // keep | mp4 | mov | webm
+    exclusiveName:      "exclusive",
+  };
+}
+
+// ── Build panel embed showing current session state ──────────────────────────
+function buildPanelEmbed(s) {
+  const opLabels = {
+    cloneperks:          "🌐 Clone Server Completo",
+    cloneperks_channel:  "💬 Clone Singolo Canale",
+    clonecategoryperks:  "📁 Clone Categoria + Video",
+    setuppaidperks:      "🔧 Setup Paid Perks",
+    hidepaidperks:       "🙈 Nascondi Canali",
+    sortchannels:        "🔀 Sort Canali in Categorie",
+  };
+  const t   = v => v ? "✅" : "❌";
+  const ren = { prefix: "Prefisso+Num", numbered: "Solo Numeri", replace: "Nome Fisso", suffix: "Num+Suffisso" };
+  const pad = n => String(n).padStart(s.videoPadZeros, "0");
+  const num = pad(s.videoCounterStart);
+  const extStr = s.videoExtension === "keep" ? ".mp4*" : `.${s.videoExtension}`;
+  const preview =
+    s.videoRenameMode === "prefix"   ? `${s.videoPattern}${num}${extStr} + ${s.videoPattern}${pad(s.videoCounterStart+1)}${extStr}` :
+    s.videoRenameMode === "numbered" ? `${num}${extStr} + ${pad(s.videoCounterStart+1)}${extStr}` :
+    s.videoRenameMode === "replace"  ? `${s.videoPattern}${extStr} (×2)` :
+                                       `${num}_${s.videoPattern}${extStr} + ${pad(s.videoCounterStart+1)}_${s.videoPattern}${extStr}`;
+
+  const srcOk = s.sourceId.length > 5;
+  const dstOk = s.targetId.length > 5;
+  const ready = srcOk && dstOk;
+
+  const lines = [
+    `**OPERAZIONE**`,
+    `> ${opLabels[s.operation] ?? s.operation}`,
+    ``,
+    `**PARAMETRI**`,
+    `> Source: ${srcOk ? `\`${s.sourceId}\`` : "⚠️ *non impostato*"}`,
+    `> Target: ${dstOk ? `\`${s.targetId}\`` : "⚠️ *non impostato*"}`,
+    s.extraParam ? `> Extra: \`${s.extraParam}\`` : `> Extra: *vuoto — per categoria/count/sort usa questo campo*`,
+    ``,
+    `**COSA CLONARE**`,
+    `> ${t(s.cloneRoles)} Ruoli  ${t(s.cloneCategories)} Categorie  ${t(s.cloneChannels)} Canali`,
+    `> ${t(s.clonePermissions)} Permessi  ${t(s.cloneMessages)} Messaggi  ${t(s.skipExisting)} Skip Esistenti`,
+    ``,
+    `**VIDEO & RINOMINA** *(inviati sempre a coppie da 2)*`,
+    `> Modalità: \`${ren[s.videoRenameMode]}\``,
+    `> Anteprima coppia: \`${preview}\``,
+    `> Canali esclusivi: \`#${s.exclusiveName}\` + \`#${s.exclusiveName}-2\``,
+    ``,
+    ready
+      ? `**✅ Pronto — premi 🚀 Avvia per eseguire**`
+      : `**⚠️ Configura Source + Target ID con il pulsante 📝 Imposta IDs**`,
+  ];
+
+  return {
+    color: PINK,
+    title: "🌸  SENSATIONAL  CONFIG PANEL",
+    description: lines.join("\n"),
+    footer: { text: "sensational • config panel • owner only" },
+    timestamp: new Date(),
+  };
+}
+
+// ── Build panel components (4 rows) ──────────────────────────────────────────
+function buildPanelComponents(s) {
+  const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
+
+  // Row 1: Operation select menu
+  const row1 = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("sp_op")
+      .setPlaceholder("📋 Seleziona operazione...")
+      .addOptions([
+        { label: "Clone Server Completo",  value: "cloneperks",         emoji: "🌐", description: "Ruoli + categorie + canali + video", default: s.operation === "cloneperks"         },
+        { label: "Clone Singolo Canale",   value: "cloneperks_channel",  emoji: "💬", description: "Copia media da un canale a un altro", default: s.operation === "cloneperks_channel" },
+        { label: "Clone Categoria + Video",value: "clonecategoryperks",  emoji: "📁", description: "Clone categoria + distribuzione video", default: s.operation === "clonecategoryperks" },
+        { label: "Setup Paid Perks",       value: "setuppaidperks",      emoji: "🔧", description: "Setup completo server premium",        default: s.operation === "setuppaidperks"     },
+        { label: "Nascondi Canali",        value: "hidepaidperks",       emoji: "🙈", description: "Nega ViewChannel a @everyone",         default: s.operation === "hidepaidperks"      },
+        { label: "Sort Canali",            value: "sortchannels",        emoji: "🔀", description: "Distribuisce canali in 2 categorie",    default: s.operation === "sortchannels"       },
+      ])
+  );
+
+  // Row 2: Clone toggles
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Ruoli`).setStyle(bs(s.cloneRoles)),
+    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categorie`).setStyle(bs(s.cloneCategories)),
+    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Canali`).setStyle(bs(s.cloneChannels)),
+    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permessi`).setStyle(bs(s.clonePermissions)),
+    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messaggi`).setStyle(bs(s.cloneMessages)),
+  );
+
+  // Row 3: Video rename select + skip toggle
+  const row3 = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("sp_vid_mode")
+      .setPlaceholder("🎬 Modalità rinomina video...")
+      .addOptions([
+        { label: "Prefisso + Numero",  value: "prefix",   emoji: "🔤", description: "SENSATIONAL01.mp4 + SENSATIONAL02.mp4", default: s.videoRenameMode === "prefix"   },
+        { label: "Solo Numerato",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
+        { label: "Nome Fisso",         value: "replace",  emoji: "📝", description: "SENSATIONAL.mp4 × tutte le coppie",     default: s.videoRenameMode === "replace"  },
+        { label: "Numero + Suffisso",  value: "suffix",   emoji: "🔚", description: "01_SENSATIONAL.mp4 + 02_SENSATIONAL.mp4",default: s.videoRenameMode === "suffix"  },
+      ])
+  );
+
+  // Row 4: Action buttons
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Imposta IDs"  ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Avvia"         ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Annulla"        ).setStyle(ButtonStyle.Danger),
+  );
+
+  return [row1, row2, row3, row4];
+}
+
+// ── ,setup command ────────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
   if (message.author.id !== OWNER_ID) return;
 
-  const args = message.content.slice(1).trim().split(/ +/);
+  const args    = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ─────────────────────────────────────────────────────────
-  // Helper: raw REST fetch from Discord API
-  // ─────────────────────────────────────────────────────────
+  if (command === "setup") {
+    const session = defaultSession();
+    const sent = await message.reply({
+      embeds:     [buildPanelEmbed(session)],
+      components: buildPanelComponents(session),
+    }).catch(() => null);
+    if (!sent) return;
+    session.msgId     = sent.id;
+    session.channelId = sent.channelId;
+    setupSessions.set(message.author.id, session);
+    return;
+  }
+});
+
+// ── Interaction handler for the Config Panel ──────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  // Only owner can use the setup panel
+  if (interaction.user.id !== OWNER_ID) return;
+
+  // Only handle setup panel interactions
+  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video"];
+  const id = interaction.customId;
+  if (!spIds.includes(id)) return;
+
+  const s = setupSessions.get(interaction.user.id);
+
+  // ── Select: operation ──
+  if (interaction.isStringSelectMenu() && id === "sp_op") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,setup` di nuovo.", flags: 64 });
+    s.operation = interaction.values[0];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // ── Select: video rename mode ──
+  if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    s.videoRenameMode = interaction.values[0];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // ── Toggle buttons ──
+  const toggleMap = {
+    sp_t_roles: "cloneRoles",
+    sp_t_cats:  "cloneCategories",
+    sp_t_chans: "cloneChannels",
+    sp_t_perms: "clonePermissions",
+    sp_t_msgs:  "cloneMessages",
+  };
+  if (interaction.isButton() && toggleMap[id]) {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    s[toggleMap[id]] = !s[toggleMap[id]];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // ── Button: open IDs modal ──
+  if (interaction.isButton() && id === "sp_ids") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    const modal = new ModalBuilder()
+      .setCustomId("sp_modal_ids")
+      .setTitle("🌸 Configura IDs & Parametri")
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
+            .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+            .setValue(s.sourceId).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server / Channel ID")
+            .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+            .setValue(s.targetId).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra (categoria | Categoria1 | Categoria2 | count)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  nomecategoria  /  Cat1 | Cat2  /  20")
+            .setValue(s.extraParam).setRequired(false)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("excl_name").setLabel("Nome canali esclusivi (default: exclusive)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
+            .setValue(s.exclusiveName).setRequired(false)
+        ),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // ── Button: open video options modal ──
+  if (interaction.isButton() && id === "sp_video") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    const modal = new ModalBuilder()
+      .setCustomId("sp_modal_video")
+      .setTitle("🎬 Opzioni Video & Rinomina")
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Nome base file")
+            .setStyle(TextInputStyle.Short).setPlaceholder("SENSATIONAL")
+            .setValue(s.videoPattern).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_counter").setLabel("Numero iniziale contatore")
+            .setStyle(TextInputStyle.Short).setPlaceholder("1")
+            .setValue(String(s.videoCounterStart)).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_pad").setLabel("Padding zeri  (1 → 1  |  2 → 01  |  3 → 001)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("2")
+            .setValue(String(s.videoPadZeros)).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_ext").setLabel("Estensione  (keep / mp4 / mov / webm)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("keep")
+            .setValue(s.videoExtension).setRequired(true)
+        ),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal submit: IDs & params ──
+  if (interaction.isModalSubmit() && id === "sp_modal_ids") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
+    s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
+    s.extraParam = interaction.fields.getTextInputValue("extra_param").trim();
+    const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
+    if (rawExcl) s.exclusiveName = rawExcl;
+    // Update the panel message
+    try {
+      const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.reply({ content: "✅ IDs e parametri aggiornati!", flags: 64 });
+  }
+
+  // ── Modal submit: video options ──
+  if (interaction.isModalSubmit() && id === "sp_modal_video") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
+    s.videoCounterStart = parseInt(interaction.fields.getTextInputValue("vid_counter")) || 1;
+    s.videoPadZeros     = Math.min(4, Math.max(1, parseInt(interaction.fields.getTextInputValue("vid_pad")) || 2));
+    const rawExt = interaction.fields.getTextInputValue("vid_ext").trim().toLowerCase().replace(/^\./, "");
+    s.videoExtension = ["mp4","mov","webm"].includes(rawExt) ? rawExt : "keep";
+    // Update panel message
+    try {
+      const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.reply({ content: "✅ Opzioni video aggiornate!", flags: 64 });
+  }
+
+  // ── Button: cancel ──
+  if (interaction.isButton() && id === "sp_cancel") {
+    setupSessions.delete(interaction.user.id);
+    return interaction.update({
+      embeds:     [{ color: PINK, description: "❌ Config Panel annullato." }],
+      components: [],
+    });
+  }
+
+  // ── Button: launch ──
+  if (interaction.isButton() && id === "sp_launch") {
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,setup` di nuovo.", flags: 64 });
+    if (!s.sourceId || !s.targetId) {
+      return interaction.reply({ content: "⚠️ Imposta prima **Source ID** e **Target ID** con il pulsante 📝 Imposta IDs.", flags: 64 });
+    }
+    // Lock panel — disable all components
+    const lockedEmbed = buildPanelEmbed(s);
+    lockedEmbed.description += "\n\n⏳ **Operazione avviata — in corso...**";
+    await interaction.update({ embeds: [lockedEmbed], components: [] }).catch(() => {});
+
+    const sessionCopy = { ...s };
+    setupSessions.delete(interaction.user.id);
+
+    const statusCh  = interaction.channel;
+    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Inizializzazione..." }] }).catch(() => null);
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      await executeSetupOperation(sessionCopy, statusMsg, updateStatus);
+    } catch (e) {
+      log(`[setup panel] fatal: ${e.message}`, "error");
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `❌ Operazione fallita: \`${e.message}\`` }] }).catch(() => {});
+    }
+  }
+});
+
+// ── Unified execution engine ──────────────────────────────────────────────────
+async function executeSetupOperation(s, statusMsg, updateStatus) {
+
+  // REST helper
   async function discordREST(path) {
     const res = await fetch(`https://discord.com/api/v10${path}`, {
       headers: { Authorization: `Bot ${process.env.TOKEN}` }
@@ -9073,934 +9398,237 @@ client.on("messageCreate", async (message) => {
     return res.json();
   }
 
-  // ─────────────────────────────────────────────────────────
-  // ,cloneperks <sourceId> <targetId>
-  // ─────────────────────────────────────────────────────────
-  if (command === "cloneperks" && args[1]?.toLowerCase() !== "channel") {
-    const sourceId = args[1];
-    const targetId = args[2];
-    if (!sourceId || !targetId) return err(message, "usage: `,cloneperks <sourceServerId> <targetServerId>`");
-
-    let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Fetching server data...` }]
-    }).catch(() => null);
-    const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
-    };
-
-    try {
-      // Fetch raw data via REST — bypasses cache entirely
-      const [rawChannels, rawRoles, targetGuild] = await Promise.all([
-        discordREST(`/guilds/${sourceId}/channels`),
-        discordREST(`/guilds/${sourceId}/roles`),
-        client.guilds.fetch(targetId),
-      ]);
-      await targetGuild.roles.fetch();
-      await targetGuild.channels.fetch();
-
-      const srcCats  = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
-      const srcChans = rawChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
-      const srcRoles = rawRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
-
-      await updateStatus(`Cloning **${srcRoles.length}** roles, **${srcCats.length}** categories, **${srcChans.length}** channels → **${targetGuild.name}**`);
-
-      // ── Step 1: Roles ──
-      const roleMap = new Map(); // sourceRoleId → newRoleId
-      for (const role of srcRoles) {
-        try {
-          const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
-          if (existing) { roleMap.set(role.id, existing.id); continue; }
-          const newRole = await targetGuild.roles.create({
-            name: role.name, color: role.color, hoist: role.hoist,
-            mentionable: role.mentionable, permissions: BigInt(role.permissions),
-            reason: "[cloneperks]"
-          });
-          roleMap.set(role.id, newRole.id);
-          await new Promise(r => setTimeout(r, 350));
-        } catch (e) { log(`[cloneperks] role ${role.name}: ${e.message}`, "error"); }
-      }
-      await updateStatus(`✅ Roles (${roleMap.size}). Cloning categories...`);
-
-      // ── Step 2: Categories ──
-      const categoryMap = new Map(); // sourceCategoryId → newChannelId
-      for (const cat of srcCats) {
-        try {
-          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
-          if (existing) { categoryMap.set(cat.id, existing.id); continue; }
-          const permissionOverwrites = (cat.permission_overwrites || [])
-            .filter(ow => ow.type === 0)
-            .map(ow => ({
-              id:   roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
-              type: 0,
-              allow: BigInt(String(ow.allow || "0")),
-              deny:  BigInt(String(ow.deny  || "0")),
-            }));
-          const newCat = await targetGuild.channels.create({ name: cat.name, type: 4, permissionOverwrites, reason: "[cloneperks]" });
-          categoryMap.set(cat.id, newCat.id);
-          await new Promise(r => setTimeout(r, 1000));
-        } catch (e) { log(`[cloneperks] cat ${cat.name}: ${e.message}`, "error"); }
-      }
-      await updateStatus(`✅ Categories (${categoryMap.size}). Cloning channels + videos...`);
-
-      // ── Step 3: Channels + videos ──
-      const channelMap = new Map();
-      let channelCount = 0, videoCopied = 0;
-
-      // Helper: create with automatic retry on rate-limit (429)
-      async function createChannelWithRetry(guild, opts, retries = 3) {
-        for (let attempt = 0; attempt < retries; attempt++) {
-          try {
-            return await guild.channels.create(opts);
-          } catch (e) {
-            const isRateLimit = e.code === 429 || (e.message && e.message.includes("rate limit"));
-            const retryAfter = e.retryAfter ?? 2000;
-            if (isRateLimit && attempt < retries - 1) {
-              log(`[cloneperks] rate limited creating #${opts.name}, waiting ${retryAfter}ms...`, "info");
-              await new Promise(r => setTimeout(r, retryAfter + 500));
-            } else {
-              log(`[cloneperks] failed to create #${opts.name}: ${e.message}`, "error");
-              return null;
-            }
-          }
-        }
-        return null;
-      }
-
-      // Tracks how many channels have been placed in each target category
-      // so we can auto-create overflow categories when Discord's 50-channel limit is hit
-      const categoryChildCount = new Map(); // targetCategoryId → count
-      // When a category overflows, maps the original source category id to the current overflow category id
-      const categoryOverflowMap = new Map(); // sourceCatId → current target category id
-
-      for (const ch of srcChans) {
-        // Skip thread-like types
-        if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
-        try {
-          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
-          let newCh = existing;
-          if (!newCh) {
-            const permissionOverwrites = (ch.permission_overwrites || [])
-              .filter(ow => ow.type === 0)
-              .map(ow => ({
-                id:    roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
-                type:  0,
-                allow: BigInt(String(ow.allow || "0")),
-                deny:  BigInt(String(ow.deny  || "0")),
-              }));
-            const createOpts = {
-              name: ch.name, type: ch.type, permissionOverwrites,
-              reason: "[cloneperks]",
-            };
-            if (ch.topic)               createOpts.topic            = ch.topic;
-            if (ch.nsfw)                createOpts.nsfw             = ch.nsfw;
-            if (ch.rate_limit_per_user)  createOpts.rateLimitPerUser = ch.rate_limit_per_user;
-            if (ch.bitrate)             createOpts.bitrate          = ch.bitrate;
-            if (ch.user_limit)          createOpts.userLimit        = ch.user_limit;
-
-            // Resolve the target category, auto-creating overflow categories if full (Discord limit: 50)
-            if (ch.parent_id && categoryMap.has(ch.parent_id)) {
-              let targetCatId = categoryOverflowMap.get(ch.parent_id) ?? categoryMap.get(ch.parent_id);
-              const count = categoryChildCount.get(targetCatId) ?? 0;
-              if (count >= 50) {
-                // Find the original category name
-                const srcCat = srcCats.find(c => c.id === ch.parent_id);
-                const baseName = srcCat?.name ?? "overflow";
-                // Count how many overflow versions already exist to name the new one
-                const overflowNum = Math.floor(count / 50) + 1;
-                const newCatName = `${baseName} ${overflowNum + 1}`;
-                log(`[cloneperks] category "${baseName}" full (${count}), creating overflow: "${newCatName}"`, "info");
-                const overflowCat = await targetGuild.channels.create({ name: newCatName, type: 4, reason: "[cloneperks overflow]" });
-                await new Promise(r => setTimeout(r, 1000));
-                targetCatId = overflowCat.id;
-                categoryOverflowMap.set(ch.parent_id, targetCatId);
-                categoryChildCount.set(targetCatId, 0);
-              }
-              createOpts.parent = targetCatId;
-              categoryChildCount.set(targetCatId, (categoryChildCount.get(targetCatId) ?? 0) + 1);
-            }
-
-            newCh = await createChannelWithRetry(targetGuild, createOpts);
-            if (newCh) channelCount++;
-            await new Promise(r => setTimeout(r, 1000));
-          }
-          if (newCh) channelMap.set(ch.id, newCh);
-
-          // Copy ALL messages with attachments (full pagination, oldest→newest)
-          if (newCh && [0, 5].includes(ch.type)) { // FIX: guard with newCh check
-            const srcCh = client.channels.cache.get(ch.id)
-              ?? await client.channels.fetch(ch.id).catch(() => null);
-            if (srcCh) {
-              let before = undefined;
-              let hasMore = true;
-              const allMsgs = [];
-
-              while (hasMore) {
-                const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-                if (!batch || batch.size === 0) break;
-                allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && (m.content || m.attachments.size > 0)));
-                before = batch.last()?.id;
-                hasMore = batch.size === 100;
-                await new Promise(r => setTimeout(r, 300));
-              }
-
-              allMsgs.reverse(); // oldest first
-              for (const msg of allMsgs) {
-                try {
-                  const files = [...msg.attachments.values()].map(a => a.url);
-                  const payload = {};
-                  if (msg.content) payload.content = msg.content;
-                  if (files.length) payload.files = files;
-                  if (!payload.content && !payload.files) continue;
-                  await newCh.send(payload).catch(() => {});
-                  videoCopied++;
-                  await new Promise(r => setTimeout(r, 500));
-                } catch (e) { /* skip */ }
-              }
-            }
-          }
-        } catch (e) { log(`[cloneperks] ch ${ch.name}: ${e.message}`, "error"); }
-      }
-
-      await statusMsg?.edit({
-        embeds: [{
-          color: PINK, title: "🌸 Clone Complete",
-          description: `**${sourceId}** → **${targetGuild.name}**`,
-          fields: [
-            { name: "Roles",         value: `${roleMap.size}`,     inline: true },
-            { name: "Categories",    value: `${categoryMap.size}`, inline: true },
-            { name: "Channels",      value: `${channelCount}`,     inline: true },
-            { name: "Videos copied", value: `${videoCopied}`,      inline: true },
-          ],
-          footer: { text: "usa ,hidepaidperks per nascondere canali" },
-          timestamp: new Date()
-        }]
-      }).catch(() => {});
-
-    } catch (e) {
-      log(`[cloneperks] fatal: ${e.message}`, "error");
-      return err(message, `clone failed: ${e.message}`);
+  // Generate renamed filename for a video based on session config
+  function makeVideoName(index, origExt) {
+    const pad = n => String(n).padStart(s.videoPadZeros, "0");
+    const num = s.videoCounterStart + index;
+    const ext = s.videoExtension === "keep" ? origExt : `.${s.videoExtension}`;
+    switch (s.videoRenameMode) {
+      case "prefix":   return `${s.videoPattern}${pad(num)}${ext}`;
+      case "numbered": return `${pad(num)}${ext}`;
+      case "replace":  return `${s.videoPattern}${ext}`;
+      case "suffix":   return `${pad(num)}_${s.videoPattern}${ext}`;
+      default:         return `${s.videoPattern}${pad(num)}${ext}`;
     }
-    return;
   }
 
-  // ─────────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────
-  // ,cloneperks channel <srcChannelId> [dstChannelId]
-  // ─────────────────────────────────────────────────────────
-  if (command === "cloneperks" && args[1]?.toLowerCase() === "channel") {
-    const srcChannelId = args[2];
-    const dstChannelId = args[3] ?? null;
-    if (!srcChannelId)
-      return err(message, "usage: `,cloneperks channel <srcChannelId> [dstChannelId]`");
-
+  // Download video URL and return an AttachmentBuilder with the renamed file
+  async function downloadVideo(url, index) {
     const { AttachmentBuilder } = require("discord.js");
-
-    let cpMsg = await message.reply({
-      embeds: [{ color: PINK, description: "Starting channel clone..." }]
-    }).catch(() => null);
-    const cpStatus = async (text) => {
-      if (cpMsg) await cpMsg.edit({ embeds: [{ color: PINK, description: text }] }).catch(() => {});
-    };
-
-    try {
-      // 1. Resolve source channel
-      const srcCh = client.channels.cache.get(srcChannelId)
-        ?? await client.channels.fetch(srcChannelId).catch(() => null);
-      if (!srcCh)
-        return err(message, `source channel \`${srcChannelId}\` not found`);
-
-      // 2. Resolve / create destination channel
-      let dstCh = null;
-      if (dstChannelId) {
-        dstCh = client.channels.cache.get(dstChannelId)
-          ?? await client.channels.fetch(dstChannelId).catch(() => null);
-        if (!dstCh) return err(message, `destination channel \`${dstChannelId}\` not found`);
-      } else {
-        const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
-        if (!targetGuild) return err(message, "TARGET_GUILD not accessible");
-        dstCh = await targetGuild.channels.create({
-          name: srcCh.name, type: 0, reason: "[cloneperks channel]"
-        }).catch(() => null);
-        if (!dstCh) return err(message, "failed to auto-create destination channel");
-      }
-
-      await cpStatus(`Scanning #${srcCh.name} -> #${dstCh.name}...`);
-
-      // 3. Collect ALL media — including bot messages and plain text URLs
-      const MEDIA_EXT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
-      const URL_RE    = /https?:\/\/\S+/g;
-
-      function extractMedia(msg) {
-        const items = [];
-
-        // Direct attachments (FIX 1: no bot filter — bots post content too)
-        for (const att of msg.attachments.values()) {
-          if (
-            att.contentType?.startsWith("image") ||
-            att.contentType?.startsWith("video") ||
-            MEDIA_EXT.test(att.url)
-          ) items.push({ url: att.url, name: att.name || "file" });
-        }
-
-        // FIX 2: plain URLs in message text (raw mp4/jpg links dropped in chat)
-        for (const u of ((msg.content || "").match(URL_RE) || [])) {
-          const clean = u.replace(/[)>\.,]+$/, "");
-          if (MEDIA_EXT.test(clean)) items.push({ url: clean, name: clean.split("/").pop()?.split("?")[0] || "file" });
-        }
-
-        // Embedded video / image previews
-        for (const emb of msg.embeds) {
-          if (emb.video?.url)     items.push({ url: emb.video.url,     name: "video"     });
-          if (emb.image?.url)     items.push({ url: emb.image.url,     name: "image"     });
-          if (emb.thumbnail?.url) items.push({ url: emb.thumbnail.url, name: "thumbnail" });
-        }
-
-        // Forwarded message snapshots
-        if (msg.messageSnapshots?.size > 0) {
-          for (const snap of msg.messageSnapshots.values()) {
-            for (const att of (snap.attachments ?? new Map()).values()) {
-              if (att.contentType?.startsWith("image") || att.contentType?.startsWith("video") || MEDIA_EXT.test(att.url))
-                items.push({ url: att.url, name: att.name || "file" });
-            }
-            for (const emb of (snap.embeds ?? [])) {
-              if (emb.video?.url) items.push({ url: emb.video.url, name: "video" });
-              if (emb.image?.url) items.push({ url: emb.image.url, name: "image" });
-            }
-          }
-        }
-
-        return items;
-      }
-
-      const collected = [];
-      let before  = undefined;
-      let hasMore = true;
-      let scanned = 0;
-
-      while (hasMore) {
-        const batch = await srcCh.messages
-          .fetch({ limit: 100, ...(before ? { before } : {}) })
-          .catch(() => null);
-        if (!batch || batch.size === 0) break;
-
-        for (const msg of batch.values()) {
-          // FIX 1: removed bot filter — scan ALL messages including bots/webhooks
-          if (msg.type === 19 && msg.reference?.messageId && !msg.messageSnapshots?.size) {
-            const ref = await srcCh.messages.fetch(msg.reference.messageId).catch(() => null);
-            if (ref) collected.push(...extractMedia(ref));
-          }
-          collected.push(...extractMedia(msg));
-          scanned++;
-        }
-
-        before  = batch.last()?.id;
-        hasMore = batch.size === 100;
-        await new Promise(r => setTimeout(r, 300));
-      }
-
-      // Deduplicate by base URL (strip CDN expiry tokens like ?ex=&is=)
-      const seen = new Set();
-      const uniqueMedia = collected.filter(({ url }) => {
-        const base = url.split("?")[0];
-        if (seen.has(base)) return false;
-        seen.add(base);
-        return true;
-      });
-
-      if (uniqueMedia.length === 0) {
-        await cpMsg?.edit({ embeds: [{ color: PINK, description: "No images or videos found in that channel." }] }).catch(() => {});
-        return;
-      }
-
-      await cpStatus(`Found **${uniqueMedia.length}** media files in **${scanned}** messages. Uploading...`);
-
-      // 4. Download -> rename -> re-upload ONE FILE AT A TIME
-      // FIX 3: 1 file per send so a large video failing doesn't silently kill the whole batch
-      async function buildAttachment({ url, name }) {
-        const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buf      = Buffer.from(await res.arrayBuffer());
-        const rawName  = url.split("/").pop()?.split("?")[0] || name;
-        const extMatch = rawName.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
-        const ext      = extMatch ? extMatch[0].toLowerCase() : ".mp4";
-        return new AttachmentBuilder(buf, { name: `SENSATIONAL_sent_downloaded${ext}` });
-      }
-
-      let uploaded = 0, failedCount = 0;
-
-      for (let i = 0; i < uniqueMedia.length; i++) {
-        const item = uniqueMedia[i];
-        let attachment;
-        try {
-          attachment = await buildAttachment(item);
-        } catch (e) {
-          log(`[cloneperks channel] download failed: ${e.message}`, "error");
-          failedCount++;
-          continue;
-        }
-
-        let sent = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            await dstCh.send({ files: [attachment] });
-            uploaded++;
-            sent = true;
-            break;
-          } catch (e) {
-            const wait = (e.retryAfter ?? 2) * 1000 + 600;
-            if ((e.code === 429 || e.message?.includes("rate limit")) && attempt < 2) {
-              await new Promise(r => setTimeout(r, wait));
-            } else {
-              log(`[cloneperks channel] send error: ${e.message}`, "error");
-              failedCount++;
-              break;
-            }
-          }
-        }
-
-        // Progress update every 10 files
-        if ((i + 1) % 10 === 0 || i === uniqueMedia.length - 1) {
-          const pct = Math.round(((i + 1) / uniqueMedia.length) * 100);
-          await cpStatus(`Uploading... **${uploaded}** done, **${failedCount}** failed (${pct}%)`);
-        }
-
-        await new Promise(r => setTimeout(r, 700));
-      }
-
-      // 5. Summary
-      await cpMsg?.edit({
-        embeds: [{
-          color: PINK,
-          title: "Channel Clone Complete",
-          fields: [
-            { name: "Source",       value: `#${srcCh.name} (\`${srcCh.id}\`)`, inline: true },
-            { name: "Destination",  value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
-            { name: "\u200b",       value: "\u200b", inline: true },
-            { name: "Msgs scanned", value: `${scanned}`,     inline: true },
-            { name: "Files sent",   value: `${uploaded}`,    inline: true },
-            { name: "Failed",       value: `${failedCount}`, inline: true },
-          ],
-          footer: { text: "SENSATIONAL_sent_downloaded • greed • pink edition" },
-          timestamp: new Date()
-        }]
-      }).catch(() => {});
-
-    } catch (e) {
-      log(`[cloneperks channel] fatal: ${e.message}`, "error");
-      return err(message, `clone failed: ${e.message}`);
-    }
-    return;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!res.ok) throw new Error(`fetch ${url} → ${res.status}`);
+    const buffer   = Buffer.from(await res.arrayBuffer());
+    const rawName  = url.split("/").pop()?.split("?")[0] || "video.mp4";
+    const extMatch = rawName.match(/\.(mp4|mov|webm|mkv|avi|gif)$/i);
+    const origExt  = extMatch ? extMatch[0].toLowerCase() : ".mp4";
+    const name     = makeVideoName(index, origExt);
+    return new AttachmentBuilder(buffer, { name });
   }
 
-  // ,hidepaidperks <targetServerId> [count=20]
-  // ─────────────────────────────────────────────────────────
-  if (command === "hidepaidperks") {
-    const targetId = args[1];
-    if (!targetId) return err(message, "usage: `,hidepaidperks <targetServerId> [count]`");
-    const count = Math.min(parseInt(args[2]) || 20, 50);
-
-    try {
-      const targetGuild = await client.guilds.fetch(targetId);
-      const allCh = await targetGuild.channels.fetch();
-
-      const pool = [...allCh
-        .filter(c => c && [0, 5].includes(c.type) && !hiddenPaidPerksChannels.has(c.id))
-        .sort(() => Math.random() - 0.5)
-        .values()
-      ].slice(0, count);
-
-      let hidden = 0;
-      const nameList = [];
-      for (const ch of pool) {
-        try {
-          await ch.permissionOverwrites.edit(targetGuild.roles.everyone, { ViewChannel: false }, { reason: "[hidepaidperks]" });
-          hiddenPaidPerksChannels.add(ch.id);
-          nameList.push(`#${ch.name}`);
-          hidden++;
-          await new Promise(r => setTimeout(r, 300));
-        } catch (e) { log(`[hidepaidperks] ${ch.name}: ${e.message}`, "error"); }
-      }
-
-      const preview = nameList.slice(0, 15).join(", ") + (hidden > 15 ? ` + ${hidden - 15} more` : "");
-      return ok(message, `hid **${hidden}** channel${hidden !== 1 ? "s" : ""} in **${targetGuild.name}**\n${preview}`);
-    } catch (e) {
-      return err(message, `failed: ${e.message}`);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // ,sortchannels <serverId> <cat1name> <cat2name>
-  // Splits ALL channels in the server evenly into two categories.
-  // Auto-creates overflow categories (cat 2, cat 3...) if > 50 channels per category.
-  // ─────────────────────────────────────────────────────────
-  if (command === "sortchannels") {
-    const serverId = args[1];
-    const cat1Name = args[2];
-    const cat2Name = args[3];
-    if (!serverId || !cat1Name || !cat2Name)
-      return err(message, "usage: `,sortchannels <serverId> <category1name> <category2name>`");
-
-    let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Fetching channels...` }]
-    }).catch(() => null);
-    const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
-    };
-
-    try {
-      const guild = await client.guilds.fetch(serverId);
-      await guild.channels.fetch();
-
-      const allChans = [...guild.channels.cache
-        .filter(c => c && c.type !== 4)
-        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-        .values()
-      ];
-
-      await updateStatus(`Found **${allChans.length}** channels. Creating categories...`);
-
-      const half = Math.ceil(allChans.length / 2);
-      const half1 = allChans.slice(0, half);
-      const half2 = allChans.slice(half);
-
-      async function getOrCreateCat(name) {
-        const existing = guild.channels.cache.find(c => c.type === 4 && c.name === name);
-        if (existing) return existing.id;
-        const newCat = await guild.channels.create({ name, type: 4, reason: "[sortchannels]" });
-        await new Promise(r => setTimeout(r, 800));
-        return newCat.id;
-      }
-
-      async function moveToTracker(ch, tracker) {
-        if (tracker.count >= 50) {
-          const overflowNum = Math.floor(tracker.count / 50) + 1;
-          const newName = `${tracker.baseName} ${overflowNum + 1}`;
-          log(`[sortchannels] overflow: creating "${newName}"`, "info");
-          const newCat = await guild.channels.create({ name: newName, type: 4, reason: "[sortchannels overflow]" });
-          await new Promise(r => setTimeout(r, 800));
-          tracker.currentCatId = newCat.id;
-          tracker.count = 0;
+  // Create channel with automatic retry on 429
+  async function createChWithRetry(guild, opts, retries = 3) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await guild.channels.create(opts);
+      } catch (e) {
+        const isRL = e.code === 429 || e.message?.includes("rate limit");
+        const wait = ((e.retryAfter ?? 2) * 1000) + 500;
+        if (isRL && attempt < retries - 1) {
+          log(`[setup] rate limited on #${opts.name}, waiting ${wait}ms`, "info");
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          log(`[setup] failed to create #${opts.name}: ${e.message}`, "error");
+          return null;
         }
-        await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[sortchannels]" });
-        tracker.count++;
-        await new Promise(r => setTimeout(r, 600));
       }
-
-      const cat1Id = await getOrCreateCat(cat1Name);
-      const cat2Id = await getOrCreateCat(cat2Name);
-      const tracker1 = { baseName: cat1Name, currentCatId: cat1Id, count: 0 };
-      const tracker2 = { baseName: cat2Name, currentCatId: cat2Id, count: 0 };
-
-      await updateStatus(`Moving **${half1.length}** channels → **${cat1Name}**...`);
-      for (const ch of half1) {
-        try { await moveToTracker(ch, tracker1); }
-        catch (e) { log(`[sortchannels] failed #${ch.name}: ${e.message}`, "error"); }
-      }
-
-      await updateStatus(`Moving **${half2.length}** channels → **${cat2Name}**...`);
-      for (const ch of half2) {
-        try { await moveToTracker(ch, tracker2); }
-        catch (e) { log(`[sortchannels] failed #${ch.name}: ${e.message}`, "error"); }
-      }
-
-      await statusMsg?.edit({
-        embeds: [{
-          color: PINK, title: "🌸 Sort Complete",
-          description: `**${guild.name}** — ${allChans.length} channels distributed`,
-          fields: [
-            { name: cat1Name, value: `${tracker1.count} channels`, inline: true },
-            { name: cat2Name, value: `${tracker2.count} channels`, inline: true },
-          ],
-          timestamp: new Date()
-        }]
-      }).catch(() => {});
-    } catch (e) {
-      return err(message, `failed: ${e.message}`);
     }
+    return null;
   }
 
-  // ─────────────────────────────────────────────────────────
-  // ,clonecategoryperks <sourceId> <targetId> <categoryName>
-  // Clones a specific category from source to target.
-  // Then collects ALL videos from those channels and distributes
-  // them 2-by-2 into "exclusive 1" and "exclusive 2" channels.
-  // ─────────────────────────────────────────────────────────
-  if (command === "clonecategoryperks") {
-    const sourceId = args[1];
-    const targetId = args[2];
-    const catName  = args.slice(3).join(" ").trim();
-    if (!sourceId || !targetId || !catName)
-      return err(message, "usage: `,clonecategoryperks <sourceId> <targetId> <categoryName>`");
-
-    let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Starting category clone...` }]
-    }).catch(() => null);
-    const updateStatus2 = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
-    };
-
-    try {
-      async function discordREST2(path) {
-        const res = await fetch(`https://discord.com/api/v10${path}`, {
-          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+  // Clone roles from rawRoles into targetGuild — returns roleMap
+  async function cloneRoles(rawRoles, targetGuild) {
+    const roleMap = new Map();
+    if (!s.cloneRoles) return roleMap;
+    const srcRoles = rawRoles
+      .filter(r => !r.managed && r.name !== "@everyone")
+      .sort((a, b) => b.position - a.position);
+    for (const role of srcRoles) {
+      try {
+        const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
+        if (existing) { roleMap.set(role.id, existing.id); continue; }
+        const newRole = await targetGuild.roles.create({
+          name: role.name, color: role.color, hoist: role.hoist,
+          mentionable: role.mentionable, permissions: BigInt(role.permissions),
+          reason: "[setup panel]"
         });
-        if (!res.ok) throw new Error(`REST ${path} → ${res.status}`);
-        return res.json();
-      }
-
-      const [rawChannels, targetGuild] = await Promise.all([
-        discordREST2(`/guilds/${sourceId}/channels`),
-        client.guilds.fetch(targetId),
-      ]);
-      await targetGuild.channels.fetch();
-
-      const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
-      if (!srcCat) return err(message, `Category **${catName}** not found in source server.`);
-
-      const srcChans = rawChannels
-        .filter(c => c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
-        .sort((a, b) => a.position - b.position);
-
-      await updateStatus2(`Found **${srcCat.name}** with **${srcChans.length}** channels. Cloning...`);
-
-      // Create target category (with overflow support)
-      let targetCatCh = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
-      if (!targetCatCh) {
-        targetCatCh = await targetGuild.channels.create({ name: srcCat.name, type: 4, reason: "[clonecategoryperks]" });
-        await new Promise(r => setTimeout(r, 800));
-      }
-      const catTracker = { baseName: srcCat.name, currentCatId: targetCatCh.id, count: 0 };
-
-      async function getTargetCatId() {
-        if (catTracker.count >= 50) {
-          const n = Math.floor(catTracker.count / 50) + 1;
-          const newCat = await targetGuild.channels.create({ name: `${catTracker.baseName} ${n + 1}`, type: 4, reason: "[clonecategoryperks overflow]" });
-          await new Promise(r => setTimeout(r, 800));
-          catTracker.currentCatId = newCat.id;
-          catTracker.count = 0;
-        }
-        return catTracker.currentCatId;
-      }
-
-      // Clone channels
-      let clonedCount = 0;
-      const clonedChannels = [];
-
-      for (const ch of srcChans) {
-        try {
-          const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
-          let newCh = existing;
-          if (!newCh) {
-            const permissionOverwrites = (ch.permission_overwrites || [])
-              .filter(ow => ow.type === 0)
-              .map(ow => ({
-                id:    targetGuild.roles.everyone.id,
-                type:  0,
-                allow: BigInt(String(ow.allow || "0")),
-                deny:  BigInt(String(ow.deny  || "0")),
-              }));
-            const parentId = await getTargetCatId();
-            const opts = { name: ch.name, type: ch.type, parent: parentId, permissionOverwrites, reason: "[clonecategoryperks]" };
-            if (ch.topic)              opts.topic            = ch.topic;
-            if (ch.nsfw)               opts.nsfw             = ch.nsfw;
-            if (ch.rate_limit_per_user) opts.rateLimitPerUser = ch.rate_limit_per_user;
-            if (ch.bitrate)            opts.bitrate          = ch.bitrate;
-            if (ch.user_limit)         opts.userLimit        = ch.user_limit;
-
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try { newCh = await targetGuild.channels.create(opts); break; }
-              catch (e) {
-                if ((e.code === 429 || e.message?.includes("rate limit")) && attempt < 2) {
-                  await new Promise(r => setTimeout(r, (e.retryAfter ?? 2) * 1000 + 500));
-                } else { log(`[clonecategoryperks] failed #${ch.name}: ${e.message}`, "error"); break; }
-              }
-            }
-            if (newCh) { catTracker.count++; clonedCount++; }
-            await new Promise(r => setTimeout(r, 800));
-          }
-          if (newCh) clonedChannels.push({ srcId: ch.id, newCh });
-        } catch (e) { log(`[clonecategoryperks] ch ${ch.name}: ${e.message}`, "error"); }
-      }
-
-      await updateStatus2(`Cloned **${clonedCount}** channels. Collecting videos...`);
-
-      // Collect all video URLs from source channels (attachments + embeds + forwarded messages)
-      const allVideos = [];
-
-      function extractVideosFromMsg(msg) {
-        const urls = [];
-        // Direct attachments
-        for (const att of msg.attachments.values()) {
-          if (att.contentType?.startsWith("video") || /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.name || "")) {
-            urls.push(att.url);
-          }
-        }
-        // Embedded videos (includes forwarded video previews)
-        for (const embed of msg.embeds) {
-          if (embed.video?.url) urls.push(embed.video.url);
-          if (embed.url && /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(embed.url)) urls.push(embed.url);
-        }
-        // Forwarded messages (message_reference with type FORWARD = 1)
-        // Discord.js exposes the forwarded content via msg.reference + msg.fetchReference()
-        return urls;
-      }
-
-      for (const { srcId } of clonedChannels) {
-        try {
-          const srcCh = client.channels.cache.get(srcId)
-            ?? await client.channels.fetch(srcId).catch(() => null);
-          if (!srcCh) continue;
-          let before;
-          let hasMore = true;
-          while (hasMore) {
-            const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-            if (!batch || batch.size === 0) break;
-            for (const msg of batch.values()) {
-              if (msg.author?.bot) continue;
-
-              // Regular attachments + embeds
-              allVideos.push(...extractVideosFromMsg(msg));
-
-              // Forwarded messages: Discord stores them as a messageSnapshots array
-              // Each snapshot has attachments/embeds of the original message
-              if (msg.messageSnapshots?.size > 0) {
-                for (const snapshot of msg.messageSnapshots.values()) {
-                  // snapshot.message contains the forwarded content
-                  if (snapshot.attachments) {
-                    for (const att of snapshot.attachments.values()) {
-                      if (att.contentType?.startsWith("video") || /\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.name || "")) {
-                        allVideos.push(att.url);
-                      }
-                    }
-                  }
-                  if (snapshot.embeds) {
-                    for (const embed of snapshot.embeds) {
-                      if (embed.video?.url) allVideos.push(embed.video.url);
-                    }
-                  }
-                }
-              }
-
-              // Fallback: if message is a forward (type 19) try fetching the referenced message
-              if (msg.type === 19 && msg.reference?.messageId && msg.messageSnapshots?.size === 0) {
-                try {
-                  const refMsg = await srcCh.messages.fetch(msg.reference.messageId).catch(() => null);
-                  if (refMsg) allVideos.push(...extractVideosFromMsg(refMsg));
-                } catch (_) {}
-              }
-            }
-            before = batch.last()?.id;
-            hasMore = batch.size === 100;
-            await new Promise(r => setTimeout(r, 300));
-          }
-        } catch (e) { log(`[clonecategoryperks] msgs: ${e.message}`, "error"); }
-      }
-
-      await updateStatus2(`Collected **${allVideos.length}** videos. Setting up exclusive channels...`);
-
-      // Get or create exclusive 1 and exclusive 2
-      async function getOrCreateExclusive(name) {
-        let ch = targetGuild.channels.cache.find(c => c.name.toLowerCase() === name.toLowerCase() && c.type === 0);
-        if (!ch) {
-          ch = await targetGuild.channels.create({ name, type: 0, reason: "[clonecategoryperks]" });
-          await new Promise(r => setTimeout(r, 800));
-        }
-        return ch;
-      }
-
-      const exc1 = await getOrCreateExclusive("exclusive 1");
-      const exc2 = await getOrCreateExclusive("exclusive 2");
-
-      // Shuffle videos randomly (Fisher-Yates)
-      for (let i = allVideos.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [allVideos[i], allVideos[j]] = [allVideos[j], allVideos[i]];
-      }
-
-      // Download a video URL and return a Discord AttachmentBuilder
-      const { AttachmentBuilder } = require("discord.js");
-      async function downloadVideo(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`fetch ${url} → ${res.status}`);
-        const buffer = Buffer.from(await res.arrayBuffer());
-        // Extract filename from URL, fallback to video.mp4
-        // Extract original extension, rename file to SENSATIONAL
-        const rawName = url.split("/").pop()?.split("?")[0] || "video.mp4";
-        const ext = rawName.match(/\.(mp4|mov|webm|mkv|avi|gif)$/i)?.[0] || ".mp4";
-        const name = `SENSATIONAL${ext}`;
-        return new AttachmentBuilder(buffer, { name });
-      }
-
-      // Send in groups of 2 per message (downloaded as real files):
-      // group 0 → exc1, group 1 → exc2, group 2 → exc1...
-      await updateStatus2(`Uploading **${allVideos.length}** videos in random groups of 2...`);
-      let sent1 = 0, sent2 = 0;
-      for (let i = 0; i < allVideos.length; i += 2) {
-        const groupIndex = Math.floor(i / 2);
-        const target = groupIndex % 2 === 0 ? exc1 : exc2;
-        const pair = allVideos.slice(i, i + 2);
-        try {
-          // Download both videos in parallel
-          const attachments = await Promise.all(pair.map(url => downloadVideo(url)));
-          await target.send({ files: attachments });
-          if (groupIndex % 2 === 0) sent1 += pair.length; else sent2 += pair.length;
-          await new Promise(r => setTimeout(r, 1000));
-        } catch (e) { log(`[clonecategoryperks] upload group ${groupIndex}: ${e.message}`, "error"); }
-      }
-
-      await statusMsg?.edit({
-        embeds: [{
-          color: PINK,
-          title: "🌸 Clone Category Complete",
-          description: `**${srcCat.name}** → **${targetGuild.name}**`,
-          fields: [
-            { name: "Channels cloned", value: `${clonedCount}`, inline: true },
-            { name: "Videos found",    value: `${allVideos.length}`, inline: true },
-            { name: "exclusive 1",     value: `${sent1} videos`, inline: true },
-            { name: "exclusive 2",     value: `${sent2} videos`, inline: true },
-          ],
-          timestamp: new Date()
-        }]
-      }).catch(() => {});
-
-    } catch (e) {
-      return err(message, `failed: ${e.message}`);
+        roleMap.set(role.id, newRole.id);
+        await new Promise(r => setTimeout(r, 350));
+      } catch (e) { log(`[setup] role ${role.name}: ${e.message}`, "error"); }
     }
+    return roleMap;
   }
 
+  // Build permission overwrites array from raw data
+  function buildPermOW(rawOW, roleMap, targetGuild) {
+    if (!s.clonePermissions) return [];
+    return (rawOW || []).filter(ow => ow.type === 0).map(ow => ({
+      id:    roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
+      type:  0,
+      allow: BigInt(String(ow.allow || "0")),
+      deny:  BigInt(String(ow.deny  || "0")),
+    }));
+  }
 
-  // ─────────────────────────────────────────────────────────
-  // ,setuppaidperks <sourceId> <targetId> [exclusiveChannelName]
-  // ─────────────────────────────────────────────────────────
-  if (command === "setuppaidperks") {
-    const sourceId      = args[1];
-    const targetId      = args[2];
-    const exclusiveName = args.slice(3).join(" ").trim() || "exclusive";
-    if (!sourceId || !targetId) return err(message, "usage: `,setuppaidperks <sourceServerId> <targetServerId> [exclusiveChannelName]`");
+  // Clone categories — returns categoryMap
+  async function cloneCategories(rawChannels, targetGuild, roleMap) {
+    const categoryMap = new Map();
+    if (!s.cloneCategories) return categoryMap;
+    const srcCats = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+    for (const cat of srcCats) {
+      try {
+        const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+        if (existing) { categoryMap.set(cat.id, existing.id); continue; }
+        const newCat = await targetGuild.channels.create({
+          name: cat.name, type: 4,
+          permissionOverwrites: buildPermOW(cat.permission_overwrites, roleMap, targetGuild),
+          reason: "[setup panel]"
+        });
+        categoryMap.set(cat.id, newCat.id);
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (e) { log(`[setup] cat ${cat.name}: ${e.message}`, "error"); }
+    }
+    return categoryMap;
+  }
 
-    let statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `🌸 Starting paid perks setup...` }]
-    }).catch(() => null);
-    const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
-    };
+  // Clone channels — returns { channelMap, channelCount }
+  async function cloneChannels(rawChannels, targetGuild, roleMap, categoryMap) {
+    if (!s.cloneChannels) return { channelMap: new Map(), channelCount: 0 };
+    const channelMap = new Map();
+    let channelCount = 0;
+    const srcChans   = rawChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
+    const srcCats    = rawChannels.filter(c => c.type === 4);
+    const catChildCount   = new Map();
+    const catOverflowMap  = new Map();
 
-    try {
-      const [rawChannels, rawRoles, targetGuild] = await Promise.all([
-        discordREST(`/guilds/${sourceId}/channels`),
-        discordREST(`/guilds/${sourceId}/roles`),
-        client.guilds.fetch(targetId),
-      ]);
-      await targetGuild.roles.fetch();
-      await targetGuild.channels.fetch();
+    for (const ch of srcChans) {
+      if ([10,11,12,13,14,15].includes(ch.type)) continue;
+      try {
+        const existing = s.skipExisting
+          ? targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type)
+          : null;
+        let newCh = existing ?? null;
+        if (!newCh) {
+          const opts = {
+            name: ch.name, type: ch.type,
+            permissionOverwrites: buildPermOW(ch.permission_overwrites, roleMap, targetGuild),
+            reason: "[setup panel]"
+          };
+          if (ch.topic)              opts.topic            = ch.topic;
+          if (ch.nsfw)               opts.nsfw             = ch.nsfw;
+          if (ch.rate_limit_per_user) opts.rateLimitPerUser = ch.rate_limit_per_user;
+          if (ch.bitrate)            opts.bitrate          = ch.bitrate;
+          if (ch.user_limit)         opts.userLimit        = ch.user_limit;
 
-      const srcCats  = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
-      const srcChans = rawChannels.filter(c => c.type !== 4).sort((a, b) => a.position - b.position);
-      const srcRoles = rawRoles.filter(r => !r.managed && r.name !== "@everyone").sort((a, b) => b.position - a.position);
-
-      // ── STEP 1: Roles ──
-      await updateStatus(`**[1/3]** Cloning **${srcRoles.length}** roles...`);
-      const roleMap = new Map();
-      for (const role of srcRoles) {
-        try {
-          const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
-          if (existing) { roleMap.set(role.id, existing.id); continue; }
-          const newRole = await targetGuild.roles.create({
-            name: role.name, color: role.color, hoist: role.hoist,
-            mentionable: role.mentionable, permissions: BigInt(role.permissions),
-            reason: "[setuppaidperks]"
-          });
-          roleMap.set(role.id, newRole.id);
-          await new Promise(r => setTimeout(r, 350));
-        } catch (e) { /* skip */ }
-      }
-
-      // ── STEP 2: Categories + Channels ──
-      await updateStatus(`**[2/3]** Cloning **${srcCats.length}** categories + **${srcChans.length}** channels...`);
-      const categoryMap = new Map();
-      for (const cat of srcCats) {
-        try {
-          const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
-          if (existing) { categoryMap.set(cat.id, existing.id); continue; }
-          const permissionOverwrites = (cat.permission_overwrites || [])
-            .filter(ow => ow.type === 0)
-            .map(ow => ({
-              id: roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
-              type: 0,
-              allow: BigInt(String(ow.allow || "0")),
-              deny:  BigInt(String(ow.deny  || "0")),
-            }));
-          const newCat = await targetGuild.channels.create({ name: cat.name, type: 4, permissionOverwrites, reason: "[setuppaidperks]" });
-          categoryMap.set(cat.id, newCat.id);
-          await new Promise(r => setTimeout(r, 1000));
-        } catch (e) { log(`[setuppaidperks] cat ${cat.name}: ${e.message}`, "error"); }
-      }
-
-      // Helper: create channel with automatic retry on rate-limit (429)
-      async function createChWithRetry(guild, opts, retries = 3) {
-        for (let attempt = 0; attempt < retries; attempt++) {
-          try {
-            return await guild.channels.create(opts);
-          } catch (e) {
-            const isRateLimit = e.code === 429 || (e.message && e.message.includes("rate limit"));
-            const retryAfter = (e.retryAfter ?? 2) * 1000;
-            if (isRateLimit && attempt < retries - 1) {
-              log(`[setuppaidperks] rate limited on #${opts.name}, attendo ${retryAfter}ms...`, "info");
-              await new Promise(r => setTimeout(r, retryAfter + 500));
-            } else {
-              log(`[setuppaidperks] errore creando #${opts.name}: ${e.message}`, "error");
-              return null;
+          // Category assignment with overflow (Discord limit: 50 channels per category)
+          if (ch.parent_id && categoryMap.has(ch.parent_id)) {
+            let targetCatId = catOverflowMap.get(ch.parent_id) ?? categoryMap.get(ch.parent_id);
+            const count = catChildCount.get(targetCatId) ?? 0;
+            if (count >= 50) {
+              const srcCat     = srcCats.find(c => c.id === ch.parent_id);
+              const baseName   = srcCat?.name ?? "overflow";
+              const overflowNum = Math.floor(count / 50) + 1;
+              const overflowCat = await targetGuild.channels.create({ name: `${baseName} ${overflowNum + 1}`, type: 4, reason: "[setup panel overflow]" });
+              await new Promise(r => setTimeout(r, 1000));
+              targetCatId = overflowCat.id;
+              catOverflowMap.set(ch.parent_id, targetCatId);
+              catChildCount.set(targetCatId, 0);
             }
+            opts.parent = targetCatId;
+            catChildCount.set(targetCatId, (catChildCount.get(targetCatId) ?? 0) + 1);
           }
+
+          newCh = await createChWithRetry(targetGuild, opts);
+          if (newCh) channelCount++;
+          await new Promise(r => setTimeout(r, 1000));
         }
-        return null;
+        if (newCh) channelMap.set(ch.id, newCh);
+      } catch (e) { log(`[setup] ch ${ch.name}: ${e.message}`, "error"); }
+    }
+    return { channelMap, channelCount };
+  }
+
+  // Distribute videos in pairs of 2 into exclusive channels (alternating exc1/exc2)
+  async function distributeVideos(videoUrls, targetGuild) {
+    const excl1Name = s.exclusiveName;
+    const excl2Name = `${s.exclusiveName}-2`;
+
+    let excl1 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl1Name.toLowerCase() && [0,5].includes(c.type))
+      ?? await targetGuild.channels.create({ name: excl1Name, type: 0, reason: "[setup panel] exclusive" }).catch(() => null);
+    let excl2 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl2Name.toLowerCase() && [0,5].includes(c.type))
+      ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: "[setup panel] exclusive-2" }).catch(() => null);
+
+    // Fisher-Yates shuffle
+    for (let i = videoUrls.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [videoUrls[i], videoUrls[j]] = [videoUrls[j], videoUrls[i]];
+    }
+
+    let sent1 = 0, sent2 = 0, vidIndex = 0;
+    for (let i = 0; i < videoUrls.length; i += 2) {
+      const groupIndex = Math.floor(i / 2);
+      const target     = groupIndex % 2 === 0 ? excl1 : excl2;
+      const pair       = videoUrls.slice(i, i + 2);
+      if (!target) { vidIndex += pair.length; continue; }
+      try {
+        const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
+        vidIndex += pair.length;
+        await target.send({ files: attachments });
+        if (groupIndex % 2 === 0) sent1 += pair.length; else sent2 += pair.length;
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (e) {
+        log(`[setup] video group ${groupIndex}: ${e.message}`, "error");
+        vidIndex += pair.length;
       }
+    }
+    return { sent1, sent2, excl1Name, excl2Name };
+  }
 
-      let channelCount = 0;
-      for (const ch of srcChans) {
-        if ([10, 11, 12, 13, 14, 15].includes(ch.type)) continue;
-        const existing = targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type);
-        if (existing) continue;
-        // FIX: filter user overwrites (type 1) and use safe BigInt conversion
-        const permissionOverwrites = (ch.permission_overwrites || [])
-          .filter(ow => ow.type === 0)
-          .map(ow => ({
-            id:   roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
-            type: 0,
-            allow: BigInt(String(ow.allow || "0")),
-            deny:  BigInt(String(ow.deny  || "0")),
-          }));
-        const createOpts = { name: ch.name, type: ch.type, permissionOverwrites, reason: "[setuppaidperks]" };
-        if (ch.topic)               createOpts.topic            = ch.topic;
-        if (ch.nsfw)                createOpts.nsfw             = ch.nsfw;
-        if (ch.rate_limit_per_user)  createOpts.rateLimitPerUser = ch.rate_limit_per_user;
-        if (ch.bitrate)             createOpts.bitrate          = ch.bitrate;
-        if (ch.user_limit)          createOpts.userLimit        = ch.user_limit;
-        if (ch.parent_id && categoryMap.has(ch.parent_id)) createOpts.parent = categoryMap.get(ch.parent_id);
-        const created = await createChWithRetry(targetGuild, createOpts);
-        if (created) channelCount++;
-        await new Promise(r => setTimeout(r, 1000)); // 1s to stay under Discord's rate limit
-      }
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: cloneperks — full server clone
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "cloneperks") {
+    await updateStatus("Fetching dati server via REST...");
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
 
-      // ── STEP 3: Exclusive channels + distribute videos ──
-      await updateStatus(`**[3/3]** Creazione canali exclusive e copia video...`);
-      const excl1Name = exclusiveName;
-      const excl2Name = `${exclusiveName}-2`;
+    const rCount = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
+    const cCount = rawChannels.filter(c => c.type === 4).length;
+    const chCount = rawChannels.filter(c => c.type !== 4).length;
+    await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categorie, **${chCount}** canali → **${targetGuild.name}**`);
 
-      let excl1 = targetGuild.channels.cache.find(c => c.name === excl1Name && [0, 5].includes(c.type))
-        ?? await targetGuild.channels.create({ name: excl1Name, type: 0, reason: "[setuppaidperks] exclusive" }).catch(() => null);
-      let excl2 = targetGuild.channels.cache.find(c => c.name === excl2Name && [0, 5].includes(c.type))
-        ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: "[setuppaidperks] exclusive-2" }).catch(() => null);
+    await updateStatus("[1/3] Clonando ruoli...");
+    const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-      let videoCopied = 0, toggle = false;
-      for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
-        const srcCh = client.channels.cache.get(ch.id)
-          ?? await client.channels.fetch(ch.id).catch(() => null);
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie...`);
+    const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
+
+    await updateStatus(`[3/3] ✅ Categorie (${categoryMap.size}). Clonando canali...`);
+    const { channelMap, channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
+
+    // Optional: copy messages/content
+    let filesCopied = 0;
+    if (s.cloneMessages) {
+      await updateStatus(`Copiando contenuti messaggi...`);
+      for (const [srcId, newCh] of channelMap.entries()) {
+        if (![0, 5].includes(newCh.type)) continue;
+        const srcCh = client.channels.cache.get(srcId) ?? await client.channels.fetch(srcId).catch(() => null);
         if (!srcCh) continue;
-
-        // Paginate ALL messages from this channel
-        let before = undefined;
-        let hasMore = true;
+        let before = undefined, hasMore = true;
         const allMsgs = [];
         while (hasMore) {
           const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
@@ -10010,65 +9638,458 @@ client.on("messageCreate", async (message) => {
           hasMore = batch.size === 100;
           await new Promise(r => setTimeout(r, 300));
         }
-
-        allMsgs.reverse(); // oldest first
+        allMsgs.reverse();
         for (const msg of allMsgs) {
-          const files = [...msg.attachments.values()].map(a => a.url);
-          const destCh = toggle ? excl2 : excl1;
-          if (!destCh) { toggle = !toggle; continue; }
           try {
+            const files = [...msg.attachments.values()].map(a => a.url);
             const payload = {};
             if (msg.content) payload.content = msg.content;
             if (files.length) payload.files = files;
             if (!payload.content && !payload.files) continue;
-            await destCh.send(payload).catch(() => {});
-            videoCopied++;
-            toggle = !toggle;
-            await new Promise(r => setTimeout(r, 700));
-          } catch (e) { /* skip */ }
+            await newCh.send(payload).catch(() => {});
+            filesCopied++;
+            await new Promise(r => setTimeout(r, 500));
+          } catch (_) {}
+        }
+      }
+    }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🌸 Clone Completo",
+        description: `**${s.sourceId}** → **${targetGuild.name}**`,
+        fields: [
+          { name: "Ruoli",          value: `${roleMap.size}`,     inline: true },
+          { name: "Categorie",      value: `${categoryMap.size}`, inline: true },
+          { name: "Canali",         value: `${channelCount}`,     inline: true },
+          { name: "Files copiati",  value: `${filesCopied}`,      inline: true },
+        ],
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: cloneperks_channel — clone single channel media
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "cloneperks_channel") {
+    const { AttachmentBuilder } = require("discord.js");
+    const MEDIA_EXT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
+    const URL_RE    = /https?:\/\/\S+/g;
+
+    const srcCh = client.channels.cache.get(s.sourceId) ?? await client.channels.fetch(s.sourceId).catch(() => null);
+    if (!srcCh) throw new Error(`source channel \`${s.sourceId}\` non trovato`);
+
+    let dstCh;
+    if (s.targetId) {
+      dstCh = client.channels.cache.get(s.targetId) ?? await client.channels.fetch(s.targetId).catch(() => null);
+      if (!dstCh) throw new Error(`destination channel \`${s.targetId}\` non trovato`);
+    } else {
+      const tg = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+      if (!tg) throw new Error("TARGET_GUILD non accessibile");
+      dstCh = await tg.channels.create({ name: srcCh.name, type: 0, reason: "[setup panel channel clone]" }).catch(() => null);
+      if (!dstCh) throw new Error("impossibile creare il canale destinazione");
+    }
+
+    await updateStatus(`Scanning **#${srcCh.name}** → **#${dstCh.name}**...`);
+
+    function extractMedia(msg) {
+      const items = [];
+      for (const att of msg.attachments.values()) {
+        if (att.contentType?.startsWith("image") || att.contentType?.startsWith("video") || MEDIA_EXT.test(att.url))
+          items.push({ url: att.url, name: att.name || "file" });
+      }
+      for (const u of ((msg.content || "").match(URL_RE) || [])) {
+        const clean = u.replace(/[)>\.,]+$/, "");
+        if (MEDIA_EXT.test(clean)) items.push({ url: clean, name: clean.split("/").pop()?.split("?")[0] || "file" });
+      }
+      for (const emb of msg.embeds) {
+        if (emb.video?.url)     items.push({ url: emb.video.url,     name: "video"     });
+        if (emb.image?.url)     items.push({ url: emb.image.url,     name: "image"     });
+        if (emb.thumbnail?.url) items.push({ url: emb.thumbnail.url, name: "thumbnail" });
+      }
+      if (msg.messageSnapshots?.size > 0) {
+        for (const snap of msg.messageSnapshots.values()) {
+          for (const att of (snap.attachments ?? new Map()).values()) {
+            if (att.contentType?.startsWith("image") || att.contentType?.startsWith("video") || MEDIA_EXT.test(att.url))
+              items.push({ url: att.url, name: att.name || "file" });
+          }
+          for (const emb of (snap.embeds ?? [])) {
+            if (emb.video?.url) items.push({ url: emb.video.url, name: "video" });
+            if (emb.image?.url) items.push({ url: emb.image.url, name: "image" });
+          }
+        }
+      }
+      return items;
+    }
+
+    const collected = [];
+    let before = undefined, hasMore = true, scanned = 0;
+    while (hasMore) {
+      const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+      if (!batch || batch.size === 0) break;
+      for (const msg of batch.values()) {
+        if (msg.type === 19 && msg.reference?.messageId && !msg.messageSnapshots?.size) {
+          const ref = await srcCh.messages.fetch(msg.reference.messageId).catch(() => null);
+          if (ref) collected.push(...extractMedia(ref));
+        }
+        collected.push(...extractMedia(msg));
+        scanned++;
+      }
+      before  = batch.last()?.id;
+      hasMore = batch.size === 100;
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const seen = new Set();
+    const uniqueMedia = collected.filter(({ url }) => {
+      const base = url.split("?")[0];
+      if (seen.has(base)) return false;
+      seen.add(base);
+      return true;
+    });
+
+    if (uniqueMedia.length === 0) {
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: "Nessun media trovato nel canale." }] }).catch(() => {});
+      return;
+    }
+
+    await updateStatus(`Trovati **${uniqueMedia.length}** file in **${scanned}** messaggi. Uploading...`);
+
+    let uploaded = 0, failedCount = 0, vidIndex = 0;
+    for (let i = 0; i < uniqueMedia.length; i++) {
+      const item = uniqueMedia[i];
+      let attachment;
+      try {
+        const res = await fetch(item.url, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf      = Buffer.from(await res.arrayBuffer());
+        const rawName  = item.url.split("/").pop()?.split("?")[0] || item.name;
+        const extMatch = rawName.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
+        const origExt  = extMatch ? extMatch[0].toLowerCase() : ".mp4";
+        const name     = makeVideoName(vidIndex++, origExt);
+        attachment = new AttachmentBuilder(buf, { name });
+      } catch (e) { failedCount++; continue; }
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await dstCh.send({ files: [attachment] });
+          uploaded++;
+          break;
+        } catch (e) {
+          const wait = ((e.retryAfter ?? 2) * 1000) + 600;
+          if ((e.code === 429 || e.message?.includes("rate limit")) && attempt < 2) {
+            await new Promise(r => setTimeout(r, wait));
+          } else { failedCount++; break; }
         }
       }
 
-      await statusMsg?.edit({
-        embeds: [{
-          color: PINK, title: "🌸 Setup Complete",
-          description: `**${targetGuild.name}** pronto come server premium.`,
-          fields: [
-            { name: "Roles",              value: `${roleMap.size}`,     inline: true },
-            { name: "Categories",         value: `${categoryMap.size}`, inline: true },
-            { name: "Channels cloned",    value: `${channelCount}`,     inline: true },
-            { name: "Videos distributed", value: `${videoCopied}`,      inline: true },
-            { name: "Exclusive channels", value: `#${excl1Name}, #${excl2Name}`, inline: true },
-          ],
-          footer: { text: "usa ,hidepaidperks per nascondere canali" },
-          timestamp: new Date()
-        }]
-      }).catch(() => {});
-
-    } catch (e) {
-      log(`[setuppaidperks] fatal: ${e.message}`, "error");
-      return err(message, `setup failed: ${e.message}`);
+      if ((i + 1) % 10 === 0 || i === uniqueMedia.length - 1) {
+        const pct = Math.round(((i + 1) / uniqueMedia.length) * 100);
+        await updateStatus(`Uploading... **${uploaded}** inviati, **${failedCount}** falliti (${pct}%)`);
+      }
+      await new Promise(r => setTimeout(r, 700));
     }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🌸 Channel Clone Completo",
+        fields: [
+          { name: "Sorgente",     value: `#${srcCh.name} (\`${srcCh.id}\`)`,  inline: true },
+          { name: "Destinazione", value: `#${dstCh.name} (\`${dstCh.id}\`)`,  inline: true },
+          { name: "\u200b",       value: "\u200b",                             inline: true },
+          { name: "Scansionati",  value: `${scanned}`,                         inline: true },
+          { name: "Inviati",      value: `${uploaded}`,                        inline: true },
+          { name: "Falliti",      value: `${failedCount}`,                     inline: true },
+        ],
+        footer: { text: `pattern: ${s.videoPattern} (${s.videoRenameMode})` },
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
     return;
   }
-});
 
-// ===== ERROR HANDLING =====
-client.on("error", (error) => {
-  log(`Client error: ${error.message}`, "error");
-});
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: clonecategoryperks — clone one category + distribute videos
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "clonecategoryperks") {
+    const catName = s.extraParam;
+    if (!catName) throw new Error("Specifica il nome della categoria nel campo 'Extra' del panel");
 
-// Prevent crashes from unhandled promise rejections
-process.on("unhandledRejection", (error) => {
-  log(`Unhandled rejection: ${error?.message || error}`, "error");
-  // Do NOT exit — just log it
-});
+    await updateStatus("Fetching canali via REST...");
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
 
-process.on("uncaughtException", (error) => {
-  log(`Uncaught exception: ${error?.message || error}`, "error");
-  // Do NOT exit
-});
+    const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
+    if (!srcCat) throw new Error(`Categoria "${catName}" non trovata nel server sorgente`);
 
-// Clean up handled messages cache every 30 seconds
+    const catChans = rawChannels
+      .filter(c => c.type !== 4 && c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 
-client.login(process.env.TOKEN);
+    await updateStatus(`Categoria **${srcCat.name}** — **${catChans.length}** canali. Clonando ruoli...`);
+    const roleMap = await cloneRoles(rawRoles, targetGuild);
+
+    // Create or find target category
+    let tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+    if (!tgtCat) {
+      tgtCat = await targetGuild.channels.create({
+        name: srcCat.name, type: 4,
+        permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
+        reason: "[setup panel]"
+      });
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    let clonedCount = 0;
+    const allVideoUrls = [];
+
+    for (const ch of catChans) {
+      try {
+        let newCh = s.skipExisting
+          ? targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type && c.parentId === tgtCat.id)
+          : null;
+        if (!newCh) {
+          newCh = await createChWithRetry(targetGuild, {
+            name: ch.name, type: ch.type, parent: tgtCat.id,
+            permissionOverwrites: buildPermOW(ch.permission_overwrites, roleMap, targetGuild),
+            reason: "[setup panel]"
+          });
+          if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 1000)); }
+        }
+
+        // Collect video URLs from text/announcement channels
+        if ([0, 5].includes(ch.type)) {
+          const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
+          if (srcCh) {
+            let before = undefined, hasMore = true;
+            while (hasMore) {
+              const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+              if (!batch || batch.size === 0) break;
+              for (const msg of batch.values()) {
+                if (!msg.author?.bot) {
+                  for (const att of msg.attachments.values()) {
+                    if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+                  }
+                }
+              }
+              before = batch.last()?.id;
+              hasMore = batch.size === 100;
+              await new Promise(r => setTimeout(r, 300));
+            }
+          }
+        }
+      } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, "error"); }
+    }
+
+    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video in coppie da 2...`);
+    const { sent1, sent2, excl1Name, excl2Name } = await distributeVideos(allVideoUrls, targetGuild);
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🌸 Clone Categoria Completo",
+        description: `**${srcCat.name}** → **${targetGuild.name}**`,
+        fields: [
+          { name: "Canali clonati",   value: `${clonedCount}`,           inline: true },
+          { name: "Video trovati",    value: `${allVideoUrls.length}`,   inline: true },
+          { name: "\u200b",           value: "\u200b",                   inline: true },
+          { name: `#${excl1Name}`,    value: `${sent1} video`,           inline: true },
+          { name: `#${excl2Name}`,    value: `${sent2} video`,           inline: true },
+          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+        ],
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: setuppaidperks — full paid perks one-shot setup
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "setuppaidperks") {
+    await updateStatus("Fetching dati server...");
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
+
+    await updateStatus("[1/3] Clonando ruoli...");
+    const roleMap = await cloneRoles(rawRoles, targetGuild);
+
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie + canali...`);
+    const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
+    const { channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
+
+    await updateStatus("[3/3] Raccogliendo video per distribuzione...");
+    const allVideoUrls = [];
+    for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
+      const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
+      if (!srcCh) continue;
+      let before = undefined, hasMore = true;
+      const allMsgs = [];
+      while (hasMore) {
+        const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!batch || batch.size === 0) break;
+        allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && m.attachments.size > 0));
+        before = batch.last()?.id;
+        hasMore = batch.size === 100;
+        await new Promise(r => setTimeout(r, 300));
+      }
+      allMsgs.reverse();
+      for (const msg of allMsgs) {
+        for (const att of msg.attachments.values()) {
+          if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+        }
+      }
+    }
+
+    await updateStatus(`Distribuendo **${allVideoUrls.length}** video in coppie da 2...`);
+    const { sent1, sent2, excl1Name, excl2Name } = await distributeVideos(allVideoUrls, targetGuild);
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🌸 Setup Paid Perks Completo",
+        description: `**${targetGuild.name}** pronto come server premium.`,
+        fields: [
+          { name: "Ruoli",             value: `${roleMap.size}`,     inline: true },
+          { name: "Categorie",         value: `${categoryMap.size}`, inline: true },
+          { name: "Canali",            value: `${channelCount}`,     inline: true },
+          { name: `#${excl1Name}`,     value: `${sent1} video`,      inline: true },
+          { name: `#${excl2Name}`,     value: `${sent2} video`,      inline: true },
+          { name: "Pattern video",     value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+        ],
+        footer: { text: "usa ,setup → Nascondi Canali per nascondere canali dopo il setup" },
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: hidepaidperks — hide N random channels from @everyone
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "hidepaidperks") {
+    const count = Math.min(parseInt(s.extraParam) || 20, 50);
+    await updateStatus(`Nascondendo **${count}** canali in \`${s.targetId}\`...`);
+
+    const targetGuild = await client.guilds.fetch(s.targetId);
+    const allCh = await targetGuild.channels.fetch();
+
+    const pool = [...allCh
+      .filter(c => c && [0, 5].includes(c.type) && !hiddenPaidPerksChannels.has(c.id))
+      .sort(() => Math.random() - 0.5)
+      .values()
+    ].slice(0, count);
+
+    let hidden = 0;
+    const nameList = [];
+    for (const ch of pool) {
+      try {
+        await ch.permissionOverwrites.edit(targetGuild.roles.everyone, { ViewChannel: false }, { reason: "[setup panel hidepaidperks]" });
+        hiddenPaidPerksChannels.add(ch.id);
+        nameList.push(`#${ch.name}`);
+        hidden++;
+        await new Promise(r => setTimeout(r, 300));
+      } catch (e) { log(`[setup] hide ${ch.name}: ${e.message}`, "error"); }
+    }
+
+    const preview = nameList.slice(0, 15).join(", ") + (hidden > 15 ? ` + ${hidden - 15} altri` : "");
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🙈 Canali Nascosti",
+        description: `Nascosti **${hidden}** canali in **${targetGuild.name}**\n\`\`\`${preview || "nessuno"}\`\`\``,
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // OPERATION: sortchannels — distribute channels into 2 categories
+  // ──────────────────────────────────────────────────────────────────────────
+  if (s.operation === "sortchannels") {
+    const parts = s.extraParam.split("|").map(x => x.trim());
+    const cat1Name = parts[0];
+    const cat2Name = parts[1];
+    if (!cat1Name || !cat2Name)
+      throw new Error("Nel campo Extra specifica: `Categoria1 | Categoria2`");
+
+    const guild = await client.guilds.fetch(s.targetId);
+    await guild.channels.fetch();
+
+    const allChans = [...guild.channels.cache
+      .filter(c => c && c.type !== 4)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .values()
+    ];
+
+    await updateStatus(`Trovati **${allChans.length}** canali. Creando categorie...`);
+
+    const half  = Math.ceil(allChans.length / 2);
+    const half1 = allChans.slice(0, half);
+    const half2 = allChans.slice(half);
+
+    async function getOrCreateCat(name) {
+      const existing = guild.channels.cache.find(c => c.type === 4 && c.name === name);
+      if (existing) return existing.id;
+      const newCat = await guild.channels.create({ name, type: 4, reason: "[setup panel sortchannels]" });
+      await new Promise(r => setTimeout(r, 800));
+      return newCat.id;
+    }
+
+    const cat1Id = await getOrCreateCat(cat1Name);
+    const cat2Id = await getOrCreateCat(cat2Name);
+    const tracker1 = { baseName: cat1Name, currentCatId: cat1Id, count: 0 };
+    const tracker2 = { baseName: cat2Name, currentCatId: cat2Id, count: 0 };
+
+    async function moveToTracker(ch, tracker) {
+      if (tracker.count >= 50) {
+        const overflowNum = Math.floor(tracker.count / 50) + 1;
+        const newCat = await guild.channels.create({ name: `${tracker.baseName} ${overflowNum + 1}`, type: 4, reason: "[setup panel overflow]" });
+        await new Promise(r => setTimeout(r, 800));
+        tracker.currentCatId = newCat.id;
+        tracker.count = 0;
+      }
+      await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[setup panel sortchannels]" });
+      tracker.count++;
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    await updateStatus(`Spostando **${half1.length}** canali → **${cat1Name}**...`);
+    for (const ch of half1) {
+      try { await moveToTracker(ch, tracker1); }
+      catch (e) { log(`[setup] sort #${ch.name}: ${e.message}`, "error"); }
+    }
+
+    await updateStatus(`Spostando **${half2.length}** canali → **${cat2Name}**...`);
+    for (const ch of half2) {
+      try { await moveToTracker(ch, tracker2); }
+      catch (e) { log(`[setup] sort #${ch.name}: ${e.message}`, "error"); }
+    }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: "🔀 Sort Canali Completo",
+        description: `**${guild.name}** — ${allChans.length} canali distribuiti`,
+        fields: [
+          { name: cat1Name, value: `${tracker1.count} canali`, inline: true },
+          { name: cat2Name, value: `${tracker2.count} canali`, inline: true },
+        ],
+        timestamp: new Date()
+      }]
+    }).catch(() => {});
+    return;
+  }
+
+  throw new Error(`Operazione non riconosciuta: "${s.operation}"`);
+}
+
