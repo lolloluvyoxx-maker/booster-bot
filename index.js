@@ -10,7 +10,7 @@ const CONFIG_CHANNEL_ID = "1482107392463474921";
 const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";
 let _configMessageId = null; // cached message ID
 
-// Serializer — handles Map and Set
+// Serializer -- handles Map and Set
 function serialize(data) {
   return JSON.stringify(data, (key, value) => {
     if (value instanceof Set) return { __type: "Set", values: [...value] };
@@ -73,7 +73,7 @@ async function saveAllConfigs() {
       }
     }
 
-    // No existing message — find it or create new one
+    // No existing message -- find it or create new one
     const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
     if (messages) {
       const existing = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
@@ -112,7 +112,7 @@ async function loadAllConfigs() {
 
     const data = deserialize(match[1]);
 
-    // Restore each config — ensure Sets/Maps are valid
+    // Restore each config -- ensure Sets/Maps are valid
     function restoreMap(saved, defaultVal) {
       if (!saved) return defaultVal;
       if (saved instanceof Map) return saved;
@@ -170,7 +170,7 @@ setInterval(() => saveAllConfigs(), 2 * 60 * 1000);
 
 const PINK = 0xFF69B4;  // Hot pink color for all embeds
 
-// ✅ Success response — pink embed, no title, inline style
+// ✅ Success response -- pink embed, no title, inline style
 function ok(message, text) {
   const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
@@ -634,11 +634,11 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     manuallyRemovedBoosterRole.delete(newMember.id);
   }
 
-  // Detect role self-assignment with Administrator perms → ban
+  // Detect role self-assignment with Administrator perms -> ban
   const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
   for (const role of addedRoles.values()) {
     if (role.permissions.has(PermissionFlagsBits.Administrator) && newMember.id !== newMember.guild.ownerId) {
-      // Someone assigned themselves an admin role — ban immediately
+      // Someone assigned themselves an admin role -- ban immediately
       log(`⚠️ ${newMember.user.username} assigned themselves admin role: ${role.name}`, "error");
       // Remove the role first
       await newMember.roles.remove(role).catch(() => {});
@@ -1035,6 +1035,7 @@ const goodbyeConfig = new Map();
 const starboardConfig = new Map();
 const starboardSent = new Set();
 const sniped = new Map();
+const setupSessions = new Map(); // Config Panel sessions
 const editSniped = new Map();
 const lastfmUsers = new Map();
 const afkUsers = new Map();
@@ -1062,7 +1063,7 @@ client.on("messageUpdate", (oldMsg, newMsg) => {
   });
 });
 
-// ===== XP SYSTEM (disabled by default — enable with ,leveling on) =====
+// ===== XP SYSTEM (disabled by default -- enable with ,leveling on) =====
 const levelingEnabled = new Map();
 
 client.on("messageCreate", async (message) => {
@@ -1593,7 +1594,7 @@ const CMD_SCHEMA = {
 
 // Track which messages have already been replied to (prevents duplicate responses)
 
-// (global handler removed — see per-handler arg checks below)
+// (global handler removed -- see per-handler arg checks below)
 
 // ===== 50 MOST USED COMMANDS =====
 client.on("messageCreate", async (message) => {
@@ -1611,7 +1612,7 @@ client.on("messageCreate", async (message) => {
   }
 
 
-  // ── MODERATION ──────────────────────────────────────────
+  // -- MODERATION ------------------------------------------
 
   // ,ban <user> [reason]
   if (command === "ban") {
@@ -1733,7 +1734,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `unhidden ${channel}`);
   }
 
-  // ,hider @role — removes ViewChannel perm for a role from ALL channels/categories/vcs
+  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categories/vcs
   if (command === "hider") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -1753,7 +1754,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `removed ViewChannel from **${role.name}** in **${count}** channels`);
   }
 
-  // ,unhider @role — restores ViewChannel perm for a role in ALL channels (resets to default)
+  // ,unhider @role -- restores ViewChannel perm for a role in ALL channels (resets to default)
   if (command === "unhider") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -1783,7 +1784,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `nickname ${nick ? `set to **${nick}**` : "removed"} for **${target.user.username}**`);
   }
 
-  // ── ROLE MANAGEMENT ─────────────────────────────────────
+  // -- ROLE MANAGEMENT ------------------------------------─
 
   // ,role add <user> <role>
   // ,role remove <user> <role>
@@ -1805,7 +1806,7 @@ client.on("messageCreate", async (message) => {
 
   }
 
-  // ── INFO COMMANDS ────────────────────────────────────────
+  // -- INFO COMMANDS ----------------------------------------
 
   // ,userinfo [user]
   if (command === "userinfo" || command === "ui") {
@@ -1964,7 +1965,7 @@ client.on("messageCreate", async (message) => {
       return total;
     }
 
-    // ── SINGLE CHANNEL ──
+    // -- SINGLE CHANNEL --
     if (targetChannel) {
       const waitMsg = await message.reply({
         embeds: [{ color: PINK, description: `🌸 Counting videos in <#${targetChannel.id}>... please wait.` }]
@@ -1983,7 +1984,7 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [resultEmbed] }).catch(() => {});
     }
 
-    // ── WHOLE SERVER ──
+    // -- WHOLE SERVER --
     const waitMsg = await message.reply({
       embeds: [{ color: PINK, description: `🌸 Scanning **all channels** for videos... this may take a while.` }]
     }).catch(() => null);
@@ -2026,7 +2027,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [resultEmbed] }).catch(() => {});
   }
 
-  // ── FUN COMMANDS ─────────────────────────────────────────
+  // -- FUN COMMANDS ----------------------------------------─
 
   // ,coinflip
   if (command === "coinflip" || command === "cf") {
@@ -2087,7 +2088,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, title, description }] });
   }
 
-  // ── UTILITY ──────────────────────────────────────────────
+  // -- UTILITY ----------------------------------------------
 
   // ,announce <#channel> <message>
   if (command === "announce") {
@@ -2113,7 +2114,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `DM sent to **${target.username}**`);
   }
 
-  // ,massdm @role-to-exclude <message> — DMs all members WITHOUT a specific role
+  // ,massdm @role-to-exclude <message> -- DMs all members WITHOUT a specific role
   if (command === "massdm") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
 
@@ -2181,7 +2182,7 @@ client.on("messageCreate", async (message) => {
     );
   }
 
-  // ,setprefix — note: this bot uses , hardcoded, just inform user
+  // ,setprefix -- note: this bot uses , hardcoded, just inform user
   if (command === "setprefix") {
     return info(message, "This bot uses `,` as a fixed prefix.");
   }
@@ -2206,7 +2207,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // ,bans — list all bans
+  // ,bans -- list all bans
   if (command === "bans") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const bans = await message.guild.bans.fetch().catch(() => null);
@@ -2717,7 +2718,7 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
-  // ── ADVANCED MODERATION ─────────────────────────────────
+  // -- ADVANCED MODERATION --------------------------------─
 
   // ,tempban <user> <minutes> [reason]
   if (command === "tempban") {
@@ -2736,7 +2737,7 @@ client.on("messageCreate", async (message) => {
     }, minutes * 60 * 1000);
   }
 
-  // ,softban <user> [reason] — ban then immediately unban to delete messages
+  // ,softban <user> [reason] -- ban then immediately unban to delete messages
   if (command === "softban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -2750,7 +2751,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `softbanned **${target.user.username}** (messages deleted) | ${reason}`);
   }
 
-  // ,hardban <user> [reason] — ban + blacklist (stored in memory)
+  // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
   if (command === "hardban") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -2790,7 +2791,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `unjailed **${target.user.username}**`);
   }
 
-  // ,imute <user> [reason] — image mute
+  // ,imute <user> [reason] -- image mute
   if (command === "imute") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -2812,7 +2813,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Image unmuted **${target.user.username}**`);
   }
 
-  // ,strip <user> — removes all roles
+  // ,strip <user> -- removes all roles
   if (command === "strip") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -2862,9 +2863,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Deleted warning **#${index + 1}** for **${target.username}**`);
   }
 
-  // ,case <number> — show a moderation case from audit logs
+  // ,case <number> -- show a moderation case from audit logs
 
-  // ── WARN (update existing to store) ─────────────────────
+  // -- WARN (update existing to store) --------------------─
   // (overrides the one in 50 commands to actually store warns)
   if (command === "warn") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
@@ -2880,7 +2881,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // ── LEVELING ─────────────────────────────────────────────
+  // -- LEVELING --------------------------------------------─
 
   // ,leveling <on|off|status>
   if (command === "leveling" || command === "levels") {
@@ -2952,7 +2953,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Reset XP for **${target.user.username}**`);
   }
 
-  // ── ECONOMY ──────────────────────────────────────────────
+  // -- ECONOMY ----------------------------------------------
 
   // ,balance / ,bal [user]
   if (command === "balance" || command === "bal") {
@@ -3029,7 +3030,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "💰 Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ── REMINDERS ────────────────────────────────────────────
+  // -- REMINDERS --------------------------------------------
 
   // ,remind <time> <text> (e.g. ,remind 30m take a break)
   if (command === "remind" || command === "reminder") {
@@ -3056,7 +3057,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "⏰ Your Reminders", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ── GIVEAWAYS ────────────────────────────────────────────
+  // -- GIVEAWAYS --------------------------------------------
 
   // ,gcreate <duration> <prize> (e.g. ,gcreate 1h iPhone 15)
   if (command === "gcreate" || command === "gstart") {
@@ -3102,7 +3103,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `New winner: <@${winner}>! Congratulations!`);
   }
 
-  // ── SERVER CONFIG ────────────────────────────────────────
+  // -- SERVER CONFIG ----------------------------------------
 
   // ,autorole <@role | off>
   if (command === "autorole") {
@@ -3156,7 +3157,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Starboard set to ${channel} with threshold **${threshold}** ⭐`);
   }
 
-  // ,setup — creates jail-log channel and jailed role
+  // ,setup -- creates jail-log channel and jailed role
   if (command === "setup") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     await message.channel.sendTyping().catch(() => {});
@@ -3222,7 +3223,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "⚙️ Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ,setupmute — creates muted roles with proper channel overwrites
+  // ,setupmute -- creates muted roles with proper channel overwrites
   if (command === "setupmute") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     await message.channel.sendTyping().catch(() => {});
@@ -3255,7 +3256,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "⚙️ Mute Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ── SNIPE ────────────────────────────────────────────────
+  // -- SNIPE ------------------------------------------------
 
   // ,snipe
   if (command === "snipe" || command === "s") {
@@ -3271,7 +3272,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `🌸 edited at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
   }
 
-  // ── AFK ──────────────────────────────────────────────────
+  // -- AFK --------------------------------------------------
 
   // ,afk [reason]
   if (command === "afk") {
@@ -3280,7 +3281,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `you're now **afk** with the status: **${reason}**`);
   }
 
-  // ── LAST.FM ──────────────────────────────────────────────
+  // -- LAST.FM ----------------------------------------------
 
   // ,fm set <username>
   if (command === "fm") {
@@ -3373,12 +3374,12 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
-  // ── TICKETS ──────────────────────────────────────────────
+  // -- TICKETS ----------------------------------------------
 
   // ,ticket setup <#log-channel>
 
-  // ── CONFIG PANEL ─────────────────────────────────────────
-  // ,clone — apre il Config Panel interattivo
+  // -- CONFIG PANEL ----------------------------------------─
+  // ,clone -- apre il Config Panel interattivo
   if (command === "clone") {
     if (message.author.id !== OWNER_ID) return err(message, "Missing permissions.");
     try {
@@ -3544,11 +3545,11 @@ async function runMassDM(state) {
     // Update status every 50
     if (startIndex % 50 === 0) await updateStatus();
 
-    // 1.1s between DMs — Discord allows ~1/s
+    // 1.1s between DMs -- Discord allows ~1/s
     await new Promise(r => setTimeout(r, 1100));
   }
 
-  // Done — clear saved state
+  // Done -- clear saved state
   await clearMassDMProgress();
 
   const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -3694,7 +3695,7 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
 
-  // ,tc — close ticket (usable by creator, mods with ManageChannels, or configured mod role)
+  // ,tc -- close ticket (usable by creator, mods with ManageChannels, or configured mod role)
   if (command === "tc") {
     const _cfg = ticketConfig.get(message.guild.id);
     const _act = ticketActivity.get(message.channel.id);
@@ -3796,7 +3797,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── FUN EXTRAS ───────────────────────────────────────────
+  // -- FUN EXTRAS ------------------------------------------─
 
   // ,rps <rock|paper|scissors>
   if (command === "rps") {
@@ -3841,7 +3842,7 @@ client.on("messageCreate", async (message) => {
     collector.on("end", (_, reason) => { if (reason === "time") msg.edit(`⏰ Game timed out.\n\`\`\`${render()}\`\`\``); });
   }
 
-  // ,hack <@user> — joke command
+  // ,hack <@user> -- joke command
   if (command === "hack") {
     const target = message.mentions.users.first();
     if (!target) return err(message, "missing required argument");
@@ -3907,7 +3908,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `**WANTED**\n${target.displayAvatarURL()}\nReward: $${Math.floor(Math.random() * 1000000)}`);
   }
 
-  // ── UTILITY EXTRAS ───────────────────────────────────────
+  // -- UTILITY EXTRAS --------------------------------------─
 
   // ,uptime
   if (command === "uptime") {
@@ -3996,7 +3997,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Invites (${invites.size})`, description: list }] });
   }
 
-  // ,weather <city> — requires no API key, uses wttr.in
+  // ,weather <city> -- requires no API key, uses wttr.in
   if (command === "weather") {
     await message.channel.sendTyping().catch(() => {});
     const city = args.slice(1).join("+");
@@ -4046,7 +4047,7 @@ client.on("messageCreate", async (message) => {
 // ===== ANTINUKE & ANTIRAID SYSTEM ==================
 // ===================================================
 
-// ── CONFIG STORAGE ──────────────────────────────────
+// -- CONFIG STORAGE ----------------------------------
 const antinukeConfig = new Map();
 const antiraidConfig = new Map();
 const recentJoins = new Map();     // guildId => [{ userId, time }]
@@ -4102,7 +4103,7 @@ function trackAction(guildId, userId, actionType, threshold) {
   return times.length >= threshold;
 }
 
-// ── ANTINUKE EVENTS ─────────────────────────────────
+// -- ANTINUKE EVENTS --------------------------------─
 
 // Detect mass bans
 client.on("guildBanAdd", async (ban) => {
@@ -4213,7 +4214,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   }
 });
 
-// ── ANTIRAID EVENT ───────────────────────────────────
+// -- ANTIRAID EVENT ----------------------------------─
 client.on("guildMemberAdd", async (member) => {
   if (member.guild.id === TARGET_GUILD_ID) return;
   const cfg = getAntiRaid(member.guild.id);
@@ -4253,7 +4254,7 @@ client.on("guildMemberAdd", async (member) => {
   }
 });
 
-// ── NOTIFY OWNER HELPER ──────────────────────────────
+// -- NOTIFY OWNER HELPER ------------------------------
 async function notifyOwner(guild, message) {
   try {
     const owner = await client.users.fetch(guild.ownerId);
@@ -4261,7 +4262,7 @@ async function notifyOwner(guild, message) {
   } catch {}
 }
 
-// ── ANTINUKE & ANTIRAID COMMANDS ────────────────────
+// -- ANTINUKE & ANTIRAID COMMANDS --------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
@@ -4372,7 +4373,7 @@ client.on("messageCreate", async (message) => {
 
   }
 
-  // ,lockdown [reason] — manually lock all channels
+  // ,lockdown [reason] -- manually lock all channels
   if (command === "lockdown") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const reason = args.slice(1).join(" ") || "Manual lockdown";
@@ -4386,7 +4387,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**${count}** channels locked | ${reason}`);
   }
 
-  // ,unlockdown — unlock all channels
+  // ,unlockdown -- unlock all channels
   if (command === "unlockdown") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const channels = message.guild.channels.cache.filter(c => c.type === 0);
@@ -4399,7 +4400,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**${count}** channels unlocked.`);
   }
 
-  // ,massnick <nickname> — change all members' nicknames
+  // ,massnick <nickname> -- change all members' nicknames
   if (command === "massnick") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const nick = args.slice(1).join(" ") || null;
@@ -4414,7 +4415,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Changed nicknames for **${count}** members.` }] });
   }
 
-  // ,massrole <add|remove> <@role> — add/remove a role from everyone
+  // ,massrole <add|remove> <@role> -- add/remove a role from everyone
   if (command === "massrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const action = args[1]?.toLowerCase();
@@ -4435,7 +4436,7 @@ client.on("messageCreate", async (message) => {
 
   // ,addr inactive @role-to-add | @required-role1 @required-role2 ...
   // Adds @role-to-add to everyone who doesn't have ANY of the required roles
-  // ,inactive remove @role1 @role2 ... — kicks up to 350 members missing ALL listed roles
+  // ,inactive remove @role1 @role2 ... -- kicks up to 350 members missing ALL listed roles
   if (command === "inactive" && args[1]?.toLowerCase() === "remove") {
     if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
 
@@ -4455,7 +4456,7 @@ client.on("messageCreate", async (message) => {
       if (m.id === message.author.id) return false;
       if (m.id === OWNER_ID) return false;
       if (m.roles.highest.position >= message.guild.members.me.roles.highest.position) return false;
-      // If they have EVEN ONE of the required roles → safe
+      // If they have EVEN ONE of the required roles -> safe
       return roleIds.every(rid => !m.roles.cache.has(rid));
     }).values()].slice(0, 350); // cap at 350
 
@@ -4481,7 +4482,7 @@ client.on("messageCreate", async (message) => {
               break;
             } catch (e) {
               if (e.status === 429 || e.code === 429) {
-                // Rate limited — wait and retry
+                // Rate limited -- wait and retry
                 const wait = ((e.retryAfter || 5) * 1000) + 500;
                 log(`[InactiveRemove] Rate limited — waiting ${wait}ms`, "error");
                 await new Promise(r => setTimeout(r, wait));
@@ -4501,7 +4502,7 @@ client.on("messageCreate", async (message) => {
             }] }).catch(() => {});
           }
 
-          // 1.1s between each kick — rate limit safe
+          // 1.1s between each kick -- rate limit safe
           await new Promise(r => setTimeout(r, 1100));
         }
 
@@ -4563,7 +4564,7 @@ client.on("messageCreate", async (message) => {
     );
   }
 
-  // ,logging <#channel | off> — set mod log channel
+  // ,logging <#channel | off> -- set mod log channel
   if (command === "logging") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") {
@@ -4610,7 +4611,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Changed **${role.name}** color to **${color}**`);
   }
 
-  // ,roleall — list all roles
+  // ,roleall -- list all roles
   if (command === "roleall" || command === "roles") {
     const roles = message.guild.roles.cache.sort((a, b) => b.position - a.position);
     const list = roles.map(r => `<@&${r.id}> (${r.members.size})`).slice(0, 20).join("\n");
@@ -4648,7 +4649,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Created category **${cat.name}**`);
   }
 
-  // ,modlogs [user] — show recent audit log entries
+  // ,modlogs [user] -- show recent audit log entries
   if (command === "modlogs") {
     if (!message.member.permissions.has(PermissionFlagsBits.ViewAuditLog)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
@@ -4661,7 +4662,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "📋 Mod Logs", description: lines.join("\n\n").substring(0, 4096) }] });
   }
 
-  // ,timeout <user> <duration> [reason] — discord native timeout
+  // ,timeout <user> <duration> [reason] -- discord native timeout
   if (command === "timeout") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -4701,21 +4702,21 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `🔨 Ban Info`, fields: [{ name: "User", value: ban.user.username, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
   }
 
-  // ,memberinfo <user> — detailed member info
+  // ,memberinfo <user> -- detailed member info
   if (command === "memberinfo" || command === "mi") {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
     const perms = target.permissions.toArray().slice(0, 5).join(", ");
     return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? `<t:${Math.floor(target.premiumSinceTimestamp / 1000)}:R>` : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
   }
 
-  // ,whois <user> — alias for memberinfo
+  // ,whois <user> -- alias for memberinfo
   if (command === "whois") {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
     const perms = target.permissions.toArray().slice(0, 5).join(", ");
     return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes ✅" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
   }
 
-  // ,newmembers [count] — show most recently joined members
+  // ,newmembers [count] -- show most recently joined members
   if (command === "newmembers") {
     await message.channel.sendTyping().catch(() => {});
     const count = Math.min(parseInt(args[1]) || 10, 20);
@@ -4724,7 +4725,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `🆕 Newest Members`, description: lines.join("\n") }] });
   }
 
-  // ,oldmembers [count] — show oldest members
+  // ,oldmembers [count] -- show oldest members
   if (command === "oldmembers") {
     await message.channel.sendTyping().catch(() => {});
     const count = Math.min(parseInt(args[1]) || 10, 20);
@@ -4733,7 +4734,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `👴 Oldest Members`, description: lines.join("\n") }] });
   }
 
-  // ,inrole <@role> — list members with a role
+  // ,inrole <@role> -- list members with a role
   if (command === "inrole") {
     const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
     if (!role) return err(message, "missing required argument: **role**");
@@ -4743,7 +4744,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: role.color || PINK, title: `${role.name} (${members.size})`, description: list }] });
   }
 
-  // ,boostinfo — show all server boosters
+  // ,boostinfo -- show all server boosters
   if (command === "boostinfo" || command === "boosters") {
     const boosters = message.guild.members.cache.filter(m => m.premiumSince);
     if (boosters.size === 0) return message.reply("No boosters.");
@@ -4765,7 +4766,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Banner`, image: { url } }] });
   }
 
-  // ,bind staff <@role> — mark role as staff (for antinuke)
+  // ,bind staff <@role> -- mark role as staff (for antinuke)
   if (command === "bind") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const sub = args[1]?.toLowerCase();
@@ -4792,7 +4793,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, "snipe cleared");
   }
 
-  // ,identify <userId> — look up a user by ID
+  // ,identify <userId> -- look up a user by ID
   if (command === "identify" || command === "lookup") {
     const userId = args[1];
     if (!userId) return err(message, "missing required argument: **userId**");
@@ -4807,7 +4808,7 @@ client.on("messageCreate", async (message) => {
 // ===== EXTENDED MODERATION (130+ commands) =========
 // ===================================================
 
-// ── AUTOMOD / FILTER SYSTEM ─────────────────────────
+// -- AUTOMOD / FILTER SYSTEM ------------------------─
 const filterConfig = new Map();
 const spamTracker = new Map();    // userId-guildId => [timestamps]
 const automodExempt = new Map();
@@ -4880,7 +4881,7 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
 
-  // ── PURGE FILTERS ───────────────────────────────────
+  // -- PURGE FILTERS ----------------------------------─
 
   // ,purge bots [amount]
   if (command === "purge" && args[1] === "bots") {
@@ -4922,7 +4923,7 @@ client.on("messageCreate", async (message) => {
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
-  // ,purge user <@user|id> — deletes ALL messages from user in this channel
+  // ,purge user <@user|id> -- deletes ALL messages from user in this channel
   if (command === "purge" && args[1] === "user") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
@@ -5017,7 +5018,7 @@ client.on("messageCreate", async (message) => {
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
-  // ── FILTER / AUTOMOD COMMANDS ────────────────────────
+  // -- FILTER / AUTOMOD COMMANDS ------------------------
 
   // ,filter <on|off|add|remove|list|links|invites|caps|spam|mentions>
   if (command === "filter") {
@@ -5073,7 +5074,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── MOD LOG SETUP ────────────────────────────────────
+  // -- MOD LOG SETUP ------------------------------------
 
   // ,modlog <#channel | off>
   if (command === "modlog" || command === "modlogs" && args[1]?.startsWith("<#")) {
@@ -5086,9 +5087,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Mod logs → ${ch}`);
   }
 
-  // ── HACKBAN ──────────────────────────────────────────
+  // -- HACKBAN ------------------------------------------
 
-  // ,hackban <userId> [reason] — ban user not in server
+  // ,hackban <userId> [reason] -- ban user not in server
   if (command === "hackban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
@@ -5100,7 +5101,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `hackbanned user **${userId}** | ${reason}`);
   }
 
-  // ,unbanall — unban everyone
+  // ,unbanall -- unban everyone
   if (command === "unbanall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const bans = await message.guild.bans.fetch();
@@ -5111,7 +5112,7 @@ client.on("messageCreate", async (message) => {
     });
   }
 
-  // ,banreason <userId> <reason> — update ban reason
+  // ,banreason <userId> <reason> -- update ban reason
   if (command === "banreason") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const userId = args[1];
@@ -5125,9 +5126,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `ban reason updated for **${userId}**`);
   }
 
-  // ── HISTORY ──────────────────────────────────────────
+  // -- HISTORY ------------------------------------------
 
-  // ,history <@user> — show all moderation actions for a user
+  // ,history <@user> -- show all moderation actions for a user
   if (command === "history") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
@@ -5151,7 +5152,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Cleared history for **${target.username}**`);
   }
 
-  // ── ROLE MANAGEMENT EXTENDED ─────────────────────────
+  // -- ROLE MANAGEMENT EXTENDED ------------------------─
 
   // ,roleicon <@role> <emoji>
   if (command === "roleicon") {
@@ -5164,7 +5165,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Set icon for **${role.name}**`);
   }
 
-  // ,rolehoist <@role> — toggle hoist
+  // ,rolehoist <@role> -- toggle hoist
   if (command === "rolehoist") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -5174,7 +5175,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**${role.name}** hoist: **${!role.hoist}**`);
   }
 
-  // ,rolemention <@role> — toggle mentionable
+  // ,rolemention <@role> -- toggle mentionable
   if (command === "rolemention") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -5184,7 +5185,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**${role.name}** mentionable: **${!role.mentionable}**`);
   }
 
-  // ,giverole <@user> <@role> — alias
+  // ,giverole <@user> <@role> -- alias
   if (command === "giverole" || command === "addrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
@@ -5195,7 +5196,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Added **${role.name}** to **${target.user.username}**`);
   }
 
-  // ,takerole <@user> <@role> — alias
+  // ,takerole <@user> <@role> -- alias
   if (command === "takerole" || command === "removerole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first();
@@ -5206,7 +5207,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Removed **${role.name}** from **${target.user.username}**`);
   }
 
-  // ,roleperms <@role> — show role permissions
+  // ,roleperms <@role> -- show role permissions
   if (command === "roleperms") {
     const role = message.mentions.roles.first();
     if (!role) return err(message, "missing required argument");
@@ -5215,7 +5216,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: role.color || PINK, title: `Permissions: ${role.name}`, description: perms.length > 0 ? perms.join(", ") : "No permissions" }] });
   }
 
-  // ── CHANNEL MANAGEMENT EXTENDED ──────────────────────
+  // -- CHANNEL MANAGEMENT EXTENDED ----------------------
 
   // ,channelclone [#channel]
   if (command === "channelclone") {
@@ -5226,7 +5227,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Cloned to ${clone}`);
   }
 
-  // ,lockall — lock all text channels
+  // ,lockall -- lock all text channels
   if (command === "lockall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const channels = message.guild.channels.cache.filter(c => c.type === 0);
@@ -5234,7 +5235,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Locked **${channels.size}** channels.`);
   }
 
-  // ,unlockall — unlock all text channels
+  // ,unlockall -- unlock all text channels
   if (command === "unlockall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const channels = message.guild.channels.cache.filter(c => c.type === 0);
@@ -5242,7 +5243,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Unlocked **${channels.size}** channels.`);
   }
 
-  // ,hideall — hide all channels from everyone
+  // ,hideall -- hide all channels from everyone
   if (command === "hideall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const channels = message.guild.channels.cache.filter(c => c.type === 0);
@@ -5267,7 +5268,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(seconds === 0 ? `✅ Slowmode disabled in all channels.` : `✅ Slowmode set to **${seconds}s** in all channels.`);
   }
 
-  // ── VOICE MODERATION ─────────────────────────────────
+  // -- VOICE MODERATION --------------------------------─
 
   // ,vcmute <@user>
   if (command === "vcmute") {
@@ -5327,7 +5328,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Moved **${target.user.username}** to ${channel}`);
   }
 
-  // ,vcmuteall — mute everyone in a voice channel
+  // ,vcmuteall -- mute everyone in a voice channel
   if (command === "vcmuteall") {
     if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
     const vc = message.member.voice.channel;
@@ -5345,9 +5346,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Unmuted **${vc.members.size}** members in **${vc.name}**`);
   }
 
-  // ── SERVER SETTINGS ──────────────────────────────────
+  // -- SERVER SETTINGS ----------------------------------
 
-  // ,setname <n> — rename server
+  // ,setname <n> -- rename server
   if (command === "setname") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const name = args.slice(1).join(" ");
@@ -5365,7 +5366,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Server description ${desc ? "updated" : "cleared"}.`);
   }
 
-  // ,vanity — show server vanity URL
+  // ,vanity -- show server vanity URL
   if (command === "vanity") {
     const vanity = message.guild.vanityURLCode;
     if (!vanity) return err(message, "This server has no vanity URL.");
@@ -5394,7 +5395,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Content filter set to **${args[1]}**`);
   }
 
-  // ,invitecheck — show all invites and their usage
+  // ,invitecheck -- show all invites and their usage
   if (command === "invitecheck") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const invites = await message.guild.invites.fetch().catch(() => null);
@@ -5414,7 +5415,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Deleted invite **${code}**`);
   }
 
-  // ,deleteallinvites — delete all invites
+  // ,deleteallinvites -- delete all invites
   if (command === "deleteallinvites") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const invites = await message.guild.invites.fetch().catch(() => null);
@@ -5423,7 +5424,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Deleted **${invites.size}** invites.`);
   }
 
-  // ── REACTION ROLES ────────────────────────────────────
+  // -- REACTION ROLES ------------------------------------
   // ,reactionrole <messageId> <emoji> <@role>
   if (command === "reactionrole" || command === "rr") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
@@ -5440,9 +5441,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Reaction role set: ${emoji} → **${role.name}**`);
   }
 
-  // ── USEFUL EXTRAS ─────────────────────────────────────
+  // -- USEFUL EXTRAS ------------------------------------─
 
-  // ,massban <userId1> <userId2> ... — ban multiple users
+  // ,massban <userId1> <userId2> ... -- ban multiple users
   if (command === "massban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
@@ -5469,7 +5470,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Kicked **${targets.length}** users.` }] });
   }
 
-  // ,timeout all <duration> — timeout everyone
+  // ,timeout all <duration> -- timeout everyone
   if (command === "timeoutall") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const timeStr = args[1];
@@ -5498,7 +5499,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Removed all timeouts.`);
   }
 
-  // ,note <@user> <text> — add a private note to a user
+  // ,note <@user> <text> -- add a private note to a user
   if (command === "note") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
@@ -5512,7 +5513,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Note added for **${target.username}**`);
   }
 
-  // ,notes <@user> — view notes
+  // ,notes <@user> -- view notes
   if (command === "notes") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
@@ -5531,7 +5532,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Cleared notes for **${target.username}**`);
   }
 
-  // ,moved <@user> <#channel> — move user messages context (just informs)
+  // ,moved <@user> <#channel> -- move user messages context (just informs)
   if (command === "move") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
@@ -5541,7 +5542,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${target.username}** please continue in ${channel}`);
   }
 
-  // ,report <@user> <reason> — report a user to mods
+  // ,report <@user> <reason> -- report a user to mods
   if (command === "report") {
     const target = message.mentions.users.first();
     const reason = args.slice(2).join(" ");
@@ -5576,10 +5577,10 @@ client.on("messageReactionRemove", async (reaction, user) => {
 });
 
 // ===================================================
-// ===== MASSIVE EXTENSION — 250+ NEW COMMANDS =======
+// ===== MASSIVE EXTENSION -- 250+ NEW COMMANDS =======
 // ===================================================
 
-// ── IN-MEMORY STORES ────────────────────────────────
+// -- IN-MEMORY STORES --------------------------------
 const vanityLock = new Map();
 const customCommands = new Map();
 const disabledCommands = new Map();
@@ -5617,7 +5618,7 @@ function addCase(guildId, type, userId, modId, reason) {
   return id;
 }
 
-// ── VANITY LOCK MONITOR ──────────────────────────────
+// -- VANITY LOCK MONITOR ------------------------------
 setInterval(async () => {
   for (const [guildId, cfg] of vanityLock.entries()) {
     if (!cfg.locked || !cfg.code) continue;
@@ -5627,9 +5628,9 @@ setInterval(async () => {
       const vanityData = await guild.fetchVanityData().catch(() => null);
       if (!vanityData) continue;
       if (vanityData.code !== cfg.code) {
-        // Vanity was changed — revert it
+        // Vanity was changed -- revert it
         await guild.setVanityCode(cfg.code).catch(async () => {
-          // Can't revert — notify owner
+          // Can't revert -- notify owner
           const owner = await client.users.fetch(guild.ownerId).catch(() => null);
           if (owner) await owner.send(`🚨 **Vanity Lock Alert!**\nVanity \`${cfg.code}\` was changed and could NOT be restored!\nCurrent: \`${vanityData.code}\``).catch(() => {});
         });
@@ -5642,7 +5643,7 @@ setInterval(async () => {
   }
 }, 15000);
 
-// ── BUMP REMINDER ────────────────────────────────────
+// -- BUMP REMINDER ------------------------------------
 client.on("messageCreate", async (message) => {
   if (message.author.id === "302050872383242240" && message.embeds[0]?.description?.includes("Bump done")) {
     const cfg = bumpReminder.get(message.guild?.id);
@@ -5666,7 +5667,7 @@ setInterval(async () => {
   }
 }, 60000);
 
-// ── STICKY MESSAGES ──────────────────────────────────
+// -- STICKY MESSAGES ----------------------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   const sticky = stickyMessages.get(message.channel.id);
@@ -5679,7 +5680,7 @@ client.on("messageCreate", async (message) => {
   stickyMessages.set(message.channel.id, sticky);
 });
 
-// ── AUTO RESPONDERS ──────────────────────────────────
+// -- AUTO RESPONDERS ----------------------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   const responders = autoResponders.get(message.guild.id) || [];
@@ -5692,7 +5693,7 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// ── JOIN TO CREATE ────────────────────────────────────
+// -- JOIN TO CREATE ------------------------------------
 client.on("voiceStateUpdate", async (oldState, newState) => {
   const guildId = newState.guild.id;
   const cfg = joinToCreate.get(guildId);
@@ -5718,7 +5719,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
   }
 });
 
-// ── BIRTHDAY CHECKER ─────────────────────────────────
+// -- BIRTHDAY CHECKER --------------------------------─
 setInterval(async () => {
   const now = new Date();
   const day = now.getDate();
@@ -5740,7 +5741,7 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000); // check every hour
 
-// ── CUSTOM COMMAND HANDLER ────────────────────────────
+// -- CUSTOM COMMAND HANDLER ----------------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
@@ -5768,7 +5769,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send(ccResponse.replace("{user}", message.author.toString()).replace("{server}", message.guild.name).replace("{count}", message.guild.memberCount));
   }
 
-  // ── VANITY COMMANDS ───────────────────────────────────
+  // -- VANITY COMMANDS ----------------------------------─
 
   if (command === "vanitylock") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -5797,7 +5798,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ,vanitytransfer <code> — claim a vanity for the server
+  // ,vanitytransfer <code> -- claim a vanity for the server
   if (command === "vanitytransfer") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const code = args[1];
@@ -5807,7 +5808,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Vanity URL set to **discord.gg/${code}**`);
   }
 
-  // ── CASE SYSTEM ───────────────────────────────────────
+  // -- CASE SYSTEM --------------------------------------─
 
   // ,case <id>
   if (command === "case") {
@@ -5855,9 +5856,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Case #${id} deleted.`);
   }
 
-  // ── WARN THRESHOLDS ───────────────────────────────────
+  // -- WARN THRESHOLDS ----------------------------------─
 
-  // ,warnthreshold <count> <action> — e.g. ,warnthreshold 3 mute
+  // ,warnthreshold <count> <action> -- e.g. ,warnthreshold 3 mute
   if (command === "warnthreshold") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const count = parseInt(args[1]);
@@ -5871,14 +5872,14 @@ client.on("messageCreate", async (message) => {
     saveAllConfigs();return ok(message, `At **${count}** warns → **${action}**`);
   }
 
-  // ,warnthresholds — list all thresholds
+  // ,warnthresholds -- list all thresholds
   if (command === "warnthresholds") {
     const list = warnThresholds.get(guildId) || [];
     if (list.length === 0) return message.reply("No warn thresholds set.");
     return message.reply({ embeds: [{ color: PINK, title: "⚠️ Warn Thresholds", description: list.map(t => `**${t.count}** warns → **${t.action}**`).join("\n") }] });
   }
 
-  // ── CUSTOM COMMANDS ───────────────────────────────────
+  // -- CUSTOM COMMANDS ----------------------------------─
 
   // ,cc add <name> <response>
   if (command === "cc") {
@@ -5908,7 +5909,7 @@ client.on("messageCreate", async (message) => {
 
   }
 
-  // ── ALIASES ───────────────────────────────────────────
+  // -- ALIASES ------------------------------------------─
 
   // ,alias add <alias> <command>
   if (command === "alias") {
@@ -5934,7 +5935,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── DISABLE COMMANDS ──────────────────────────────────
+  // -- DISABLE COMMANDS ----------------------------------
 
   // ,disable <command>
   if (command === "disable") {
@@ -5957,14 +5958,14 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Command \`,${cmd}\` enabled.`);
   }
 
-  // ,disabled — list disabled commands
+  // ,disabled -- list disabled commands
   if (command === "disabled") {
     const set = disabledCommands.get(guildId);
     if (!set || set.size === 0) return message.reply("No commands are disabled.");
     return info(message, `disabled: ${[...set].map(c => "`,"+c+"`").join(", ")}`);
   }
 
-  // ── AUTO RESPONDERS ───────────────────────────────────
+  // -- AUTO RESPONDERS ----------------------------------─
 
   // ,autorespond add <trigger> | <response>
   if (command === "autorespond" || command === "ar") {
@@ -5996,7 +5997,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── REACTION TRIGGERS ─────────────────────────────────
+  // -- REACTION TRIGGERS --------------------------------─
 
   // ,reactiontrigger add <trigger> <emoji>
   if (command === "reactiontrigger" || command === "rt") {
@@ -6035,7 +6036,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── STICKY MESSAGES ───────────────────────────────────
+  // -- STICKY MESSAGES ----------------------------------─
 
   // ,sticky <message>
   if (command === "sticky") {
@@ -6053,7 +6054,7 @@ client.on("messageCreate", async (message) => {
     message.delete().catch(() => {});
   }
 
-  // ── COUNTERS ──────────────────────────────────────────
+  // -- COUNTERS ------------------------------------------
 
   // ,counter create <name> <#channel> <type: members|bots|all|custom>
   if (command === "counter") {
@@ -6098,7 +6099,7 @@ client.on("messageCreate", async (message) => {
     }
   });
 
-  // ── CONFESSIONS ───────────────────────────────────────
+  // -- CONFESSIONS --------------------------------------─
 
   // ,confessions <#channel | off>
   if (command === "confessions") {
@@ -6125,7 +6126,7 @@ client.on("messageCreate", async (message) => {
     await message.author.send("✅ Your confession was submitted anonymously.").catch(() => {});
   }
 
-  // ── BUMP REMINDER ─────────────────────────────────────
+  // -- BUMP REMINDER ------------------------------------─
 
   // ,bumpchannel <#channel>
   if (command === "bumpchannel") {
@@ -6139,7 +6140,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Bump reminder set in ${ch} (reminds 2h after last bump)`);
   }
 
-  // ── JOIN TO CREATE ────────────────────────────────────
+  // -- JOIN TO CREATE ------------------------------------
 
   // ,jointocreate <#voicechannel>
   if (command === "jointocreate" || command === "jtc") {
@@ -6153,9 +6154,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Join **${ch.name}** to create your own voice channel.`);
   }
 
-  // ── BOOSTER ROLES ─────────────────────────────────────
+  // -- BOOSTER ROLES ------------------------------------─
 
-  // ,boosterrole create — creates a custom role for the booster
+  // ,boosterrole create -- creates a custom role for the booster
   if (command === "boosterrole") {
     const sub = args[1]?.toLowerCase();
     if (sub === "create") {
@@ -6208,7 +6209,7 @@ client.on("messageCreate", async (message) => {
 
   }
 
-  // ── BIRTHDAY ──────────────────────────────────────────
+  // -- BIRTHDAY ------------------------------------------
 
   // ,birthday set <day> <month>
   if (command === "birthday") {
@@ -6258,9 +6259,9 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${target.username}**'s birthday: **${bd.day}/${bd.month}**`);
   }
 
-  // ── FAKE PERMISSIONS ──────────────────────────────────
+  // -- FAKE PERMISSIONS ----------------------------------
 
-  // ,fakeperm <@role> <permission> — grant "fake" permissions via role check
+  // ,fakeperm <@role> <permission> -- grant "fake" permissions via role check
   if (command === "fakeperm") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const sub = args[1]?.toLowerCase();
@@ -6294,9 +6295,9 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── IGNORE LIST ───────────────────────────────────────
+  // -- IGNORE LIST --------------------------------------─
 
-  // ,ignore <@user> — bot ignores all commands from user
+  // ,ignore <@user> -- bot ignores all commands from user
   if (command === "ignore") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
@@ -6319,9 +6320,9 @@ client.on("messageCreate", async (message) => {
     return info(message, `ignored: ${[...set].map(id => "<@"+id+">").join(", ")}`);
   }
 
-  // ── LOGGING EVENTS ────────────────────────────────────
+  // -- LOGGING EVENTS ------------------------------------
 
-  // ,log <event> <#channel> — configure what to log where
+  // ,log <event> <#channel> -- configure what to log where
   if (command === "log") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const events = ["ban", "kick", "mute", "warn", "join", "leave", "message", "voice", "role", "channel", "nickname", "invite"];
@@ -6336,7 +6337,7 @@ client.on("messageCreate", async (message) => {
     saveAllConfigs();return ok(message, `**${sub}** events logged to ${ch}`);
   }
 
-  // ── BLACKLIST ─────────────────────────────────────────
+  // -- BLACKLIST ----------------------------------------─
 
   // ,blacklist add <word>
   if (command === "blacklist") {
@@ -6367,9 +6368,9 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── SERVER INFO EXTRAS ────────────────────────────────
+  // -- SERVER INFO EXTRAS --------------------------------
 
-  // ,channellist — list all channels
+  // ,channellist -- list all channels
   if (command === "channellist") {
     const cats = message.guild.channels.cache.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
     let desc = "";
@@ -6381,7 +6382,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
   }
 
-  // ,channel list — elenca tutti i canali del server raggruppati per categoria
+  // ,channel list -- elenca tutti i canali del server raggruppati per categoria
   if (command === "channel" && args[1]?.toLowerCase() === "list") {
     const guild = message.guild;
 
@@ -6487,7 +6488,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // ,rolelist — alias for roles
+  // ,rolelist -- alias for roles
   if (command === "rolelist") {
     const roles = message.guild.roles.cache.sort((a, b) => b.position - a.position).filter(r => r.id !== message.guild.id);
     const list = roles.map(r => `<@&${r.id}>`).slice(0, 30).join(", ");
@@ -6508,14 +6509,14 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: sticker.name, description: sticker.description, thumbnail: { url: sticker.url }, fields: [{ name: "ID", value: sticker.id }, { name: "Format", value: sticker.format }] }] });
   }
 
-  // ,stickers — list all stickers
+  // ,stickers -- list all stickers
   if (command === "stickers") {
     const stickers = message.guild.stickers.cache;
     if (stickers.size === 0) return message.reply("No custom stickers.");
     return message.reply({ embeds: [{ color: PINK, title: `Stickers (${stickers.size})`, description: stickers.map(s => `**${s.name}** — ${s.description || "No description"}`).join("\n") }] });
   }
 
-  // ,permissions <@user|@role> — check permissions in current channel
+  // ,permissions <@user|@role> -- check permissions in current channel
   if (command === "permissions" || command === "perms") {
     const target = message.mentions.members.first() || message.member;
     const perms = message.channel.permissionsFor(target);
@@ -6523,26 +6524,26 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Permissions: ${target.user.username}`, description: allowed.substring(0, 4096) }] });
   }
 
-  // ,shared <userId> — mutual servers (can only check if user in cache)
+  // ,shared <userId> -- mutual servers (can only check if user in cache)
   if (command === "shared") {
     const userId = args[1] || message.author.id;
     const shared = client.guilds.cache.filter(g => g.members.cache.has(userId));
     return info(message, `Shared servers: **${shared.size}**\n${shared.map(g => g.name).join(", ")}`);
   }
 
-  // ,joined <@user> — when did user join
+  // ,joined <@user> -- when did user join
   if (command === "joined") {
     const target = message.mentions.members.first() || message.member;
     return info(message, `**${target.user.username}** joined <t:${Math.floor(target.joinedTimestamp / 1000)}:R>`);
   }
 
-  // ,created <@user> — when was account created
+  // ,created <@user> -- when was account created
   if (command === "created") {
     const target = message.mentions.users.first() || message.author;
     return info(message, `**${target.username}** account created <t:${Math.floor(target.createdTimestamp / 1000)}:R>`);
   }
 
-  // ,mutual — check mutual servers with a user
+  // ,mutual -- check mutual servers with a user
   if (command === "mutual") {
     const target = message.mentions.users.first();
     if (!target) return err(message, "missing required argument");
@@ -6552,9 +6553,9 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${mutual.size}** mutual servers with **${target.username}**: ${mutual.map(g => g.name).join(", ")}`);
   }
 
-  // ── UTILITY EXTRAS ────────────────────────────────────
+  // -- UTILITY EXTRAS ------------------------------------
 
-  // ,timestamp <date> — convert date to Discord timestamp
+  // ,timestamp <date> -- convert date to Discord timestamp
   if (command === "timestamp") {
     const dateStr = args.slice(1).join(" ");
     const date = dateStr ? new Date(dateStr) : new Date();
@@ -6563,7 +6564,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "🕐 Timestamps", description: `\`<t:${ts}>\` → <t:${ts}>\n\`<t:${ts}:R>\` → <t:${ts}:R>\n\`<t:${ts}:F>\` → <t:${ts}:F>\n\`<t:${ts}:D>\` → <t:${ts}:D>` }] });
   }
 
-  // ,charinfo <text> — unicode info
+  // ,charinfo <text> -- unicode info
   if (command === "charinfo") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6572,7 +6573,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(chars.join("\n"));
   }
 
-  // ,color <#hex> — show color info
+  // ,color <#hex> -- show color info
   if (command === "color") {
     const hex = args[1]?.replace("#", "");
     if (!hex || !/^[0-9A-Fa-f]{6}$/.test(hex)) return err(message, "missing required argument");
@@ -6583,7 +6584,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: parseInt(hex, 16), title: `#${hex.toUpperCase()}`, fields: [{ name: "RGB", value: `${r}, ${g}, ${b}`, inline: true }, { name: "Decimal", value: `${parseInt(hex, 16)}`, inline: true }] }] });
   }
 
-  // ,encode <text> — base64 encode
+  // ,encode <text> -- base64 encode
   if (command === "encode") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6591,7 +6592,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `encoded: \`${Buffer.from(text).toString("base64")}\``);
   }
 
-  // ,decode <base64> — base64 decode
+  // ,decode <base64> -- base64 decode
   if (command === "decode") {
     const text = args[1];
     if (!text) return err(message, "missing required argument");
@@ -6601,7 +6602,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Invalid base64."); }
   }
 
-  // ,binary <text> — text to binary
+  // ,binary <text> -- text to binary
   if (command === "binary") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6628,7 +6629,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(args.slice(1).join(" ").toLowerCase() || "❌ No text provided.");
   }
 
-  // ,mock <text> — SpOnGeBoB mOcKiNg
+  // ,mock <text> -- SpOnGeBoB mOcKiNg
   if (command === "mock") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6636,7 +6637,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(text.split("").map((c, i) => i % 2 === 0 ? c.toLowerCase() : c.toUpperCase()).join(""));
   }
 
-  // ,clap <text> — add 👏 between words
+  // ,clap <text> -- add 👏 between words
   if (command === "clap") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6699,7 +6700,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Translation failed."); }
   }
 
-  // ,qr <text> — generate QR code
+  // ,qr <text> -- generate QR code
   if (command === "qr") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
@@ -6715,9 +6716,9 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: "📸 Screenshot", image: { url: `https://api.apiflash.com/v1/urltoimage?access_key=free&url=${encodeURIComponent(url)}&width=1280&height=720` } }] });
   }
 
-  // ── FUN EXTRAS ────────────────────────────────────────
+  // -- FUN EXTRAS ----------------------------------------
 
-  // ,meme — random meme
+  // ,meme -- random meme
   if (command === "meme") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6727,7 +6728,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch meme."); }
   }
 
-  // ,joke — random joke
+  // ,joke -- random joke
   if (command === "joke") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6737,7 +6738,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch joke."); }
   }
 
-  // ,fact — random fact
+  // ,fact -- random fact
   if (command === "fact") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6747,7 +6748,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch fact."); }
   }
 
-  // ,quote — random quote
+  // ,quote -- random quote
   if (command === "quote") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6777,7 +6778,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch dog fact."); }
   }
 
-  // ,cat — random cat image
+  // ,cat -- random cat image
   if (command === "cat") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6787,7 +6788,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch cat."); }
   }
 
-  // ,dog — random dog image
+  // ,dog -- random dog image
   if (command === "dog") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6797,7 +6798,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch dog."); }
   }
 
-  // ,fox — random fox image
+  // ,fox -- random fox image
   if (command === "fox") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6807,7 +6808,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch fox."); }
   }
 
-  // ,duck — random duck image
+  // ,duck -- random duck image
   if (command === "duck") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -6827,7 +6828,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch panda."); }
   }
 
-  // ,wyr — would you rather
+  // ,wyr -- would you rather
   if (command === "wyr") {
     const questions = [
       "Be able to fly or be invisible?",
@@ -6872,7 +6873,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `${target.toString()}: ${compliments[Math.floor(Math.random() * compliments.length)]}`);
   }
 
-  // ,insult [user] — fun/silly only
+  // ,insult [user] -- fun/silly only
   if (command === "insult") {
     const target = message.mentions.users.first() || message.author;
     const insults = ["You're as useful as a screen door on a submarine!", "You're not stupid, you just have bad luck thinking!", "I'd agree with you but then we'd both be wrong!", "You're not the dumbest person alive, but you better hope they don't die!"];
@@ -6887,7 +6888,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `\`\`\`\n${text}\n\`\`\``);
   }
 
-  // ,slots — slot machine
+  // ,slots -- slot machine
   if (command === "slots") {
     const symbols = ["🍎", "🍋", "🍇", "⭐", "💎", "7️⃣"];
     const s = () => symbols[Math.floor(Math.random() * symbols.length)];
@@ -6896,7 +6897,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `${r.join(" | ")}\n${win ? "🎉 **JACKPOT!**" : "😔 Try again!"}`);
   }
 
-  // ,dice <NdN> — e.g. ,dice 2d6
+  // ,dice <NdN> -- e.g. ,dice 2d6
   if (command === "dice") {
     const notation = args[1] || "1d6";
     const match = notation.match(/^(\d+)d(\d+)$/i);
@@ -6910,7 +6911,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `Rolled **${notation}**: [${rolls.join(", ")}] = **${total}**`);
   }
 
-  // ,numberguess — start a number guessing game
+  // ,numberguess -- start a number guessing game
   if (command === "numberguess" || command === "guess") {
     const secret = Math.floor(Math.random() * 100) + 1;
     await message.reply("🔢 I'm thinking of a number between 1-100. You have 10 seconds to guess! Type your number:");
@@ -6925,9 +6926,9 @@ client.on("messageCreate", async (message) => {
     collector.on("end", () => { if (!guessed) message.channel.send(`⏰ Time's up! The number was **${secret}**.`); });
   }
 
-  // ── APPEAL SYSTEM ─────────────────────────────────────
+  // -- APPEAL SYSTEM ------------------------------------─
 
-  // ,appeal <reason> — submit ban appeal via DM
+  // ,appeal <reason> -- submit ban appeal via DM
   if (command === "appeal") {
     const reason = args.slice(1).join(" ");
     if (!reason) return err(message, "missing required argument");
@@ -6941,10 +6942,10 @@ client.on("messageCreate", async (message) => {
 });
 
 // ===================================================
-// ===== EXTENSION 2 — 150+ MORE COMMANDS ============
+// ===== EXTENSION 2 -- 150+ MORE COMMANDS ============
 // ===================================================
 
-// ── MORE IN-MEMORY STORES ────────────────────────────
+// -- MORE IN-MEMORY STORES ----------------------------
 const pollData = new Map();          // messageId => { question, options, votes: Map<userId, optionIndex> }
 const todoLists = new Map();         // userId => [{ text, done }]
 const tagData = new Map();           // guildId-name => { content, author }
@@ -6970,7 +6971,7 @@ client.on("messageCreate", async (message) => {
 
   const guildId = message.guild.id;
 
-  // ── POLL SYSTEM (advanced) ───────────────────────────
+  // -- POLL SYSTEM (advanced) --------------------------─
 
   // ,poll create <question> | <opt1> | <opt2> | ...
   if (command === "poll" && args[1] === "create") {
@@ -7009,9 +7010,9 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch poll message."); }
   }
 
-  // ── TAG SYSTEM ───────────────────────────────────────
+  // -- TAG SYSTEM --------------------------------------─
 
-  // ,tag <n> — show tag
+  // ,tag <n> -- show tag
   if (command === "tag") {
     const sub = args[1]?.toLowerCase();
     if (sub === "create" || sub === "add") {
@@ -7055,7 +7056,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send(tag.content.replace("{user}", message.author.toString())).catch(() => null);
   }
 
-  // ── TODO LIST ────────────────────────────────────────
+  // -- TODO LIST ----------------------------------------
 
   // ,todo add <text>
   if (command === "todo") {
@@ -7091,7 +7092,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── HIGHLIGHTS ────────────────────────────────────────
+  // -- HIGHLIGHTS ----------------------------------------
 
   // ,highlight add <word>
   if (command === "highlight" || command === "hl") {
@@ -7118,9 +7119,9 @@ client.on("messageCreate", async (message) => {
     if (sub === "clear") { highlights.delete(message.author.id); return ok(message, "Highlights cleared."); }
   }
 
-  // ── SERVER STATS ──────────────────────────────────────
+  // -- SERVER STATS --------------------------------------
 
-  // ,serverstats — detailed server statistics
+  // ,serverstats -- detailed server statistics
   if (command === "serverstats") {
     await message.channel.sendTyping().catch(() => {});
     const g = message.guild;
@@ -7143,7 +7144,7 @@ client.on("messageCreate", async (message) => {
     ] }] });
   }
 
-  // ,joincount — how many people joined today
+  // ,joincount -- how many people joined today
   if (command === "joincount") {
     await message.channel.sendTyping().catch(() => {});
     const members = await message.guild.members.fetch();
@@ -7166,9 +7167,9 @@ client.on("messageCreate", async (message) => {
     return info(message, `🟢 **${online}** online | 🌙 **${idle}** idle | ⛔ **${dnd}** dnd`);
   }
 
-  // ── USER SEARCH ───────────────────────────────────────
+  // -- USER SEARCH --------------------------------------─
 
-  // ,find <query> — search members by name
+  // ,find <query> -- search members by name
   if (command === "find" || command === "search") {
     const query = args.slice(1).join(" ").toLowerCase();
     if (!query) return err(message, "missing required argument");
@@ -7189,28 +7190,28 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${role.name}** has **${role.members.size}** members`);
   }
 
-  // ,admins — list all server admins
+  // ,admins -- list all server admins
   if (command === "admins") {
     const admins = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot);
     if (admins.size === 0) return message.reply("No admins found.");
     return message.reply({ embeds: [{ color: PINK, title: `👑 Admins (${admins.size})`, description: admins.map(m => m.user.username).join("\n") }] });
   }
 
-  // ,mods — list members with ban/kick permissions
+  // ,mods -- list members with ban/kick permissions
   if (command === "mods") {
     const mods = message.guild.members.cache.filter(m => (m.permissions.has(PermissionFlagsBits.BanMembers) || m.permissions.has(PermissionFlagsBits.KickMembers)) && !m.user.bot && !m.permissions.has(PermissionFlagsBits.Administrator));
     return message.reply({ embeds: [{ color: PINK, title: `🛡️ Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.username).join("\n") : "None" }] });
   }
 
-  // ,bots — list all bots in server
+  // ,bots -- list all bots in server
   if (command === "bots") {
     const bots = message.guild.members.cache.filter(m => m.user.bot);
     return message.reply({ embeds: [{ color: PINK, title: `🤖 Bots (${bots.size})`, description: bots.map(m => m.user.username).join("\n").substring(0, 4096) }] });
   }
 
-  // ── VOICE MANAGEMENT ──────────────────────────────────
+  // -- VOICE MANAGEMENT ----------------------------------
 
-  // ,voicelist — list all voice channels and who's in them
+  // ,voicelist -- list all voice channels and who's in them
   if (command === "voicelist" || command === "vc") {
     const vcs = message.guild.channels.cache.filter(c => c.type === 2 && c.members.size > 0);
     if (vcs.size === 0) return message.reply("🔇 No one is in a voice channel.");
@@ -7240,7 +7241,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Voice channel renamed to **${name}**`);
   }
 
-  // ,vclock — lock voice channel (no one can join)
+  // ,vclock -- lock voice channel (no one can join)
   if (command === "vclock") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first() || message.member.voice.channel;
@@ -7258,7 +7259,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Unlocked **${ch.name}**`);
   }
 
-  // ── MESSAGE MANAGEMENT ────────────────────────────────
+  // -- MESSAGE MANAGEMENT --------------------------------
 
   // ,pin <messageId>
   if (command === "pin") {
@@ -7284,7 +7285,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, "Message unpinned.");
   }
 
-  // ,pins — list pinned messages count
+  // ,pins -- list pinned messages count
   if (command === "pins") {
     await message.channel.sendTyping().catch(() => {});
     const pins = await message.channel.messages.fetchPinned().catch(() => null);
@@ -7305,7 +7306,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Message moved to ${ch}`);
   }
 
-  // ── THREAD MANAGEMENT ─────────────────────────────────
+  // -- THREAD MANAGEMENT --------------------------------─
 
   // ,thread create <n>
   if (command === "thread") {
@@ -7364,7 +7365,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── EMOJI MANAGEMENT EXTENDED ─────────────────────────
+  // -- EMOJI MANAGEMENT EXTENDED ------------------------─
 
   // ,emoji add <n> <url>
   if (command === "emoji") {
@@ -7401,7 +7402,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── WEBHOOK MANAGEMENT ────────────────────────────────
+  // -- WEBHOOK MANAGEMENT --------------------------------
 
   // ,webhook create <n> [#channel]
   if (command === "webhook") {
@@ -7432,9 +7433,9 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── GIVEAWAY EXTENDED ─────────────────────────────────
+  // -- GIVEAWAY EXTENDED --------------------------------─
 
-  // ,giveaway — alias
+  // ,giveaway -- alias
   if (command === "giveaway") {
     const sub = args[1]?.toLowerCase();
     if (sub === "list") {
@@ -7444,7 +7445,7 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── MODERATION EXTRAS ─────────────────────────────────
+  // -- MODERATION EXTRAS --------------------------------─
 
   // ,mutehistory <@user>
   if (command === "mutehistory") {
@@ -7456,7 +7457,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Mute History: ${target.username}`, description: hist.map((h, i) => `**${i+1}.** ${h.duration} — ${h.reason} (${h.mod})`).join("\n") }] });
   }
 
-  // ,stafflist — list all staff (admin + mod)
+  // ,stafflist -- list all staff (admin + mod)
   if (command === "stafflist") {
     const staff = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.ModerateMembers) && !m.user.bot);
     return message.reply({ embeds: [{ color: PINK, title: `👮 Staff (${staff.size})`, description: staff.map(m => `${m.user.username} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
@@ -7473,7 +7474,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Slowmode in ${ch}: **${seconds}s**`);
   }
 
-  // ,banwave <reason> — ban all recent raiders (users who joined in last 5 min with no messages)
+  // ,banwave <reason> -- ban all recent raiders (users who joined in last 5 min with no messages)
   if (command === "banwave") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const reason = args.slice(1).join(" ") || "Banwave — suspected raid";
@@ -7486,7 +7487,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** members.` }] });
   }
 
-  // ,kick everyone — kick all non-staff (requires confirmation)
+  // ,kick everyone -- kick all non-staff (requires confirmation)
   if (command === "kickeveryone") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator) || message.author.id !== message.guild.ownerId) return err(message, "Only server owner.");
     if (args[1] !== "confirm") return message.reply("⚠️ This will kick ALL non-staff members. Type `,kickeveryone confirm` to confirm.");
@@ -7500,7 +7501,7 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Kicked **${count}** members.` }] });
   }
 
-  // ,dehoist — remove hoisted characters from nicknames
+  // ,dehoist -- remove hoisted characters from nicknames
   if (command === "dehoist") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const members = await message.guild.members.fetch();
@@ -7516,7 +7517,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Dehoisted **${count}** members.`);
   }
 
-  // ,decancer <@user> — remove special characters from nickname
+  // ,decancer <@user> -- remove special characters from nickname
   if (command === "decancer") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
@@ -7526,7 +7527,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Cleaned nickname: **${clean}**`);
   }
 
-  // ,dehoistall — dehoist all members
+  // ,dehoistall -- dehoist all members
   if (command === "dehoistall") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const members = await message.guild.members.fetch();
@@ -7552,7 +7553,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Reset nickname for **${target.user.username}**`);
   }
 
-  // ,resetallnicks — reset all nicknames
+  // ,resetallnicks -- reset all nicknames
   if (command === "resetallnicks") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const members = await message.guild.members.fetch();
@@ -7564,9 +7565,9 @@ client.on("messageCreate", async (message) => {
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Reset **${count}** nicknames.` }] });
   }
 
-  // ── LOGGING EVENTS EXTENDED ───────────────────────────
+  // -- LOGGING EVENTS EXTENDED --------------------------─
 
-  // ,messagelog <#channel> — log all deleted/edited messages
+  // ,messagelog <#channel> -- log all deleted/edited messages
   if (command === "messagelog") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { modlogChannel.delete(`msg-${guildId}`); return ok(message, "Message log disabled."); }
@@ -7599,9 +7600,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Voice logs → ${ch}`);
   }
 
-  // ── PING ROLES ────────────────────────────────────────
+  // -- PING ROLES ----------------------------------------
 
-  // ,pingrole <@role> — toggle pingable role
+  // ,pingrole <@role> -- toggle pingable role
   if (command === "pingrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -7619,9 +7620,9 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**${role.name}** is now pingable.`);
   }
 
-  // ── INFO EXTRAS ────────────────────────────────────────
+  // -- INFO EXTRAS ----------------------------------------
 
-  // ,id [user|role|channel] — get ID
+  // ,id [user|role|channel] -- get ID
   if (command === "id") {
     const user = message.mentions.users.first();
     const role = message.mentions.roles.first();
@@ -7648,7 +7649,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, image: { url }, footer: { text: message.guild.name } }] });
   }
 
-  // ,hex <color> — convert color name to hex
+  // ,hex <color> -- convert color name to hex
   if (command === "hex") {
     const color = args.slice(1).join(" ");
     if (!color) return err(message, "missing required argument");
@@ -7660,7 +7661,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: int, title: `${color} = ${hex}` }] });
   }
 
-  // ,snowflake <id> — decode Discord snowflake
+  // ,snowflake <id> -- decode Discord snowflake
   if (command === "snowflake") {
     const id = args[1];
     if (!id || !/^\d+$/.test(id)) return err(message, "missing required argument");
@@ -7670,7 +7671,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${id}**\nCreated: <t:${Math.floor(date.getTime()/1000)}:F>\nTimestamp: ${date.getTime()}`);
   }
 
-  // ,discrim <discriminator> — find users with same discriminator
+  // ,discrim <discriminator> -- find users with same discriminator
   if (command === "discrim") {
     const discrim = args[1];
     if (!discrim) return err(message, "missing required argument");
@@ -7680,7 +7681,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Users with #${discrim}`, description: members.map(m => m.user.username).join("\n") }] });
   }
 
-  // ,copycat <@user> — mimic a user's name and avatar for a webhook message
+  // ,copycat <@user> -- mimic a user's name and avatar for a webhook message
   if (command === "copycat") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
@@ -7694,9 +7695,9 @@ client.on("messageCreate", async (message) => {
     message.delete().catch(() => {});
   }
 
-  // ── ECONOMY EXTRAS ────────────────────────────────────
+  // -- ECONOMY EXTRAS ------------------------------------
 
-  // ,weekly — weekly reward
+  // ,weekly -- weekly reward
   if (command === "weekly") {
     const key = `weekly-${message.author.id}`;
     const last = economy.get(key);
@@ -7726,7 +7727,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `You claimed your monthly **10,000 coins**! Balance: **${current + 10000}**`);
   }
 
-  // ,give <@user> <amount> — admin give coins
+  // ,give <@user> <amount> -- admin give coins
   if (command === "give") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first();
@@ -7770,7 +7771,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Set **${target.username}**'s balance to **${amount}**`);
   }
 
-  // ,work — earn coins by working
+  // ,work -- earn coins by working
   if (command === "work") {
     const key = `work-${message.author.id}`;
     const last = economy.get(key);
@@ -7787,7 +7788,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `You ${job} and earned **${earned} coins**!`);
   }
 
-  // ,crime — risky way to earn coins
+  // ,crime -- risky way to earn coins
   if (command === "crime") {
     const key = `crime-${message.author.id}`;
     const last = economy.get(key);
@@ -7831,12 +7832,12 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ,shop — show economy shop
+  // ,shop -- show economy shop
   if (command === "shop") {
     return info(message, "shop coming soon! Use `,work` `,daily` `,crime` to earn coins");
   }
 
-  // ── FUN EXTRAS ────────────────────────────────────────
+  // -- FUN EXTRAS ----------------------------------------
 
   // ,emojify <text>
   if (command === "emojify") {
@@ -7892,7 +7893,7 @@ client.on("messageCreate", async (message) => {
     return message.reply(result);
   }
 
-  // ,countdown <n> — counts down in chat
+  // ,countdown <n> -- counts down in chat
   if (command === "countdown") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const n = Math.min(parseInt(args[1]) || 5, 10);
@@ -7969,12 +7970,12 @@ client.on("messageCreate", async (message) => {
     return message.reply(Array(n).fill(text).join("\n").substring(0, 2000));
   }
 
-  // ,toss — heads or tails (alias coinflip)
+  // ,toss -- heads or tails (alias coinflip)
   if (command === "toss") {
     return info(message, `**${Math.random() < 0.5 ? "Heads" : "Tails"}!**`);
   }
 
-  // ,yesno — yes or no random
+  // ,yesno -- yes or no random
   if (command === "yesno") {
     return message.reply(Math.random() < 0.5 ? "✅ **Yes**" : "❌ **No**");
   }
@@ -7994,7 +7995,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${Math.floor(Math.random() * (max - min + 1)) + min}**`);
   }
 
-  // ,team <size> <@user1> <@user2> ... — split into teams
+  // ,team <size> <@user1> <@user2> ... -- split into teams
   if (command === "team") {
     const size = parseInt(args[1]);
     const members = [...message.mentions.users.values()];
@@ -8016,7 +8017,7 @@ client.on("messageCreate", async (message) => {
     return info(message, `${shuffled.join(", ")}`);
   }
 
-  // ,password <length> — generate random password
+  // ,password <length> -- generate random password
   if (command === "password") {
     const length = Math.min(parseInt(args[1]) || 16, 64);
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
@@ -8025,16 +8026,16 @@ client.on("messageCreate", async (message) => {
     return ok(message, "Password sent to your DMs!");
   }
 
-  // ,token — generate random token-like string
+  // ,token -- generate random token-like string
   if (command === "token") {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     const token = Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
     return info(message, `token: \`${token}\``);
   }
 
-  // ── UTILITY EXTRAS ────────────────────────────────────
+  // -- UTILITY EXTRAS ------------------------------------
 
-  // ,news — latest Discord status
+  // ,news -- latest Discord status
   if (command === "news") {
     await message.channel.sendTyping().catch(() => {});
     try {
@@ -8044,7 +8045,7 @@ client.on("messageCreate", async (message) => {
     } catch { return err(message, "Could not fetch Discord status."); }
   }
 
-  // ,serverage — how old is the server
+  // ,serverage -- how old is the server
   if (command === "serverage") {
     const created = message.guild.createdTimestamp;
     const days = Math.floor((Date.now() - created) / 86400000);
@@ -8058,41 +8059,41 @@ client.on("messageCreate", async (message) => {
     return info(message, `**${target.username}**'s account is **${days} days** old`);
   }
 
-  // ,invitebot — get bot invite link
+  // ,invitebot -- get bot invite link
   if (command === "invitebot") {
     return info(message, `[Invite me!](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot)`);
   }
 
-  // ,support — support server
+  // ,support -- support server
   if (command === "support") {
     return message.reply("💬 Join our support server for help!");
   }
 
-  // ,source — show bot source info
+  // ,source -- show bot source info
   if (command === "source") {
     return message.reply({ embeds: [{ color: PINK, title: "📦 Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }], footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ,shards — shard info
+  // ,shards -- shard info
   if (command === "shards") {
     return info(message, `shard **${client.shard?.ids[0] ?? 0}** | guilds: **${client.guilds.cache.size}**`);
   }
 
-  // ,leave — make bot leave server (owner only)
+  // ,leave -- make bot leave server (owner only)
   if (command === "leave") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     await message.reply("👋 Leaving server...");
     await message.guild.leave();
   }
 
-  // ,guilds — list all guilds bot is in (owner only)
+  // ,guilds -- list all guilds bot is in (owner only)
   if (command === "guilds") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     const list = client.guilds.cache.map(g => `**${g.name}** (${g.memberCount})`).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
-  // ,eval <code> — owner only
+  // ,eval <code> -- owner only
   if (command === "eval") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     const code = args.slice(1).join(" ");
@@ -8104,12 +8105,12 @@ client.on("messageCreate", async (message) => {
     } catch (e) { return message.reply({ embeds: [{ color: PINK, description: `\`\`\`js\n${e.message}\n\`\`\`` }] }); }
   }
 
-  // ,exec <command> — owner only shell (disabled for safety)
+  // ,exec <command> -- owner only shell (disabled for safety)
   if (command === "exec") {
     return err(message, "exec is disabled for security reasons.");
   }
 
-  // ,status <online|idle|dnd|invisible> — set bot status
+  // ,status <online|idle|dnd|invisible> -- set bot status
   if (command === "status") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     const status = args[1];
@@ -8119,7 +8120,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Status set to **${status}**`);
   }
 
-  // ,activity <type> <text> — set bot activity
+  // ,activity <type> <text> -- set bot activity
   if (command === "activity") {
     if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
     const types = {
@@ -8138,7 +8139,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `activity set to **${type}** ${text}`);
   }
 
-  // ,say2 <#channel> <message> — send to different channel
+  // ,say2 <#channel> <message> -- send to different channel
   if (command === "say2") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const ch = message.mentions.channels.first();
@@ -8162,7 +8163,7 @@ client.on("messageCreate", async (message) => {
     message.delete().catch(() => {});
   }
 
-  // ,unreact <messageId> — remove all bot reactions
+  // ,unreact <messageId> -- remove all bot reactions
   if (command === "unreact") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgId = args[1];
@@ -8172,7 +8173,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, "Reactions removed.");
   }
 
-  // ,editbot <text> — edit last bot message
+  // ,editbot <text> -- edit last bot message
   if (command === "editbot") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const text = args.slice(1).join(" ");
@@ -8183,7 +8184,7 @@ client.on("messageCreate", async (message) => {
     message.delete().catch(() => {});
   }
 
-  // ,deletebot — delete last bot message
+  // ,deletebot -- delete last bot message
   if (command === "deletebot") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgs = await message.channel.messages.fetch({ limit: 20 });
@@ -8629,7 +8630,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, description: `🕐 **${now}**`, footer: { text: `Timezone: ${tz}` } }] });
   }
 
-  // ,tzlist — list all timezones set in this server
+  // ,tzlist -- list all timezones set in this server
   if (command === "tzlist") {
     const members = await message.guild.members.fetch().catch(() => null);
     if (!members) return err(message, "could not fetch members");
@@ -8651,7 +8652,7 @@ client.on("messageCreate", async (message) => {
 // ===== ANTI-MINORS SYSTEM ==========================
 // ===================================================
 
-// ── CONFIG (only OWNER_ID can modify) ──────────────
+// -- CONFIG (only OWNER_ID can modify) --------------
 const antiMinorsConfig = new Map();
 
 function getAMConfig(guildId) {
@@ -8665,7 +8666,7 @@ function getAMConfig(guildId) {
   return cfg;
 }
 
-// ── REGEX ENGINE (from old bot, extended) ───────────
+// -- REGEX ENGINE (from old bot, extended) ----------─
 function checkForMinor(text) {
   if (!text || text.trim().length < 1) return { flag: false };
 
@@ -8687,7 +8688,7 @@ function checkForMinor(text) {
   // Step 2: normalize leet/special bypass chars (digits only, don't touch letters)
   t = t.replace(/[|!¡](\d)/g, '$1')   // !6 → 6
        .replace(/(\d)[|!¡]/g, '$1');   // 6! → 6
-  // Note: intentionally NOT replacing o→0 as it breaks "yo", "top", "bottom" etc
+  // Note: intentionally NOT replacing o->0 as it breaks "yo", "top", "bottom" etc
 
   const lower = t.toLowerCase();
 
@@ -8740,7 +8741,7 @@ function checkForMinor(text) {
     return { flag: true, is_minor: false, reason: `Suspiciously high age: ${age} (possible bypass)`, confidence: 'medium' };
   }
 
-  // Step 5: direct minor age patterns (10–17) — exact from original script
+  // Step 5: direct minor age patterns (10–17) -- exact from original script
   const minorPatterns = [
     /\b(1[0-7])\s*[mfMF]\b/,
     /\b[mfMF]\s*(1[0-7])(?!\s*(cm|inch(es)?|in|"|'))\b/,
@@ -8800,7 +8801,7 @@ function checkForMinor(text) {
       }
     }
   } else {
-    // No adult age — check standalone minor patterns first
+    // No adult age -- check standalone minor patterns first
     const standaloneMinor = [
       /^\s*(1[0-7])\s*$/,
       // standalone at start, but not followed by measurement words
@@ -8839,13 +8840,13 @@ function checkForMinor(text) {
     if (p.test(lower)) return { flag: true, reason: `Banned keyword: "${t.match(p)?.[0]}"`, confidence: 'high' };
   }
 
-  // Step 7: no valid 18+ age mentioned — silent delete
+  // Step 7: no valid 18+ age mentioned -- silent delete
   if (!hasAdultAge) return { flag: true, noAge: true, reason: 'No valid 18+ age mentioned', confidence: 'low' };
 
   return { flag: false };
 }
 
-// ── ANTI-MINORS MESSAGE HANDLER ────────────────────
+// -- ANTI-MINORS MESSAGE HANDLER --------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   const cfg = getAMConfig(message.guild.id);
@@ -8870,10 +8871,10 @@ client.on("messageCreate", async (message) => {
   // Delete the message
   await message.delete().catch(() => {});
 
-  // If just no age mentioned — silent delete, no log
+  // If just no age mentioned -- silent delete, no log
   if (result.noAge) return;
 
-  // Minor detected — send to log channel
+  // Minor detected -- send to log channel
   const logCh = cfg.logChannelId ? message.guild.channels.cache.get(cfg.logChannelId) : null;
   if (!logCh) return;
 
@@ -8902,7 +8903,7 @@ client.on("messageCreate", async (message) => {
   await logCh.send({ content: modPing || undefined, embeds: [embed], components: [row], allowedMentions: { roles: cfg.modRoleId ? [cfg.modRoleId] : [] } }).catch(() => {});
 });
 
-// ── ANTI-MINORS BUTTON HANDLER ─────────────────────
+// -- ANTI-MINORS BUTTON HANDLER --------------------─
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith("am_")) return;
@@ -8913,7 +8914,7 @@ client.on("interactionCreate", async (interaction) => {
 
   try {
     if (action === "ban") {
-      // Try to ban — works even if user already left (hackban)
+      // Try to ban -- works even if user already left (hackban)
       const banResult = await guild.members.ban(userId, {
         reason: `[Anti-Minors] underage — banned by ${mod.username}`,
         deleteMessageSeconds: 604800 // delete 7 days of messages
@@ -8942,7 +8943,7 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
       } else {
-        // Ban failed — user may already be banned
+        // Ban failed -- user may already be banned
         const failEmbed = {
           ...interaction.message.embeds[0].data,
           color: PINK,
@@ -8975,7 +8976,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ── ANTI-MINORS COMMANDS (OWNER ONLY) ─────────────
+// -- ANTI-MINORS COMMANDS (OWNER ONLY) ------------─
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
@@ -8985,7 +8986,7 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
   const cfg = getAMConfig(message.guild.id);
 
-  // ,addc #channel — add channel to monitor
+  // ,addc #channel -- add channel to monitor
   if (command === "addc") {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,addc #channel`");
@@ -8994,7 +8995,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `now monitoring **#${ch.name}** for minors`);
   }
 
-  // ,delc #channel — remove channel from monitor
+  // ,delc #channel -- remove channel from monitor
   if (command === "delc") {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,delc #channel`");
@@ -9003,7 +9004,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `stopped monitoring **#${ch.name}**`);
   }
 
-  // ,list — show monitored channels
+  // ,list -- show monitored channels
   if (command === "list" || command === "amlist") {
     const monitored = [...cfg.channels].map(id => `<#${id}>`).join(", ") || "none";
     const reqAttach = [...cfg.requireAttach].map(id => `<#${id}>`).join(", ") || "none";
@@ -9017,7 +9018,7 @@ client.on("messageCreate", async (message) => {
     ], footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
-  // ,reqattach #channel — require attachments
+  // ,reqattach #channel -- require attachments
   if (command === "reqattach") {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,reqattach #channel`");
@@ -9026,7 +9027,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**#${ch.name}** now requires attachments — text-only messages will be deleted`);
   }
 
-  // ,unreqattach #channel — remove attachment requirement
+  // ,unreqattach #channel -- remove attachment requirement
   if (command === "unreqattach") {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,unreqattach #channel`");
@@ -9035,7 +9036,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `**#${ch.name}** no longer requires attachments`);
   }
 
-  // ,modr @role — set mod role to ping
+  // ,modr @role -- set mod role to ping
   if (command === "modr") {
     const role = message.mentions.roles.first();
     if (!role) return err(message, "missing required argument: **role**\nusage: `,modr @role`");
@@ -9044,7 +9045,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `mod role set to **${role.name}** — will be pinged on minor detections`);
   }
 
-  // ,logs #channel — set log channel
+  // ,logs #channel -- set log channel
   if (command === "logs") {
     const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
     if (!ch) return err(message, "missing required argument: **channel**\nusage: `,logs #channel`");
@@ -9059,20 +9060,20 @@ client.on("messageCreate", async (message) => {
 // ===== UNIFIED CONFIG PANEL (OWNER ONLY) ===========
 // ===================================================
 //
-//  ,setup → Apre il Config Panel interattivo Discord
+//  ,setup -> Apre il Config Panel interattivo Discord
 //
 //  Sostituisce completamente:
-//    ,cloneperks          → Clone server completo
-//    ,cloneperks channel  → Clone singolo canale
-//    ,clonecategoryperks  → Clone categoria + video
-//    ,setuppaidperks      → Setup paid perks completo
-//    ,hidepaidperks       → Nascondi canali
-//    ,sortchannels        → Ordina canali in categorie
+//    ,cloneperks          -> Clone server completo
+//    ,cloneperks channel  -> Clone singolo canale
+//    ,clonecategoryperks  -> Clone categoria + video
+//    ,setuppaidperks      -> Setup paid perks completo
+//    ,hidepaidperks       -> Nascondi canali
+//    ,sortchannels        -> Ordina canali in categorie
 //
 // ===================================================
 
-// Session storage (userId → session config)
-const setupSessions = new Map();
+// Session storage (userId -> session config)
+// (setupSessions declared at top of file)
 
 function defaultSession() {
   return {
@@ -9100,7 +9101,7 @@ function defaultSession() {
   };
 }
 
-// ── Build panel embed showing current session state ──────────────────────────
+// -- Build panel embed showing current session state --------------------------
 function buildPanelEmbed(s) {
   const opLabels = {
     cloneperks:          "🌐 Clone Server Completo",
@@ -9157,7 +9158,7 @@ function buildPanelEmbed(s) {
   };
 }
 
-// ── Build panel components (4 rows) ──────────────────────────────────────────
+// -- Build panel components (4 rows) ------------------------------------------
 function buildPanelComponents(s) {
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
 
@@ -9209,7 +9210,7 @@ function buildPanelComponents(s) {
   return [row1, row2, row3, row4];
 }
 
-// ── Interaction handler for the Config Panel ──────────────────────────────────
+// -- Interaction handler for the Config Panel ----------------------------------
 client.on("interactionCreate", async (interaction) => {
   // Only owner can use the setup panel
   if (interaction.user.id !== OWNER_ID) return;
@@ -9221,21 +9222,21 @@ client.on("interactionCreate", async (interaction) => {
 
   const s = setupSessions.get(interaction.user.id);
 
-  // ── Select: operation ──
+  // -- Select: operation --
   if (interaction.isStringSelectMenu() && id === "sp_op") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,clone` di nuovo.", flags: 64 });
     s.operation = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
-  // ── Select: video rename mode ──
+  // -- Select: video rename mode --
   if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.videoRenameMode = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
-  // ── Toggle buttons ──
+  // -- Toggle buttons --
   const toggleMap = {
     sp_t_roles: "cloneRoles",
     sp_t_cats:  "cloneCategories",
@@ -9249,7 +9250,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
-  // ── Button: open IDs modal ──
+  // -- Button: open IDs modal --
   if (interaction.isButton() && id === "sp_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     const modal = new ModalBuilder()
@@ -9280,7 +9281,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.showModal(modal);
   }
 
-  // ── Button: open video options modal ──
+  // -- Button: open video options modal --
   if (interaction.isButton() && id === "sp_video") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     const modal = new ModalBuilder()
@@ -9311,7 +9312,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.showModal(modal);
   }
 
-  // ── Modal submit: IDs & params ──
+  // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
@@ -9328,7 +9329,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "✅ IDs e parametri aggiornati!", flags: 64 });
   }
 
-  // ── Modal submit: video options ──
+  // -- Modal submit: video options --
   if (interaction.isModalSubmit() && id === "sp_modal_video") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
@@ -9345,7 +9346,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "✅ Opzioni video aggiornate!", flags: 64 });
   }
 
-  // ── Button: cancel ──
+  // -- Button: cancel --
   if (interaction.isButton() && id === "sp_cancel") {
     setupSessions.delete(interaction.user.id);
     return interaction.update({
@@ -9354,13 +9355,13 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ── Button: launch ──
+  // -- Button: launch --
   if (interaction.isButton() && id === "sp_launch") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,clone` di nuovo.", flags: 64 });
     if (!s.sourceId || !s.targetId) {
       return interaction.reply({ content: "⚠️ Imposta prima **Source ID** e **Target ID** con il pulsante 📝 Imposta IDs.", flags: 64 });
     }
-    // Lock panel — disable all components
+    // Lock panel -- disable all components
     const lockedEmbed = buildPanelEmbed(s);
     lockedEmbed.description += "\n\n⏳ **Operazione avviata — in corso...**";
     await interaction.update({ embeds: [lockedEmbed], components: [] }).catch(() => {});
@@ -9383,7 +9384,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ── Unified execution engine ──────────────────────────────────────────────────
+// -- Unified execution engine --------------------------------------------------
 async function executeSetupOperation(s, statusMsg, updateStatus) {
 
   // REST helper
@@ -9442,7 +9443,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return null;
   }
 
-  // Clone roles from rawRoles into targetGuild — returns roleMap
+  // Clone roles from rawRoles into targetGuild -- returns roleMap
   async function cloneRoles(rawRoles, targetGuild) {
     const roleMap = new Map();
     if (!s.cloneRoles) return roleMap;
@@ -9476,7 +9477,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }));
   }
 
-  // Clone categories — returns categoryMap
+  // Clone categories -- returns categoryMap
   async function cloneCategories(rawChannels, targetGuild, roleMap) {
     const categoryMap = new Map();
     if (!s.cloneCategories) return categoryMap;
@@ -9497,7 +9498,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return categoryMap;
   }
 
-  // Clone channels — returns { channelMap, channelCount }
+  // Clone channels -- returns { channelMap, channelCount }
   async function cloneChannels(rawChannels, targetGuild, roleMap, categoryMap) {
     if (!s.cloneChannels) return { channelMap: new Map(), channelCount: 0 };
     const channelMap = new Map();
@@ -9590,9 +9591,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return { sent1, sent2, excl1Name, excl2Name };
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: cloneperks — full server clone
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: cloneperks -- full server clone
+  // --------------------------------------------------------------------------
   if (s.operation === "cloneperks") {
     await updateStatus("Fetching dati server via REST...");
     const [rawChannels, rawRoles, targetGuild] = await Promise.all([
@@ -9667,9 +9668,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: cloneperks_channel — clone single channel media
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: cloneperks_channel -- clone single channel media
+  // --------------------------------------------------------------------------
   if (s.operation === "cloneperks_channel") {
     const { AttachmentBuilder } = require("discord.js");
     const MEDIA_EXT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
@@ -9807,9 +9808,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: clonecategoryperks — clone one category + distribute videos
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: clonecategoryperks -- clone one category + distribute videos
+  // --------------------------------------------------------------------------
   if (s.operation === "clonecategoryperks") {
     const catName = s.extraParam;
     if (!catName) throw new Error("Specifica il nome della categoria nel campo 'Extra' del panel");
@@ -9906,9 +9907,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: setuppaidperks — full paid perks one-shot setup
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: setuppaidperks -- full paid perks one-shot setup
+  // --------------------------------------------------------------------------
   if (s.operation === "setuppaidperks") {
     await updateStatus("Fetching dati server...");
     const [rawChannels, rawRoles, targetGuild] = await Promise.all([
@@ -9971,9 +9972,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: hidepaidperks — hide N random channels from @everyone
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: hidepaidperks -- hide N random channels from @everyone
+  // --------------------------------------------------------------------------
   if (s.operation === "hidepaidperks") {
     const count = Math.min(parseInt(s.extraParam) || 20, 50);
     await updateStatus(`Nascondendo **${count}** canali in \`${s.targetId}\`...`);
@@ -10010,9 +10011,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // OPERATION: sortchannels — distribute channels into 2 categories
-  // ──────────────────────────────────────────────────────────────────────────
+  // --------------------------------------------------------------------------
+  // OPERATION: sortchannels -- distribute channels into 2 categories
+  // --------------------------------------------------------------------------
   if (s.operation === "sortchannels") {
     const parts = s.extraParam.split("|").map(x => x.trim());
     const cat1Name = parts[0];
