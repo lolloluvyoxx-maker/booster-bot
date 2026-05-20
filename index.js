@@ -3376,6 +3376,22 @@ client.on("messageCreate", async (message) => {
   // ── TICKETS ──────────────────────────────────────────────
 
   // ,ticket setup <#log-channel>
+
+  // ── CONFIG PANEL ─────────────────────────────────────────
+  // ,clone — apre il Config Panel interattivo
+  if (command === "clone") {
+    if (message.author.id !== OWNER_ID) return err(message, "Missing permissions.");
+    const session = defaultSession();
+    const sent = await message.reply({
+      embeds:     [buildPanelEmbed(session)],
+      components: buildPanelComponents(session),
+    }).catch(() => null);
+    if (!sent) return;
+    session.msgId     = sent.id;
+    session.channelId = sent.channelId;
+    setupSessions.set(message.author.id, session);
+    return;
+  }
 });
 
 // ===================================================
@@ -9189,29 +9205,6 @@ function buildPanelComponents(s) {
   return [row1, row2, row3, row4];
 }
 
-// ── ,setup command ────────────────────────────────────────────────────────────
-client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith(",")) return;
-  if (message.author.id !== OWNER_ID) return;
-
-  const args    = message.content.slice(1).trim().split(/ +/);
-  const command = args[0].toLowerCase();
-
-  if (command === "clone") {
-    const session = defaultSession();
-    const sent = await message.reply({
-      embeds:     [buildPanelEmbed(session)],
-      components: buildPanelComponents(session),
-    }).catch(() => null);
-    if (!sent) return;
-    session.msgId     = sent.id;
-    session.channelId = sent.channelId;
-    setupSessions.set(message.author.id, session);
-    return;
-  }
-});
-
 // ── Interaction handler for the Config Panel ──────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
   // Only owner can use the setup panel
@@ -9226,7 +9219,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Select: operation ──
   if (interaction.isStringSelectMenu() && id === "sp_op") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,setup` di nuovo.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,clone` di nuovo.", flags: 64 });
     s.operation = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
@@ -9359,7 +9352,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Button: launch ──
   if (interaction.isButton() && id === "sp_launch") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,setup` di nuovo.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,clone` di nuovo.", flags: 64 });
     if (!s.sourceId || !s.targetId) {
       return interaction.reply({ content: "⚠️ Imposta prima **Source ID** e **Target ID** con il pulsante 📝 Imposta IDs.", flags: 64 });
     }
