@@ -3381,15 +3381,19 @@ client.on("messageCreate", async (message) => {
   // ,clone — apre il Config Panel interattivo
   if (command === "clone") {
     if (message.author.id !== OWNER_ID) return err(message, "Missing permissions.");
-    const session = defaultSession();
-    const sent = await message.reply({
-      embeds:     [buildPanelEmbed(session)],
-      components: buildPanelComponents(session),
-    }).catch(() => null);
-    if (!sent) return;
-    session.msgId     = sent.id;
-    session.channelId = sent.channelId;
-    setupSessions.set(message.author.id, session);
+    try {
+      const session = defaultSession();
+      const sent = await message.reply({
+        embeds:     [buildPanelEmbed(session)],
+        components: buildPanelComponents(session),
+      });
+      session.msgId     = sent.id;
+      session.channelId = sent.channelId;
+      setupSessions.set(message.author.id, session);
+    } catch (e) {
+      log(`[clone panel] error: ${e.message}`, "error");
+      message.reply({ embeds: [{ color: PINK, description: `❌ Panel error: \`${e.message}\`` }] }).catch(() => {});
+    }
     return;
   }
 });
