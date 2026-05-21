@@ -36,7 +36,6 @@ function buildConfigSnapshot() {
     autoroles,
     welcomeConfig,
     goodbyeConfig,
-    pingOnJoinConfig,
     ticketConfig,
     filterConfig,
     modlogChannel,
@@ -137,7 +136,6 @@ async function loadAllConfigs() {
     if (data.autoroles instanceof Map) { autoroles.clear(); data.autoroles.forEach((v,k) => autoroles.set(k,v)); }
     if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
     if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
-    if (data.pingOnJoinConfig instanceof Map) { pingOnJoinConfig.clear(); data.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k,v)); }
     if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
     if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
     if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
@@ -207,40 +205,6 @@ function embed(title, fields, color = PINK) {
       timestamp: new Date()
     }]
   };
-}
-
-// 🧹 Delete ALL messages from a userId across every text channel in a guild
-// Runs in background — fire and forget (pass statusMsg to get a summary edit)
-async function purgeUserMessages(guild, userId, statusMsg = null) {
-  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
-  const textChannels = [...guild.channels.cache.values()].filter(c => [0, 5].includes(c.type));
-  let totalDeleted = 0;
-  for (const ch of textChannels) {
-    try {
-      let before = undefined, hasMore = true;
-      while (hasMore) {
-        const fetched = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-        if (!fetched || fetched.size === 0) break;
-        const userMsgs = [...fetched.values()].filter(m => m.author.id === userId);
-        // Split into bulk-deletable (< 14 days) and old messages
-        const bulk = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
-        const old  = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
-        if (bulk.length > 1) {
-          await ch.bulkDelete(bulk, true).catch(() => {});
-          totalDeleted += bulk.length;
-        } else if (bulk.length === 1) {
-          await bulk[0].delete().catch(() => {});
-          totalDeleted++;
-        }
-        for (const m of old) { await m.delete().catch(() => {}); totalDeleted++; await new Promise(r => setTimeout(r, 300)); }
-        before = fetched.last()?.id;
-        hasMore = fetched.size === 100;
-        await new Promise(r => setTimeout(r, 500));
-      }
-    } catch { /* skip channels we can't read */ }
-  }
-  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `🗑️ Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
-  return totalDeleted;
 }
 
 // 🔒 Confirm button (for dangerous actions like nuke, unbanall, etc.)
@@ -1077,8 +1041,6 @@ const lastfmUsers = new Map();
 const afkUsers = new Map();
 const ticketConfig = new Map();
 const openTickets = new Map();
-// guildId → { channelId, message, deleteAfter, roles: [] }
-const pingOnJoinConfig = new Map();
 
 // ===== SNIPE EVENTS =====
 client.on("messageDelete", (message) => {
@@ -1128,19 +1090,6 @@ client.on("guildMemberAdd", async (member) => {
   if (wc) {
     const ch = member.guild.channels.cache.get(wc.channelId);
     if (ch) ch.send(wc.message.replace("{user}", `<@${member.id}>`).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
-  }
-
-  // ── Ping On Join ──
-  // ── Ghost Ping on Join (multi-channel) ──
-  const poj = pingOnJoinConfig.get(member.guild.id);
-  if (poj?.enabled && poj.channels?.length) {
-    for (const chId of poj.channels) {
-      const pojCh = member.guild.channels.cache.get(chId);
-      if (!pojCh) continue;
-      // Ghost ping: send mention then immediately delete
-      const sent = await pojCh.send({ content: `<@${member.id}>` }).catch(() => null);
-      if (sent) sent.delete().catch(() => {});
-    }
   }
 });
 client.on("guildMemberRemove", async (member) => {
@@ -1233,10 +1182,8 @@ const CMD_SCHEMA = {
   tempban: { usage: ",tempban <user> <mins> [reason]", args: ["user", "mins"] },
   softban: { usage: ",softban <user> [reason]", args: ["user"] },
   hardban: { usage: ",hardban <user> [reason]", args: ["user"] },
-  hb:      { usage: ",hb <user> [reason]", args: ["user"] },
   hackban: { usage: ",hackban <userId> [reason]", args: ["userId"] },
-  massban: { usage: ",massban <id1|@user> <id2|@user> ...", args: ["id1"] },
-  mb:      { usage: ",mb <id1|@user> <id2|@user> ...", args: ["id1"] },
+  massban: { usage: ",massban <id1> <id2> ...", args: ["id1"] },
   masskick: { usage: ",masskick @user1 @user2 ...", args: ["user"] },
   warn: { usage: ",warn <user> <reason>", args: ["user", "reason"] },
   warnings: { usage: ",warnings <user>", args: [] },
@@ -1679,13 +1626,11 @@ client.on("messageCreate", async (message) => {
       return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
 
-    const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    const banSuccess = await target.ban({ reason }).catch(() => null);
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
-    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
-    purgeUserMessages(message.guild, target.id, banPurgeMsg);
-    return;
+    return ok(message, `banned **${target.user.username}** | ${reason}`);
   }
 
   // ,unban <userId>
@@ -2769,41 +2714,23 @@ client.on("messageCreate", async (message) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-
+  if (message.author.id !== OWNER_ID) return;
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
   if (command !== "clone") return;
 
-  log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
-
-  if (message.author.id !== OWNER_ID) {
-    log(`[clone] BLOCKED — not owner (got ${message.author.id}, expected ${OWNER_ID})`, "error");
-    return;
-  }
-
-  log(`[clone] owner confirmed — building panel...`, "info");
-
   try {
-    log(`[clone] calling defaultSession()`, "info");
     const session = defaultSession();
-
-    log(`[clone] calling buildPanelEmbed()`, "info");
-    const embed = buildPanelEmbed(session);
-
-    log(`[clone] calling buildPanelComponents()`, "info");
-    const components = buildPanelComponents(session);
-
-    log(`[clone] sending reply...`, "info");
-    const sent = await message.reply({ embeds: [embed], components });
-
+    const sent = await message.reply({
+      embeds:     [buildPanelEmbed(session)],
+      components: buildPanelComponents(session),
+    });
     session.msgId     = sent.id;
     session.channelId = sent.channelId;
     setupSessions.set(message.author.id, session);
-
-    log(`[clone] panel sent OK — msgId=${sent.id}`, "info");
   } catch (e) {
-    log(`[clone] CRASH: ${e.message}\n${e.stack}`, "error");
-    message.reply({ content: `❌ \`${e.message}\`` }).catch(() => {});
+    log(`[clone panel] error: ${e.message}`, "error");
+    message.reply({ embeds: [{ color: PINK, description: `❌ Panel error: \`${e.message}\`` }] }).catch(() => {});
   }
 });
 
@@ -2827,9 +2754,8 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
-    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    await target.ban({ reason }).catch(() => null);
     ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
-    purgeUserMessages(message.guild, target.id);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
       message.channel.send(`🔓 **${target.user.username}**'s tempban has expired.`).catch(() => {});
@@ -2847,13 +2773,11 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
-    purgeUserMessages(message.guild, target.id, softPurgeMsg);
-    return;
+    return ok(message, `softbanned **${target.user.username}** (messages deleted) | ${reason}`);
   }
 
   // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
-  if (command === "hardban" || command === "hb") {
+  if (command === "hardban") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -2863,9 +2787,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
-    purgeUserMessages(message.guild, target.id, hbPurgeMsg);
-    return;
+    return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
   }
 
   // ,jail <user> [reason]
@@ -3246,38 +3168,6 @@ client.on("messageCreate", async (message) => {
     if (!msg) return err(message, "Please provide a message.");
     goodbyeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
     saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
-  }
-
-  // ,pingonjoin -- Tippy-style ghost ping on join with buttons
-  if (command === "pingonjoin" || command === "poj") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
-    const { ButtonBuilder, ButtonStyle } = require("discord.js");
-
-    function pojEmbed(cfg) {
-      const channels = (cfg?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*";
-      return {
-        color: 0x2B2D31,
-        title: "Ping on join",
-        description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
-        fields: [
-          { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
-          { name: "Channels", value: channels,                               inline: false },
-        ],
-      };
-    }
-
-    function pojComponents(guildId) {
-      const { ActionRowBuilder } = require("discord.js");
-      return [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
-      )];
-    }
-
-    const cfg = pingOnJoinConfig.get(message.guild.id) ?? { enabled: false, channels: [] };
-    pingOnJoinConfig.set(message.guild.id, cfg);
-    return message.reply({ embeds: [pojEmbed(cfg)], components: pojComponents(message.guild.id) });
   }
 
   // ,starboard <#channel> [threshold]
@@ -5213,10 +5103,8 @@ client.on("messageCreate", async (message) => {
 
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
-    await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — 🗑️ cancellando messaggi...`);
-    purgeUserMessages(message.guild, userId, hkPurgeMsg);
-    return;
+    await message.guild.members.ban(userId, { reason }).catch(() => null);
+    return ok(message, `hackbanned user **${userId}** | ${reason}`);
   }
 
   // ,unbanall -- unban everyone
@@ -5562,27 +5450,19 @@ client.on("messageCreate", async (message) => {
   // -- USEFUL EXTRAS ------------------------------------─
 
   // ,massban <userId1> <userId2> ... -- ban multiple users
-  if (command === "massban" || command === "mb") {
+  if (command === "massban") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
-    // Accept raw IDs and/or mentions (<@123456>)
-    const rawTokens = args.slice(1);
-    const reason = rawTokens.filter(t => !/^(<@!?\d+>|\d+)$/.test(t)).join(" ") || `[Massban] by ${message.author.username}`;
-    const ids = [
-      ...[...message.mentions.users.values()].map(u => u.id),
-      ...rawTokens.filter(t => /^\d{17,20}$/.test(t)),
-    ].filter((id, i, arr) => arr.indexOf(id) === i); // dedupe
-    if (ids.length === 0) return err(message, "Specifica almeno un utente o ID. Uso: `,massban @user1 @user2 123456789`");
+    const ids = args.slice(1).filter(id => /^\d+$/.test(id));
+    if (ids.length === 0) return err(message, "missing required argument");
 
-    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `🔨 Banning **${ids.length}** users...` }] });
-    let banned = 0, failed = 0;
+    message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${ids.length}** users...` }] });
+    let count = 0;
     for (const id of ids) {
       recentBoosters.delete(id);
-      const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-      ok2 ? banned++ : failed++;
-      addCase(message.guild.id, "ban", id, message.author.id, reason);
-      if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
+      await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.username}` }).catch(() => {});
+      count++;
     }
-    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} — 🗑️ messaggi cancellati | ${reason}` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** users.` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -9102,132 +8982,6 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// -- PING ON JOIN BUTTON HANDLERS --
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-  const id = interaction.customId;
-  if (!id.startsWith("poj_")) return;
-
-  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild))
-    return interaction.reply({ content: "❌ Missing permissions.", flags: 64 });
-
-  const [action, guildId] = id.split(":");
-  if (guildId !== interaction.guild.id) return;
-
-  const { ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-
-  function pojEmbed(cfg) {
-    const channels = (cfg?.channels ?? []).map(chId => `<#${chId}>`).join(", ") || "*None*";
-    return {
-      color: 0x2B2D31,
-      title: "Ping on join",
-      description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
-      fields: [
-        { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
-        { name: "Channels", value: channels,                               inline: false },
-      ],
-    };
-  }
-
-  function pojRows(gId) {
-    return [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`poj_toggle:${gId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`poj_add:${gId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`poj_remove:${gId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
-    )];
-  }
-
-  let cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
-  pingOnJoinConfig.set(guildId, cfg);
-
-  // Toggle on/off
-  if (action === "poj_toggle") {
-    cfg.enabled = !cfg.enabled;
-    saveAllConfigs();
-    return interaction.update({ embeds: [pojEmbed(cfg)], components: pojRows(guildId) });
-  }
-
-  // Add channel — show modal with channel ID or mention input
-  if (action === "poj_add") {
-    const modal = new ModalBuilder().setCustomId(`poj_add_modal:${guildId}`).setTitle("Add Channel");
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("poj_channel_input")
-        .setLabel("Channel ID or #mention")
-        .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder("123456789 or paste channel ID")
-    ));
-    return interaction.showModal(modal);
-  }
-
-  // Remove channel — show select if channels exist
-  if (action === "poj_remove") {
-    if (!cfg.channels.length) return interaction.reply({ content: "❌ No channels configured.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const options = cfg.channels.map(chId => {
-      const ch = interaction.guild.channels.cache.get(chId);
-      return { label: ch ? `#${ch.name}` : chId, value: chId };
-    });
-    return interaction.reply({
-      content: "Select a channel to remove:",
-      components: [new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder().setCustomId(`poj_remove_pick:${guildId}`).setPlaceholder("Choose channel...").addOptions(options)
-      )],
-      flags: 64,
-    });
-  }
-});
-
-// poj_add modal submit
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isModalSubmit()) return;
-  if (!interaction.customId.startsWith("poj_add_modal:")) return;
-
-  const guildId = interaction.customId.split(":")[1];
-  const input   = interaction.fields.getTextInputValue("poj_channel_input").trim();
-  // Accept raw ID or <#ID> mention
-  const chId    = input.replace(/[<#>]/g, "");
-  const ch      = interaction.guild.channels.cache.get(chId);
-  if (!ch) return interaction.reply({ content: `❌ Channel \`${chId}\` not found in this server.`, flags: 64 });
-
-  const cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
-  if (cfg.channels.includes(chId)) return interaction.reply({ content: `❌ <#${chId}> is already added.`, flags: 64 });
-  cfg.channels.push(chId);
-  pingOnJoinConfig.set(guildId, cfg);
-  saveAllConfigs();
-
-  const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
-  function pojEmbed2(c) {
-    return { color: 0x2B2D31, title: "Ping on join", description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.", fields: [{ name: "Status", value: c?.enabled ? "Enabled" : "Disabled", inline: false }, { name: "Channels", value: (c?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*", inline: false }] };
-  }
-  return interaction.update({
-    embeds: [pojEmbed2(cfg)],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
-    )],
-  });
-});
-
-// poj_remove select
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isStringSelectMenu()) return;
-  if (!interaction.customId.startsWith("poj_remove_pick:")) return;
-
-  const guildId = interaction.customId.split(":")[1];
-  const chId    = interaction.values[0];
-  const cfg     = pingOnJoinConfig.get(guildId);
-  if (!cfg) return interaction.reply({ content: "❌ Config not found.", flags: 64 });
-  cfg.channels   = cfg.channels.filter(id => id !== chId);
-  pingOnJoinConfig.set(guildId, cfg);
-  saveAllConfigs();
-
-  const ch = interaction.guild.channels.cache.get(chId);
-  return interaction.update({
-    content: `✅ Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
-    components: [],
-  });
-});
-
 // -- ANTI-MINORS COMMANDS (OWNER ONLY) ------------─
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -9335,11 +9089,6 @@ function defaultSession() {
     extraParam:       "",
     msgId:            null,
     channelId:        null,
-    // Selected channels/categories
-    selectedSrcIds:   [],   // specific source channel/category IDs (empty = all)
-    selectedTgtCatId: "",   // target category ID to put clones into (empty = root)
-    selectedSrcName:  "",   // display name for selected source
-    selectedTgtName:  "",   // display name for selected target category
     // Clone options
     cloneRoles:       true,
     cloneCategories:  true,
@@ -9349,11 +9098,11 @@ function defaultSession() {
     skipExisting:     true,
     maintainOrder:    true,
     // Video rename
-    videoRenameMode:    "prefix",
+    videoRenameMode:    "prefix",   // prefix | numbered | replace | suffix
     videoPattern:       "SENSATIONAL",
     videoPadZeros:      2,
     videoCounterStart:  1,
-    videoExtension:     "keep",
+    videoExtension:     "keep",     // keep | mp4 | mov | webm
     exclusiveName:      "exclusive",
   };
 }
@@ -9362,114 +9111,57 @@ function defaultSession() {
 function buildPanelEmbed(s) {
   const pad = n => String(n).padStart(s.videoPadZeros, "0");
   const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
-  const p1  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
-            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
-            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-            :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
-  const p2  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
-            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
-            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-            :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
+  const p1 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
+           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
+           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+           :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
+  const p2 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
+           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
+           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+           :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
   const ready = srcOk && dstOk;
 
-  // ANSI helpers
-  const R  = "\u001b[0m";
-  const PK = "\u001b[1;35m";   // bright pink/magenta
-  const DM = "\u001b[2;35m";   // dim purple (borders)
-  const CY = "\u001b[0;36m";   // cyan (labels)
-  const GR = "\u001b[1;32m";   // green (set values)
-  const RD = "\u001b[1;31m";   // red (unset / warning)
-  const YL = "\u001b[0;33m";   // yellow (extra param)
-  const WH = "\u001b[1;37m";   // bright white (headers)
-  const DG = "\u001b[2;37m";   // dim gray (empty)
-
   const opMeta = {
-    cloneperks:         { e: "🌐", n: "Full Server Clone"     },
-    cloneperks_channel: { e: "💬", n: "Single Channel Clone"  },
-    clonecategoryperks: { e: "📁", n: "Category + Videos"     },
-    setuppaidperks:     { e: "🔧", n: "Paid Perks Setup"      },
-    hidepaidperks:      { e: "🙈", n: "Hide Channels"         },
-    sortchannels:       { e: "🔀", n: "Sort Channels"         },
+    cloneperks:         { e: "🌐", n: "Clone Server Completo"  },
+    cloneperks_channel: { e: "💬", n: "Clone Singolo Canale"   },
+    clonecategoryperks: { e: "📁", n: "Clone Categoria"        },
+    setuppaidperks:     { e: "🔧", n: "Setup Paid Perks"       },
+    hidepaidperks:      { e: "🙈", n: "Nascondi Canali"        },
+    sortchannels:       { e: "🔀", n: "Sort Canali"            },
   };
-  const op = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
-
-  const extraHint = s.extraParam
-    ? `${YL}${s.extraParam.slice(0,17).padEnd(17)}${R}`
-    : s.operation === "clonecategoryperks" ? `${RD}⚠  category name     ${R}`
-    : s.operation === "sortchannels"       ? `${RD}⚠  Cat1 | Cat2       ${R}`
-    : s.operation === "hidepaidperks"      ? `${DG}count  (default 20) ${R}`
-    :                                        `${DG}—                   ${R}`;
-
-  const tog = v => v
-    ? `${GR} ✦ ${R}`
-    : `${DG} ✧ ${R}`;
-
-  const renameMode = {
-    prefix:   "Prefix + Number",
-    numbered: "Numbers only",
-    replace:  "Fixed name",
-    suffix:   "Number + Suffix",
-  }[s.videoRenameMode] ?? s.videoRenameMode;
-
-  const srcVal = srcOk ? `${GR}${s.sourceId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-  const dstVal = dstOk ? `${GR}${s.targetId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-
-  const border   = `${DM}║${R}`;
-  const divider  = `${DM}╠══════════════════════════╣${R}`;
-  const topBar   = `${DM}╔══════════════════════════╗${R}`;
-  const botBar   = `${DM}╚══════════════════════════╝${R}`;
-  const midTitle = (t) => `${border}  ${WH}${t.padEnd(24)}${R}  ${border}`;
-  const row      = (label, val) => `${border}  ${CY}${label.padEnd(7)}${R}  ${val}  ${border}`;
-
-  const opSrcLabel = {
-    cloneperks:         "src srv",
-    cloneperks_channel: "src ch ",
-    clonecategoryperks: "src cat",
-    setuppaidperks:     "src srv",
-    hidepaidperks:      "target ",
-    sortchannels:       "target ",
-  }[s.operation] ?? "source ";
-
-  const ansiBlock = [
-    topBar,
-    midTitle("SERVERS"),
-    divider,
-    row(opSrcLabel, srcVal),
-    row("tgt srv", dstVal),
-    divider,
-    midTitle("CLONE OPTIONS"),
-    divider,
-    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
-    `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
-    divider,
-    midTitle("SELECTION"),
-    divider,
-    `${border}  ${CY}src sel ${R}  ${s.selectedSrcName ? GR+s.selectedSrcName.slice(0,17).padEnd(17)+R : DG+"all channels       "+R}  ${border}`,
-    `${border}  ${CY}tgt cat ${R}  ${s.selectedTgtName ? GR+s.selectedTgtName.slice(0,17).padEnd(17)+R : DG+"server root        "+R}  ${border}`,
-    divider,
-    midTitle("VIDEO PAIRS"),
-    divider,
-    `${border}  ${CY}channels${R}  ${GR}#${s.exclusiveName}${R}  ${DG}+${R}  ${GR}#${s.exclusiveName}-2${R}${"".padEnd(Math.max(0, 5 - s.exclusiveName.length))}  ${border}`,
-    `${border}  ${CY}rename  ${R}  ${YL}${renameMode.padEnd(18)}${R}  ${border}`,
-    `${border}  ${CY}preview ${R}  ${WH}${p1.slice(0,9).padEnd(9)}${R} ${WH}${p2.slice(0,9).padEnd(9)}${R}  ${border}`,
-    botBar,
-  ].join("\n");
-
-  const statusLine = ready
-    ? "### ✦  All set — hit 🚀 Launch"
-    : "### ⚠  Configure Source & Target first — hit 📝";
+  const op  = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
+  const dot = v => v ? "<:_:>" || "●" : "○";
+  const tog = v => v ? "\`ON \`" : "\`OFF\`";
 
   const desc = [
     `### ${op.e}  ${op.n}`,
-    "",
-    "```ansi",
-    ansiBlock,
-    "```",
-    "",
-    statusLine,
+    ``,
+    `\`\`\`ansi`,
+    `[2;35m╔══════════════════════════════╗[0m`,
+    `[2;35m║[0m  [1;37mSERVERS[0m                       [2;35m║[0m`,
+    `[2;35m╠══════════════════════════════╣[0m`,
+    `[2;35m║[0m  [0;36mSource[0m  ${srcOk ? `[1;32m${s.sourceId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
+    `[2;35m║[0m  [0;36mTarget[0m  ${dstOk ? `[1;32m${s.targetId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
+    s.extraParam
+      ? `[2;35m║[0m  [0;36mExtra  [0m  [0;33m${s.extraParam.slice(0,18).padEnd(18)}[0m  [2;35m║[0m`
+      : `[2;35m║[0m  [0;36mExtra  [0m  [2;37m—                 [0m  [2;35m║[0m`,
+    `[2;35m╚══════════════════════════════╝[0m`,
+    `\`\`\``,
+    ``,
+    `-# ⬡  ELEMENTI DA CLONARE`,
+    `> ${s.cloneRoles     ? "🩷" : "🩶"} **Ruoli**  ${s.cloneCategories ? "🩷" : "🩶"} **Categorie**  ${s.cloneChannels ? "🩷" : "🩶"} **Canali**`,
+    `> ${s.clonePermissions? "🩷" : "🩶"} **Permessi**  ${s.cloneMessages ? "🩷" : "🩶"} **Messaggi**  ${s.skipExisting ? "🩷" : "🩶"} **Skip dup.**`,
+    ``,
+    `-# ⬡  VIDEO — coppie da 2`,
+    `> 📂  \`#${s.exclusiveName}\`  ＋  \`#${s.exclusiveName}-2\``,
+    `> 🎞  \`${p1}\`  \`${p2}\``,
+    ``,
+    ready
+      ? `> ### ✦  Tutto pronto  —  premi 🚀`
+      : `> ### ⚠  Imposta Source e Target  —  premi 📝`,
   ].join("\n");
 
   return {
@@ -9489,89 +9181,72 @@ function buildPanelComponents(s) {
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
-      .setPlaceholder("📋 Select operation...")
+      .setPlaceholder("📋 Seleziona operazione...")
       .addOptions([
-        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos", default: s.operation === "cloneperks"         },
-        { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
-        { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
-        { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
-        { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
+        { label: "Clone Server Completo",  value: "cloneperks",         emoji: "🌐", description: "Ruoli + categorie + canali + video", default: s.operation === "cloneperks"         },
+        { label: "Clone Singolo Canale",   value: "cloneperks_channel",  emoji: "💬", description: "Copia media da un canale a un altro", default: s.operation === "cloneperks_channel" },
+        { label: "Clone Categoria + Video",value: "clonecategoryperks",  emoji: "📁", description: "Clone categoria + distribuzione video", default: s.operation === "clonecategoryperks" },
+        { label: "Setup Paid Perks",       value: "setuppaidperks",      emoji: "🔧", description: "Setup completo server premium",        default: s.operation === "setuppaidperks"     },
+        { label: "Nascondi Canali",        value: "hidepaidperks",       emoji: "🙈", description: "Nega ViewChannel a @everyone",         default: s.operation === "hidepaidperks"      },
+        { label: "Sort Canali",            value: "sortchannels",        emoji: "🔀", description: "Distribuisce canali in 2 categorie",    default: s.operation === "sortchannels"       },
       ])
   );
 
   // Row 2: Clone toggles
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Roles`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categories`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Channels`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messages`).setStyle(bs(s.cloneMessages)),
+    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Ruoli`).setStyle(bs(s.cloneRoles)),
+    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categorie`).setStyle(bs(s.cloneCategories)),
+    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Canali`).setStyle(bs(s.cloneChannels)),
+    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permessi`).setStyle(bs(s.clonePermissions)),
+    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messaggi`).setStyle(bs(s.cloneMessages)),
   );
 
   // Row 3: Video rename select + skip toggle
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬 Video rename mode...")
+      .setPlaceholder("🎬 Modalità rinomina video...")
       .addOptions([
-        { label: "Prefix + Number",  value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4", default: s.videoRenameMode === "prefix"   },
-        { label: "Numbers only",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
-        { label: "Fixed name",         value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",     default: s.videoRenameMode === "replace"  },
-        { label: "Number + Suffix",  value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",default: s.videoRenameMode === "suffix"  },
+        { label: "Prefisso + Numero",  value: "prefix",   emoji: "🔤", description: "SENSATIONAL01.mp4 + SENSATIONAL02.mp4", default: s.videoRenameMode === "prefix"   },
+        { label: "Solo Numerato",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
+        { label: "Nome Fisso",         value: "replace",  emoji: "📝", description: "SENSATIONAL.mp4 × tutte le coppie",     default: s.videoRenameMode === "replace"  },
+        { label: "Numero + Suffisso",  value: "suffix",   emoji: "🔚", description: "01_SENSATIONAL.mp4 + 02_SENSATIONAL.mp4",default: s.videoRenameMode === "suffix"  },
       ])
   );
 
-  // Row 4: Browse buttons — labels adapt to the current operation
-  const browseConfig = {
-    cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
-    cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
-    clonecategoryperks: { srcLabel: "📂 Source Category", tgtLabel: "📂 Target Category" },
-    setuppaidperks:     { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
-    hidepaidperks:      { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
-    sortchannels:       { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
-  };
-  const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
-  const browseButtons = [];
-  if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
-  browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
-  browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
-  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
-
-  // Row 5: Action buttons
-  const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"      ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"       ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"       ).setStyle(ButtonStyle.Danger),
+  // Row 4: Action buttons
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Imposta IDs"  ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Avvia"         ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Annulla"        ).setStyle(ButtonStyle.Danger),
   );
 
-  return [row1, row2, row3, row4, row5];
+  return [row1, row2, row3, row4];
 }
 
 // -- Interaction handler for the Config Panel ----------------------------------
 client.on("interactionCreate", async (interaction) => {
-  try {
   // Only owner can use the setup panel
   if (interaction.user.id !== OWNER_ID) return;
 
   // Only handle setup panel interactions
-  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video","sp_browse_src","sp_browse_tgt","sp_clr_sel","sp_src_pick","sp_tgt_pick","sp_src_guild_pick","sp_tgt_guild_pick","sp_src_ch_pick","sp_tgt_cat_pick"];
+  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video"];
   const id = interaction.customId;
-  if (!id || !spIds.includes(id)) return;
+  if (!spIds.includes(id)) return;
 
   const s = setupSessions.get(interaction.user.id);
 
   // -- Select: operation --
   if (interaction.isStringSelectMenu() && id === "sp_op") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired. Type `,clone` again.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,clone` di nuovo.", flags: 64 });
     s.operation = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
   // -- Select: video rename mode --
   if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.videoRenameMode = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
@@ -9585,326 +9260,18 @@ client.on("interactionCreate", async (interaction) => {
     sp_t_msgs:  "cloneMessages",
   };
   if (interaction.isButton() && toggleMap[id]) {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s[toggleMap[id]] = !s[toggleMap[id]];
-    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
-  }
-
-  // -- Button: browse source server + channels --
-  if (interaction.isButton() && id === "sp_browse_src") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const guilds = [...client.guilds.cache.values()].slice(0, 25);
-    if (guilds.length === 0) return interaction.reply({ content: "❌ Nessun server trovato nella cache del bot.", flags: 64 });
-    const options = guilds.map(g => ({
-      label: g.name.slice(0, 100),
-      value: g.id,
-      description: `ID: ${g.id}`,
-      default: g.id === s.sourceId,
-    }));
-    const selRow = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("sp_src_guild_pick")
-        .setPlaceholder("🌐 Seleziona server SORGENTE...")
-        .addOptions(options)
-    );
-    return interaction.reply({ content: "**Step 1/2 — Source** — Scegli il server sorgente:", components: [selRow], flags: 64 });
-  }
-
-  // -- Select: source guild picked → fetch channels → show channel picker --
-  if (interaction.isStringSelectMenu() && id === "sp_src_guild_pick") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const guildId = interaction.values[0];
-    s.sourceId = guildId;
-    // Silently update the panel
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    // Fetch channels via REST
-    let rawChannels;
-    try {
-      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
-        headers: { Authorization: `Bot ${process.env.TOKEN}` }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
-      rawChannels = await res.json();
-    } catch (e) {
-      return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
-    }
-    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    // Store rawChannels in session so the search modal can filter them
-    s._srcRawChannels = rawChannels;
-    s._srcGuildName   = guildName;
-    // Show a button so the user can open the search modal (modals require a button/slash interaction)
-    const { ButtonBuilder, ButtonStyle } = require("discord.js");
-    const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ Tutti i canali").setStyle(ButtonStyle.Secondary),
-    );
-    return interaction.update({
-      content: `**Server sorgente:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie trovate\nPremi 🔍 per cercare o ⭐ per clonare tutto:`,
-      components: [searchBtn],
-    });
-  }
-
-  // -- Button: open source search modal --
-  if (interaction.isButton() && id === "sp_btn_src_search") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca — ${s._srcGuildName ?? "sorgente"}`);
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("src_search_query")
-          .setLabel("Nome categoria (vuoto = prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
-      )
-    );
-    return interaction.showModal(modal);
-  }
-
-  // -- Button: select all channels (no filter) --
-  if (interaction.isButton() && id === "sp_btn_src_all") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    s.selectedSrcIds  = [];
-    s.selectedSrcName = "";
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    return interaction.update({
-      content: `✅ **Destinazione impostata:** categoria : HELP — torna al panel e premi 🚀`,
-      components: [],
-    });
-  }
-
-  // -- Modal submit: source channel search --
-  if (interaction.isModalSubmit() && id === "sp_modal_src_search") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const query = interaction.fields.getTextInputValue("src_search_query").trim().toLowerCase();
-    const rawChannels = s._srcRawChannels ?? [];
-    const guildName   = s._srcGuildName ?? s.sourceId;
-    const isCatOp = s.operation === "clonecategoryperks";
-
-    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-    let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-
-    if (query) {
-      cats  = cats.filter(c => c.name.toLowerCase().includes(query));
-      chans = chans.filter(c => c.name.toLowerCase().includes(query));
-    }
-
-    const options = [
-      { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
-      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
-    ].slice(0, 25);
-
-    if (options.length === 1) {
-      // Only "__all__" means no match — let user search again
-      return interaction.reply({
-        content: `❌ Nessun risultato per **"${query}"** in **${guildName}**. Ripremi 📂 Source Category e cerca di nuovo.`,
-        flags: 64,
-      });
-    }
-
-    const selRow = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("sp_src_ch_pick")
-        .setPlaceholder("📂 Scegli canale/categoria sorgente...")
-        .addOptions(options)
-    );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
-    return interaction.reply({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — scegli:`,
-      components: [selRow],
-      flags: 64,
-    });
-  }
-
-  // -- Select: source channel/category picked --
-  if (interaction.isStringSelectMenu() && id === "sp_src_ch_pick") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const val = interaction.values[0];
-    if (val === "__all__") {
-      s.selectedSrcIds  = [];
-      s.selectedSrcName = "";
-    } else {
-      s.selectedSrcIds  = [val];
-      const g = client.guilds.cache.get(s.sourceId);
-      const ch = g?.channels.cache.get(val);
-      // If not in cache, try to build name from the REST result stored in session
-      s.selectedSrcName = ch?.name ?? val;
-    }
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    return interaction.update({
-      content: `✅ **Sorgente impostata:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "tutti i canali"} — torna al panel e premi 🚀`,
-      components: [],
-    });
-  }
-
-  // -- Button: browse target server + category --
-  if (interaction.isButton() && id === "sp_browse_tgt") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const guilds = [...client.guilds.cache.values()].slice(0, 25);
-    if (guilds.length === 0) return interaction.reply({ content: "❌ Nessun server trovato nella cache del bot.", flags: 64 });
-    const options = guilds.map(g => ({
-      label: g.name.slice(0, 100),
-      value: g.id,
-      description: `ID: ${g.id}`,
-      default: g.id === s.targetId,
-    }));
-    const selRow = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("sp_tgt_guild_pick")
-        .setPlaceholder("🌐 Seleziona server DESTINAZIONE...")
-        .addOptions(options)
-    );
-    return interaction.reply({ content: "**Step 1/2 — Target** — Scegli il server destinazione:", components: [selRow], flags: 64 });
-  }
-
-  // -- Select: target guild picked → fetch categories → show category picker --
-  if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const guildId = interaction.values[0];
-    s.targetId = guildId;
-    // Silently update the panel
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    // Fetch channels via REST
-    let rawChannels;
-    try {
-      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
-        headers: { Authorization: `Bot ${process.env.TOKEN}` }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
-      rawChannels = await res.json();
-    } catch (e) {
-      return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
-    }
-    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    // Store raw channels in session for the search modal
-    s._tgtRawChannels = rawChannels;
-    s._tgtGuildName   = guildName;
-    const { ButtonBuilder, ButtonStyle } = require("discord.js");
-    const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (nessuna categoria)").setStyle(ButtonStyle.Secondary),
-    );
-    return interaction.update({
-      content: `**Server destinazione:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie disponibili\nPremi 🔍 per cercare o 📌 per Root:`,
-      components: [searchBtn],
-    });
-  }
-
-  // -- Button: open target search modal --
-  if (interaction.isButton() && id === "sp_btn_tgt_search") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca — ${s._tgtGuildName ?? "destinazione"}`);
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("tgt_search_query")
-          .setLabel("Nome categoria (vuoto = prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
-      )
-    );
-    return interaction.showModal(modal);
-  }
-
-  // -- Button: target root (no category) --
-  if (interaction.isButton() && id === "sp_btn_tgt_root") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    s.selectedTgtCatId = "";
-    s.selectedTgtName  = "";
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    return interaction.update({ content: `✅ **Destinazione impostata:** Root (nessuna categoria) — torna al panel e premi 🚀`, components: [] });
-  }
-
-  // -- Modal submit: target category search --
-  if (interaction.isModalSubmit() && id === "sp_modal_tgt_search") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const { StringSelectMenuBuilder } = require("discord.js");
-    const query = interaction.fields.getTextInputValue("tgt_search_query").trim().toLowerCase();
-    const rawChannels = s._tgtRawChannels ?? [];
-    const guildName   = s._tgtGuildName ?? s.targetId;
-    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-    if (query) cats = cats.filter(c => c.name.toLowerCase().includes(query));
-    const options = [
-      { label: "📌 Root — nessuna categoria", value: "__root__", description: "Mette i canali clonati senza categoria" },
-      ...cats.slice(0, 24).map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
-    ].slice(0, 25);
-    if (options.length === 1 && query) {
-      return interaction.reply({ content: `❌ Nessuna categoria trovata per **"${query}"** in **${guildName}**. Ripremi 🎯 Target Category e cerca di nuovo.`, flags: 64 });
-    }
-    const selRow = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("sp_tgt_cat_pick")
-        .setPlaceholder("📁 Scegli categoria destinazione...")
-        .addOptions(options)
-    );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
-    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — scegli:`, components: [selRow], flags: 64 });
-  }
-
-  // -- Select: target category picked --
-  if (interaction.isStringSelectMenu() && id === "sp_tgt_cat_pick") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    const val = interaction.values[0];
-    if (val === "__root__") {
-      s.selectedTgtCatId = "";
-      s.selectedTgtName  = "";
-    } else {
-      s.selectedTgtCatId = val;
-      const g   = client.guilds.cache.get(s.targetId);
-      const cat = g?.channels.cache.get(val);
-      s.selectedTgtName  = cat?.name ?? val;
-    }
-    try {
-      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
-      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
-      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
-    } catch (_) {}
-    return interaction.update({
-      content: `✅ **Destinazione impostata:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — torna al panel e premi 🚀`,
-      components: [],
-    });
-  }
-
-  // -- Button: clear all selection --
-  if (interaction.isButton() && id === "sp_clr_sel") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    s.selectedSrcIds   = [];
-    s.selectedSrcName  = "";
-    s.selectedTgtCatId = "";
-    s.selectedTgtName  = "";
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
   // -- Button: open IDs modal --
   if (interaction.isButton() && id === "sp_ids") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
-      .setTitle("🌸 Configure IDs & Parameters")
+      .setTitle("🌸 Configura IDs & Parametri")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
@@ -9917,7 +9284,12 @@ client.on("interactionCreate", async (interaction) => {
             .setValue(s.targetId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("excl_name").setLabel("Exclusive channel name (default: exclusive)")
+          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra (categoria | Categoria1 | Categoria2 | count)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  nomecategoria  /  Cat1 | Cat2  /  20")
+            .setValue(s.extraParam).setRequired(false)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("excl_name").setLabel("Nome canali esclusivi (default: exclusive)")
             .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
             .setValue(s.exclusiveName).setRequired(false)
         ),
@@ -9927,29 +9299,29 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: open video options modal --
   if (interaction.isButton() && id === "sp_video") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
-      .setTitle("🎬 Video & Rename Options")
+      .setTitle("🎬 Opzioni Video & Rinomina")
       .addComponents(
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
+          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Nome base file")
             .setStyle(TextInputStyle.Short).setPlaceholder("SENSATIONAL")
             .setValue(s.videoPattern).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_counter").setLabel("Counter start number")
+          new TextInputBuilder().setCustomId("vid_counter").setLabel("Numero iniziale contatore")
             .setStyle(TextInputStyle.Short).setPlaceholder("1")
             .setValue(String(s.videoCounterStart)).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_pad").setLabel("Zero padding  (1 → 1  |  2 → 01  |  3 → 001)")
+          new TextInputBuilder().setCustomId("vid_pad").setLabel("Padding zeri  (1 → 1  |  2 → 01  |  3 → 001)")
             .setStyle(TextInputStyle.Short).setPlaceholder("2")
             .setValue(String(s.videoPadZeros)).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_ext").setLabel("Extension  (keep / mp4 / mov / webm)")
+          new TextInputBuilder().setCustomId("vid_ext").setLabel("Estensione  (keep / mp4 / mov / webm)")
             .setStyle(TextInputStyle.Short).setPlaceholder("keep")
             .setValue(s.videoExtension).setRequired(true)
         ),
@@ -9959,9 +9331,10 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
     s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
+    s.extraParam = interaction.fields.getTextInputValue("extra_param").trim();
     const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
     if (rawExcl) s.exclusiveName = rawExcl;
     // Update the panel message
@@ -9970,12 +9343,12 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ IDs and parameters updated!", flags: 64 });
+    return interaction.reply({ content: "✅ IDs e parametri aggiornati!", flags: 64 });
   }
 
   // -- Modal submit: video options --
   if (interaction.isModalSubmit() && id === "sp_modal_video") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
     s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
     s.videoCounterStart = parseInt(interaction.fields.getTextInputValue("vid_counter")) || 1;
     s.videoPadZeros     = Math.min(4, Math.max(1, parseInt(interaction.fields.getTextInputValue("vid_pad")) || 2));
@@ -9987,23 +9360,23 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ Video options updated!", flags: 64 });
+    return interaction.reply({ content: "✅ Opzioni video aggiornate!", flags: 64 });
   }
 
   // -- Button: cancel --
   if (interaction.isButton() && id === "sp_cancel") {
     setupSessions.delete(interaction.user.id);
     return interaction.update({
-      embeds:     [{ color: PINK, description: "❌ Config Panel cancelled." }],
+      embeds:     [{ color: PINK, description: "❌ Config Panel annullato." }],
       components: [],
     });
   }
 
   // -- Button: launch --
   if (interaction.isButton() && id === "sp_launch") {
-    if (!s) return interaction.reply({ content: "⚠️ Session expired. Use `,clone` again.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,clone` di nuovo.", flags: 64 });
     if (!s.sourceId || !s.targetId) {
-      return interaction.reply({ content: "⚠️ Set **Source ID** and **Target ID** first using the 📝 Set IDs button.", flags: 64 });
+      return interaction.reply({ content: "⚠️ Imposta prima **Source ID** e **Target ID** con il pulsante 📝 Imposta IDs.", flags: 64 });
     }
     // Lock panel -- disable all components
     const lockedEmbed = buildPanelEmbed(s);
@@ -10014,7 +9387,7 @@ client.on("interactionCreate", async (interaction) => {
     setupSessions.delete(interaction.user.id);
 
     const statusCh  = interaction.channel;
-    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Initializing..." }] }).catch(() => null);
+    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Inizializzazione..." }] }).catch(() => null);
     const updateStatus = async (text) => {
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
     };
@@ -10025,15 +9398,6 @@ client.on("interactionCreate", async (interaction) => {
       log(`[setup panel] fatal: ${e.message}`, "error");
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `❌ Operazione fallita: \`${e.message}\`` }] }).catch(() => {});
     }
-  }
-
-  } catch (e) {
-    log(`[clone interaction] unhandled error id=${interaction.customId}: ${e.message}\n${e.stack}`, "error");
-    try {
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `❌ Errore: \`${e.message}\``, flags: 64 });
-      }
-    } catch (_) {}
   }
 });
 
@@ -10257,47 +9621,19 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
 
-    // Filter channels by selection if set
-    let filteredChannels = rawChannels;
-    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
-      const selId = s.selectedSrcIds[0];
-      const selCh = rawChannels.find(c => c.id === selId);
-      if (selCh && selCh.type === 4) {
-        // It's a category: include the category + all its children
-        filteredChannels = rawChannels.filter(c => c.id === selId || c.parent_id === selId);
-      } else {
-        // It's a specific channel
-        filteredChannels = rawChannels.filter(c => c.id === selId);
-      }
-    }
-
-    const rCount  = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
-    const cCount  = filteredChannels.filter(c => c.type === 4).length;
-    const chCount = filteredChannels.filter(c => c.type !== 4).length;
+    const rCount = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
+    const cCount = rawChannels.filter(c => c.type === 4).length;
+    const chCount = rawChannels.filter(c => c.type !== 4).length;
     await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categorie, **${chCount}** canali → **${targetGuild.name}**`);
 
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
     await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie...`);
-    const categoryMap = await cloneCategories(filteredChannels, targetGuild, roleMap);
-
-    // If a target category is selected, override the parent for all cloned channels
-    if (s.selectedTgtCatId) {
-      // Put everything under the selected target category
-      for (const [srcId, tgtId] of categoryMap.entries()) {
-        categoryMap.set(srcId, s.selectedTgtCatId);
-      }
-      if (categoryMap.size === 0) {
-        // No categories in source — still need a mapping for flat channels
-        filteredChannels.filter(c => c.type !== 4).forEach(c => {
-          if (!c.parent_id) categoryMap.set("__root__", s.selectedTgtCatId);
-        });
-      }
-    }
+    const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
 
     await updateStatus(`[3/3] ✅ Categorie (${categoryMap.size}). Clonando canali...`);
-    const { channelMap, channelCount } = await cloneChannels(filteredChannels, targetGuild, roleMap, categoryMap);
+    const { channelMap, channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
 
     // Optional: copy messages/content
     let filesCopied = 0;
@@ -10357,29 +9693,18 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const MEDIA_EXT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
     const URL_RE    = /https?:\/\/\S+/g;
 
-    // Source channel: prefer selectedSrcIds[0], fall back to sourceId
-    const srcChId = (s.selectedSrcIds && s.selectedSrcIds.length > 0) ? s.selectedSrcIds[0] : s.sourceId;
-    const srcCh = client.channels.cache.get(srcChId) ?? await client.channels.fetch(srcChId).catch(() => null);
-    if (!srcCh) throw new Error(`source channel \`${srcChId}\` non trovato`);
+    const srcCh = client.channels.cache.get(s.sourceId) ?? await client.channels.fetch(s.sourceId).catch(() => null);
+    if (!srcCh) throw new Error(`source channel \`${s.sourceId}\` non trovato`);
 
     let dstCh;
-    if (s.targetId && s.targetId.length > 5) {
-      // If targetId looks like a channel (not a guild), use directly
-      const maybeChannel = client.channels.cache.get(s.targetId) ?? await client.channels.fetch(s.targetId).catch(() => null);
-      if (maybeChannel && maybeChannel.isTextBased?.()) {
-        dstCh = maybeChannel;
-      } else {
-        // targetId is a guild — create channel there (optionally in selectedTgtCatId)
-        const tg = await client.guilds.fetch(s.targetId).catch(() => null);
-        if (!tg) throw new Error(`target guild \`${s.targetId}\` non accessibile`);
-        await tg.channels.fetch().catch(() => {});
-        const opts = { name: srcCh.name, type: 0, reason: "[setup panel channel clone]" };
-        if (s.selectedTgtCatId) opts.parent = s.selectedTgtCatId;
-        dstCh = await tg.channels.create(opts).catch(() => null);
-        if (!dstCh) throw new Error("impossibile creare il canale destinazione");
-      }
+    if (s.targetId) {
+      dstCh = client.channels.cache.get(s.targetId) ?? await client.channels.fetch(s.targetId).catch(() => null);
+      if (!dstCh) throw new Error(`destination channel \`${s.targetId}\` non trovato`);
     } else {
-      throw new Error("Target non impostato — usa 📂 Target Server/Category per selezionarlo");
+      const tg = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+      if (!tg) throw new Error("TARGET_GUILD non accessibile");
+      dstCh = await tg.channels.create({ name: srcCh.name, type: 0, reason: "[setup panel channel clone]" }).catch(() => null);
+      if (!dstCh) throw new Error("impossibile creare il canale destinazione");
     }
 
     await updateStatus(`Scanning **#${srcCh.name}** → **#${dstCh.name}**...`);
@@ -10504,6 +9829,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   // OPERATION: clonecategoryperks -- clone one category + distribute videos
   // --------------------------------------------------------------------------
   if (s.operation === "clonecategoryperks") {
+    const catName = s.extraParam;
+    if (!catName) throw new Error("Specifica il nome della categoria nel campo 'Extra' del panel");
+
     await updateStatus("Fetching canali via REST...");
     const [rawChannels, rawRoles, targetGuild] = await Promise.all([
       discordREST(`/guilds/${s.sourceId}/channels`),
@@ -10513,17 +9841,8 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
 
-    // Resolve source category: prefer selected ID, fall back to extraParam name
-    let srcCat;
-    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
-      srcCat = rawChannels.find(c => c.type === 4 && c.id === s.selectedSrcIds[0]);
-      if (!srcCat) throw new Error(`Categoria con ID \`${s.selectedSrcIds[0]}\` non trovata — usa 📂 Source Category per selezionarla`);
-    } else if (s.extraParam) {
-      srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === s.extraParam.toLowerCase());
-      if (!srcCat) throw new Error(`Categoria "${s.extraParam}" non trovata nel server sorgente`);
-    } else {
-      throw new Error("Nessuna categoria selezionata — usa il bottone 📂 Source Category per sceglierla");
-    }
+    const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
+    if (!srcCat) throw new Error(`Categoria "${catName}" non trovata nel server sorgente`);
 
     const catChans = rawChannels
       .filter(c => c.type !== 4 && c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
@@ -10532,28 +9851,19 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus(`Categoria **${srcCat.name}** — **${catChans.length}** canali. Clonando ruoli...`);
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    // Resolve target category: use selectedTgtCatId if set, otherwise find/create by name
-    let tgtCat;
-    if (s.selectedTgtCatId) {
-      tgtCat = targetGuild.channels.cache.get(s.selectedTgtCatId)
-        ?? await targetGuild.channels.fetch(s.selectedTgtCatId).catch(() => null);
-      if (!tgtCat) throw new Error(`Categoria destinazione \`${s.selectedTgtCatId}\` non trovata nel server target`);
-    } else {
-      tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
-      if (!tgtCat) {
-        tgtCat = await targetGuild.channels.create({
-          name: srcCat.name, type: 4,
-          permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
-          reason: "[setup panel]"
-        });
-        await new Promise(r => setTimeout(r, 1000));
-      }
+    // Create or find target category
+    let tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+    if (!tgtCat) {
+      tgtCat = await targetGuild.channels.create({
+        name: srcCat.name, type: 4,
+        permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
+        reason: "[setup panel]"
+      });
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     let clonedCount = 0;
-    let totalVideosSent = 0;
-    const seenVideoUrls = new Set(); // prevent duplicate video URLs across channels
-    const sentPerChannel = new Map();
+    const allVideoUrls = [];
 
     for (const ch of catChans) {
       try {
@@ -10569,73 +9879,44 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 1000)); }
         }
 
-        // Fetch videos from this source channel and send them directly into its cloned counterpart
-        if ([0, 5].includes(ch.type) && newCh) {
-          const channelVideoUrls = [];
-          let before = undefined, hasMore = true;
-          await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
-          while (hasMore) {
-            const query = before ? `?limit=100&before=${before}` : `?limit=100`;
-            const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
-              headers: { Authorization: `Bot ${process.env.TOKEN}` }
-            }).then(r => r.ok ? r.json() : null).catch(() => null);
-            if (!batch || batch.length === 0) break;
-            for (const msg of batch) {
-              for (const att of (msg.attachments ?? [])) {
-                const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
-                const cleanUrl = att.url?.split("?")[0];
-                if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
-                  seenVideoUrls.add(cleanUrl);
-                  channelVideoUrls.push(att.url);
+        // Collect video URLs from text/announcement channels
+        if ([0, 5].includes(ch.type)) {
+          const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
+          if (srcCh) {
+            let before = undefined, hasMore = true;
+            while (hasMore) {
+              const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+              if (!batch || batch.size === 0) break;
+              for (const msg of batch.values()) {
+                if (!msg.author?.bot) {
+                  for (const att of msg.attachments.values()) {
+                    if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+                  }
                 }
               }
+              before = batch.last()?.id;
+              hasMore = batch.size === 100;
+              await new Promise(r => setTimeout(r, 300));
             }
-            const newBefore = batch[batch.length - 1]?.id;
-            if (!newBefore || newBefore === before) break;
-            before = newBefore;
-            hasMore = batch.length === 100;
-            await new Promise(r => setTimeout(r, 300));
-          }
-
-          // Send this channel's videos into its own cloned channel
-          if (channelVideoUrls.length > 0) {
-            await updateStatus(`📤 Inviando **${channelVideoUrls.length}** video in #${newCh.name}...`);
-            let sent = 0, vidIndex = 0;
-            for (let i = 0; i < channelVideoUrls.length; i += 2) {
-              const pair = channelVideoUrls.slice(i, i + 2);
-              try {
-                const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
-                vidIndex += pair.length;
-                await newCh.send({ files: attachments });
-                sent += pair.length;
-                await new Promise(r => setTimeout(r, 1000));
-              } catch (e) {
-                log(`[setup] video send to #${newCh.name}: ${e.message}`, "error");
-                vidIndex += pair.length;
-              }
-            }
-            sentPerChannel.set(newCh.name, sent);
-            totalVideosSent += sent;
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, "error"); }
     }
 
-    const totalFound = seenVideoUrls.size;
-    const channelSummary = [...sentPerChannel.entries()]
-      .map(([name, count]) => `#${name}: ${count} video`)
-      .join("\n") || "nessun video trovato";
+    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video in coppie da 2...`);
+    const { sent1, sent2, excl1Name, excl2Name } = await distributeVideos(allVideoUrls, targetGuild);
 
     await statusMsg?.edit({
       embeds: [{
         color: PINK, title: "🌸 Clone Categoria Completo",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,     inline: true },
-          { name: "Video trovati",    value: `${totalFound}`,      inline: true },
-          { name: "Video inviati",    value: `${totalVideosSent}`, inline: true },
-          { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
-          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
+          { name: "Canali clonati",   value: `${clonedCount}`,           inline: true },
+          { name: "Video trovati",    value: `${allVideoUrls.length}`,   inline: true },
+          { name: "\u200b",           value: "\u200b",                   inline: true },
+          { name: `#${excl1Name}`,    value: `${sent1} video`,           inline: true },
+          { name: `#${excl2Name}`,    value: `${sent2} video`,           inline: true },
+          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
         ],
         timestamp: new Date()
       }]
@@ -10665,30 +9946,24 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await updateStatus("[3/3] Raccogliendo video per distribuzione...");
     const allVideoUrls = [];
-    const seenVideoUrls = new Set(); // prevent duplicate video URLs
     for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
+      const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
+      if (!srcCh) continue;
       let before = undefined, hasMore = true;
+      const allMsgs = [];
       while (hasMore) {
-        const query = before ? `?limit=100&before=${before}` : `?limit=100`;
-        const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
-          headers: { Authorization: `Bot ${process.env.TOKEN}` }
-        }).then(r => r.ok ? r.json() : null).catch(() => null);
-        if (!batch || batch.length === 0) break;
-        for (const msg of batch) {
-          for (const att of (msg.attachments ?? [])) {
-            const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
-            const cleanUrl = att.url?.split("?")[0];
-            if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
-              seenVideoUrls.add(cleanUrl);
-              allVideoUrls.push(att.url);
-            }
-          }
-        }
-        const newBefore = batch[batch.length - 1]?.id;
-        if (!newBefore || newBefore === before) break; // no advance = stop to prevent infinite loop
-        before = newBefore;
-        hasMore = batch.length === 100;
+        const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!batch || batch.size === 0) break;
+        allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && m.attachments.size > 0));
+        before = batch.last()?.id;
+        hasMore = batch.size === 100;
         await new Promise(r => setTimeout(r, 300));
+      }
+      allMsgs.reverse();
+      for (const msg of allMsgs) {
+        for (const att of msg.attachments.values()) {
+          if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+        }
       }
     }
 
