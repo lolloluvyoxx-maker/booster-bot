@@ -2705,26 +2705,50 @@ client.on("messageCreate", async (message) => {
         msg.edit({ components: [] }).catch(() => {});
       }
     });
-  // -- CONFIG PANEL ----------------------------------------─
-  // ,clone -- apre il Config Panel interattivo
-  if (command === "clone") {
-    if (message.author.id !== OWNER_ID) return err(message, "Missing permissions.");
-    try {
-      const session = defaultSession();
-      const sent = await message.reply({
-        embeds:     [buildPanelEmbed(session)],
-        components: buildPanelComponents(session),
-      });
-      session.msgId     = sent.id;
-      session.channelId = sent.channelId;
-      setupSessions.set(message.author.id, session);
-    } catch (e) {
-      log(`[clone panel] error: ${e.message}`, "error");
-      message.reply({ embeds: [{ color: PINK, description: `❌ Panel error: \`${e.message}\`` }] }).catch(() => {});
-    }
     return;
   }
+});
+
+
+// -- Config Panel command --
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "clone") return;
+
+  log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
+
+  if (message.author.id !== OWNER_ID) {
+    log(`[clone] BLOCKED — not owner (got ${message.author.id}, expected ${OWNER_ID})`, "error");
     return;
+  }
+
+  log(`[clone] owner confirmed — building panel...`, "info");
+
+  try {
+    log(`[clone] calling defaultSession()`, "info");
+    const session = defaultSession();
+
+    log(`[clone] calling buildPanelEmbed()`, "info");
+    const embed = buildPanelEmbed(session);
+
+    log(`[clone] calling buildPanelComponents()`, "info");
+    const components = buildPanelComponents(session);
+
+    log(`[clone] sending reply...`, "info");
+    const sent = await message.reply({ embeds: [embed], components });
+
+    session.msgId     = sent.id;
+    session.channelId = sent.channelId;
+    setupSessions.set(message.author.id, session);
+
+    log(`[clone] panel sent OK — msgId=${sent.id}`, "info");
+  } catch (e) {
+    log(`[clone] CRASH: ${e.message}\n${e.stack}`, "error");
+    message.reply({ content: `❌ \`${e.message}\`` }).catch(() => {});
   }
 });
 
