@@ -241,36 +241,73 @@ async function confirm(message, text, onConfirm) {
 // banStats[guildId][modId] = { tag, actions, bans, ignores }
 const banStats = {};
 
-async function loadBanStatsFromAuditLogs(guild) {
+async function loadBanStatsFromAuditLogs(guild, existingStats = {}) {
+  // Start fresh for ban/action counts, but preserve ignores from memory
+  // since ignores are bot-tracked only and don't exist in audit logs
   const stats = {};
+  for (const [modId, data] of Object.entries(existingStats)) {
+    stats[modId] = { username: data.username ?? data.tag ?? modId, bans: 0, actions: 0, ignores: data.ignores ?? 0 };
+  }
+
+  const TWO_MONTHS_AGO = Date.now() - (61 * 24 * 60 * 60 * 1000);
+
   try {
     let before = undefined;
-    let fetched;
+    let totalFetched = 0;
+    let keepGoing = true;
 
-    // Fetch all ban audit log entries (100 at a time)
-    do {
-      fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, before });
-      if (fetched.entries.size === 0) break;
+    while (keepGoing) {
+      let fetched;
+      try {
+        fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, ...(before ? { before } : {}) });
+      } catch (e) {
+        log(`[modstats] Audit log page error for ${guild.name}: ${e.message}`, "error");
+        break;
+      }
+
+      if (!fetched || fetched.entries.size === 0) break;
 
       for (const entry of fetched.entries.values()) {
+        // Stop paginating once we are past 2 months
+        if (entry.createdTimestamp < TWO_MONTHS_AGO) {
+          keepGoing = false;
+          break;
+        }
         if (!entry.executor) continue;
-        const modId = entry.executor.id;
-        const modTag = entry.executor.username || entry.executor.username;
+
+        const modId  = entry.executor.id;
+        const modTag = entry.executor.username ?? modId;
 
         if (!stats[modId]) {
-          stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+          stats[modId] = { username: modTag, bans: 0, actions: 0, ignores: existingStats[modId]?.ignores ?? 0 };
         }
         stats[modId].username = modTag;
-        stats[modId].actions += 1;
         stats[modId].bans += 1;
       }
 
-      before = fetched.entries.last()?.id;
-    } while (fetched.entries.size === 100);
+      totalFetched += fetched.entries.size;
 
+      // Stop if this was the last page
+      if (fetched.entries.size < 100) break;
+
+      const lastId = fetched.entries.last()?.id;
+      if (!lastId || lastId === before) break;
+      before = lastId;
+
+      // Respect rate limits between pages
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    log(`[modstats] Fetched ${totalFetched} ban audit entries for ${guild.name}`, "info");
   } catch (e) {
-    log(`Failed to load audit logs for ${guild.name}: ${e.message}`, "error");
+    log(`[modstats] Fatal error loading audit logs for ${guild.name}: ${e.message}`, "error");
   }
+
+  // Final pass: actions = bans + ignores for every mod
+  for (const data of Object.values(stats)) {
+    data.actions = data.bans + data.ignores;
+  }
+
   return stats;
 }
 
@@ -563,7 +600,7 @@ client.once("clientReady", async () => {
     (async () => {
       for (const guild of [sourceGuild, targetGuild]) {
         log(`Loading ban history from audit logs for ${guild.name}...`, "info");
-        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
+        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild, banStats[guild.id] ?? {});
         const total = Object.values(banStats[guild.id]).reduce((sum, m) => sum + m.bans, 0);
         log(`Loaded ${total} historical bans for ${guild.name}`, "success");
       }
@@ -908,7 +945,7 @@ client.on("messageCreate", async (message) => {
   // Send typing indicator while loading
   await message.channel.sendTyping().catch(() => {});
   // Load fresh from audit logs
-  const freshStats = await loadBanStatsFromAuditLogs(message.guild);
+  const freshStats = await loadBanStatsFromAuditLogs(message.guild, banStats[message.guild.id] ?? {});
   banStats[message.guild.id] = freshStats;
 
   // Filter out bots
@@ -927,17 +964,22 @@ client.on("messageCreate", async (message) => {
   const totalPages = Math.ceil(allEntries.length / PER_PAGE);
   let page = 0;
 
+  const medals = ["🥇", "🥈", "🥉"];
+  const totalBans = allEntries.reduce((s, [, d]) => s + d.bans, 0);
+
   function buildEmbed(p) {
     const slice = allEntries.slice(p * PER_PAGE, p * PER_PAGE + PER_PAGE);
-    const lines = slice.map(([modId, data]) => {
-      const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0";
-      return `<@${modId}>\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
+    const lines = slice.map(([modId, data], i) => {
+      const rank   = p * PER_PAGE + i;
+      const medal  = medals[rank] ?? `**#${rank + 1}**`;
+      const banPct = totalBans > 0 ? ((data.bans / totalBans) * 100).toFixed(1) : "0.0";
+      return `${medal} <@${modId}>\n🔨 \`${data.bans}\` bans  👁 \`${data.ignores}\` ignores  ⚡ \`${data.actions}\` total  *(${banPct}% of server bans)*`;
     });
     return {
       color: PINK,
       title: "📊 Mod Stats",
       description: lines.join("\n\n"),
-      footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name}` },
+      footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name} • ${totalBans} total bans` },
       timestamp: new Date()
     };
   }
@@ -9356,6 +9398,9 @@ function defaultSession() {
     videoCounterStart:  1,
     videoExtension:     "keep",
     exclusiveName:      "exclusive",
+    // Single Channel Clone: direct channel IDs (bypass server browse)
+    singleSrcChId:      "",
+    singleTgtChId:      "",
   };
 }
 
@@ -9374,7 +9419,7 @@ function buildPanelEmbed(s) {
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
-  const ready = srcOk && dstOk;
+  const ready = chReady ?? (srcOk && dstOk);
 
   // ANSI helpers
   const R  = "\u001b[0m";
@@ -9415,8 +9460,17 @@ function buildPanelEmbed(s) {
     suffix:   "Number + Suffix",
   }[s.videoRenameMode] ?? s.videoRenameMode;
 
-  const srcVal = srcOk ? `${GR}${s.sourceId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-  const dstVal = dstOk ? `${GR}${s.targetId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
+  // For single channel clone, show channel IDs if set
+  const srcChOk = s.operation === "cloneperks_channel" && s.singleSrcChId.length > 5;
+  const dstChOk = s.operation === "cloneperks_channel" && s.singleTgtChId.length > 5;
+  const srcVal = srcChOk ? `${GR}${s.singleSrcChId.slice(0,18)}${R}`
+               : srcOk   ? `${GR}${s.sourceId.slice(0,18)}${R}`
+               :            `${RD}not configured    ${R}`;
+  const dstVal = dstChOk ? `${GR}${s.singleTgtChId.slice(0,18)}${R}`
+               : dstOk   ? `${GR}${s.targetId.slice(0,18)}${R}`
+               :            `${RD}not configured    ${R}`;
+  // For channel clone: ready when both channel IDs are set
+  const chReady = s.operation === "cloneperks_channel" ? (srcChOk && dstChOk) : (srcOk && dstOk);
 
   const border   = `${DM}║${R}`;
   const divider  = `${DM}╠══════════════════════════╣${R}`;
@@ -9433,13 +9487,14 @@ function buildPanelEmbed(s) {
     hidepaidperks:      "target ",
     sortchannels:       "target ",
   }[s.operation] ?? "source ";
+  const tgtLabel = s.operation === "cloneperks_channel" ? "tgt ch " : "tgt srv";
 
   const ansiBlock = [
     topBar,
     midTitle("SERVERS"),
     divider,
     row(opSrcLabel, srcVal),
-    row("tgt srv", dstVal),
+    row(tgtLabel, dstVal),
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
@@ -9926,17 +9981,41 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && id === "sp_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+    if (s.operation === "cloneperks_channel") {
+      // Channel clone: ask for direct channel IDs (no server needed)
+      const modal = new ModalBuilder()
+        .setCustomId("sp_modal_ids")
+        .setTitle("💬 Single Channel Clone — IDs")
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("src_id")
+              .setLabel("Source Channel ID (canale da copiare)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+              .setValue(s.singleSrcChId || s.selectedSrcIds[0] || "").setRequired(true)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("dst_id")
+              .setLabel("Target Channel ID (canale destinazione)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+              .setValue(s.singleTgtChId || s.targetId || "").setRequired(true)
+          ),
+        );
+      return interaction.showModal(modal);
+    }
+
+    // Default: server IDs + exclusive name
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
       .setTitle("🌸 Configure IDs & Parameters")
       .addComponents(
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
+          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server ID")
             .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
             .setValue(s.sourceId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server / Channel ID")
+          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server ID")
             .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
             .setValue(s.targetId).setRequired(true)
         ),
@@ -9984,17 +10063,30 @@ client.on("interactionCreate", async (interaction) => {
   // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
-    s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
-    const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
-    if (rawExcl) s.exclusiveName = rawExcl;
+
+    const srcVal = interaction.fields.getTextInputValue("src_id").trim();
+    const dstVal = interaction.fields.getTextInputValue("dst_id").trim();
+
+    if (s.operation === "cloneperks_channel") {
+      // Save directly as channel IDs — no server ID needed
+      s.singleSrcChId   = srcVal;
+      s.singleTgtChId   = dstVal;
+      s.selectedSrcIds  = [srcVal];  // also set for execution compatibility
+      s.targetId        = dstVal;    // execution reads targetId for dst channel
+    } else {
+      s.sourceId = srcVal;
+      s.targetId = dstVal;
+      const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
+      if (rawExcl) s.exclusiveName = rawExcl;
+    }
+
     // Update the panel message
     try {
       const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ IDs and parameters updated!", flags: 64 });
+    return interaction.reply({ content: "✅ IDs updated!", flags: 64 });
   }
 
   // -- Modal submit: video options --
