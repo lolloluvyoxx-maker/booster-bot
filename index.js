@@ -10094,3 +10094,23 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   throw new Error(`Operazione non riconosciuta: "${s.operation}"`);
 }
 
+
+// ===== ERROR HANDLING =====
+client.on("error", (error) => {
+  log(`Client error: ${error.message}`, "error");
+});
+
+// Prevent crashes from unhandled promise rejections
+process.on("unhandledRejection", (error) => {
+  log(`Unhandled rejection: ${error?.message || error}`, "error");
+  // Do NOT exit — just log it
+});
+
+process.on("uncaughtException", (error) => {
+  log(`Uncaught exception: ${error?.message || error}`, "error");
+  // Do NOT exit
+});
+
+// Clean up handled messages cache every 30 seconds
+
+client.login(process.env.TOKEN);
