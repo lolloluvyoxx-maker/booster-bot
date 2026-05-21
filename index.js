@@ -10202,8 +10202,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }
 
     let clonedCount = 0;
-    const allVideoUrls = [];
-    const clonedTextChannels = []; // track cloned text channels for video distribution
+    let totalVideosSent = 0;
+    const seenVideoUrls = new Set(); // prevent duplicate video URLs across channels
+    const sentPerChannel = new Map();
 
     for (const ch of catChans) {
       try {
@@ -10219,9 +10220,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 1000)); }
         }
 
-        // Collect video URLs from text/announcement channels via REST
-        if ([0, 5].includes(ch.type)) {
-          if (newCh) clonedTextChannels.push(newCh);
+        // Fetch videos from this source channel and send them directly into its cloned counterpart
+        if ([0, 5].includes(ch.type) && newCh) {
+          const channelVideoUrls = [];
           let before = undefined, hasMore = true;
           await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
           while (hasMore) {
@@ -10233,57 +10234,57 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
             for (const msg of batch) {
               for (const att of (msg.attachments ?? [])) {
                 const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
-                if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name)) allVideoUrls.push(att.url);
+                const cleanUrl = att.url?.split("?")[0];
+                if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
+                  seenVideoUrls.add(cleanUrl);
+                  channelVideoUrls.push(att.url);
+                }
               }
             }
-            before = batch[batch.length - 1]?.id;
+            const newBefore = batch[batch.length - 1]?.id;
+            if (!newBefore || newBefore === before) break;
+            before = newBefore;
             hasMore = batch.length === 100;
             await new Promise(r => setTimeout(r, 300));
+          }
+
+          // Send this channel's videos into its own cloned channel
+          if (channelVideoUrls.length > 0) {
+            await updateStatus(`📤 Inviando **${channelVideoUrls.length}** video in #${newCh.name}...`);
+            let sent = 0, vidIndex = 0;
+            for (let i = 0; i < channelVideoUrls.length; i += 2) {
+              const pair = channelVideoUrls.slice(i, i + 2);
+              try {
+                const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
+                vidIndex += pair.length;
+                await newCh.send({ files: attachments });
+                sent += pair.length;
+                await new Promise(r => setTimeout(r, 1000));
+              } catch (e) {
+                log(`[setup] video send to #${newCh.name}: ${e.message}`, "error");
+                vidIndex += pair.length;
+              }
+            }
+            sentPerChannel.set(newCh.name, sent);
+            totalVideosSent += sent;
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, "error"); }
     }
 
-    // Distribute videos round-robin into the cloned channels (no auto-created exclusive channels)
-    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video nei canali...`);
-
-    // Fisher-Yates shuffle
-    for (let i = allVideoUrls.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [allVideoUrls[i], allVideoUrls[j]] = [allVideoUrls[j], allVideoUrls[i]];
-    }
-
-    const sentPerChannel = new Map(clonedTextChannels.map(c => [c.id, 0]));
-    let vidIndex = 0;
-    for (let i = 0; i < allVideoUrls.length; i += 2) {
-      if (clonedTextChannels.length === 0) break;
-      const target = clonedTextChannels[(Math.floor(i / 2)) % clonedTextChannels.length];
-      const pair = allVideoUrls.slice(i, i + 2);
-      try {
-        const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
-        vidIndex += pair.length;
-        await target.send({ files: attachments });
-        sentPerChannel.set(target.id, (sentPerChannel.get(target.id) ?? 0) + pair.length);
-        await new Promise(r => setTimeout(r, 1000));
-      } catch (e) {
-        log(`[setup] video send to #${target.name}: ${e.message}`, "error");
-        vidIndex += pair.length;
-      }
-    }
-
-    const totalSent = [...sentPerChannel.values()].reduce((a, b) => a + b, 0);
-    const channelSummary = clonedTextChannels
-      .map(c => `#${c.name}: ${sentPerChannel.get(c.id) ?? 0} video`)
-      .join("\n") || "nessun canale";
+    const totalFound = seenVideoUrls.size;
+    const channelSummary = [...sentPerChannel.entries()]
+      .map(([name, count]) => `#${name}: ${count} video`)
+      .join("\n") || "nessun video trovato";
 
     await statusMsg?.edit({
       embeds: [{
         color: PINK, title: "🌸 Clone Categoria Completo",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,         inline: true },
-          { name: "Video trovati",    value: `${allVideoUrls.length}`, inline: true },
-          { name: "Video inviati",    value: `${totalSent}`,           inline: true },
+          { name: "Canali clonati",   value: `${clonedCount}`,     inline: true },
+          { name: "Video trovati",    value: `${totalFound}`,      inline: true },
+          { name: "Video inviati",    value: `${totalVideosSent}`, inline: true },
           { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
           { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
         ],
@@ -10315,6 +10316,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await updateStatus("[3/3] Raccogliendo video per distribuzione...");
     const allVideoUrls = [];
+    const seenVideoUrls = new Set(); // prevent duplicate video URLs
     for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
       let before = undefined, hasMore = true;
       while (hasMore) {
@@ -10326,10 +10328,16 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         for (const msg of batch) {
           for (const att of (msg.attachments ?? [])) {
             const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
-            if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name)) allVideoUrls.push(att.url);
+            const cleanUrl = att.url?.split("?")[0];
+            if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
+              seenVideoUrls.add(cleanUrl);
+              allVideoUrls.push(att.url);
+            }
           }
         }
-        before = batch[batch.length - 1]?.id;
+        const newBefore = batch[batch.length - 1]?.id;
+        if (!newBefore || newBefore === before) break; // no advance = stop to prevent infinite loop
+        before = newBefore;
         hasMore = batch.length === 100;
         await new Promise(r => setTimeout(r, 300));
       }
