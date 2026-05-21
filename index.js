@@ -9107,6 +9107,11 @@ function defaultSession() {
     extraParam:       "",
     msgId:            null,
     channelId:        null,
+    // Selected channels/categories
+    selectedSrcIds:   [],   // specific source channel/category IDs (empty = all)
+    selectedTgtCatId: "",   // target category ID to put clones into (empty = root)
+    selectedSrcName:  "",   // display name for selected source
+    selectedTgtName:  "",   // display name for selected target category
     // Clone options
     cloneRoles:       true,
     cloneCategories:  true,
@@ -9116,11 +9121,11 @@ function defaultSession() {
     skipExisting:     true,
     maintainOrder:    true,
     // Video rename
-    videoRenameMode:    "prefix",   // prefix | numbered | replace | suffix
+    videoRenameMode:    "prefix",
     videoPattern:       "SENSATIONAL",
     videoPadZeros:      2,
     videoCounterStart:  1,
-    videoExtension:     "keep",     // keep | mp4 | mov | webm
+    videoExtension:     "keep",
     exclusiveName:      "exclusive",
   };
 }
@@ -9204,6 +9209,11 @@ function buildPanelEmbed(s) {
     `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
     `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
     divider,
+    midTitle("SELECTION"),
+    divider,
+    `${border}  ${CY}src sel ${R}  ${s.selectedSrcName ? GR+s.selectedSrcName.slice(0,17).padEnd(17)+R : DG+"all channels       "+R}  ${border}`,
+    `${border}  ${CY}tgt cat ${R}  ${s.selectedTgtName ? GR+s.selectedTgtName.slice(0,17).padEnd(17)+R : DG+"server root        "+R}  ${border}`,
+    divider,
     midTitle("VIDEO PAIRS"),
     divider,
     `${border}  ${CY}channels${R}  ${GR}#${s.exclusiveName}${R}  ${DG}+${R}  ${GR}#${s.exclusiveName}-2${R}${"".padEnd(Math.max(0, 5 - s.exclusiveName.length))}  ${border}`,
@@ -9276,15 +9286,22 @@ function buildPanelComponents(s) {
       ])
   );
 
-  // Row 4: Action buttons
+  // Row 4: Browse buttons
   const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"  ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options" ).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"         ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"        ).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("sp_browse_src").setLabel("📂 Source Server/Channel").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel("📂 Target Server/Category").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("🗑 Clear Selection").setStyle(ButtonStyle.Secondary),
   );
 
-  return [row1, row2, row3, row4];
+  // Row 5: Action buttons
+  const row5 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"      ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"       ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"       ).setStyle(ButtonStyle.Danger),
+  );
+
+  return [row1, row2, row3, row4, row5];
 }
 
 // -- Interaction handler for the Config Panel ----------------------------------
@@ -9294,7 +9311,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.user.id !== OWNER_ID) return;
 
   // Only handle setup panel interactions
-  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video"];
+  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video","sp_browse_src","sp_browse_tgt","sp_clr_sel","sp_src_pick","sp_tgt_pick","sp_src_guild_pick","sp_tgt_guild_pick","sp_src_ch_pick","sp_tgt_cat_pick"];
   const id = interaction.customId;
   if (!id || !spIds.includes(id)) return;
 
@@ -9325,6 +9342,191 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && toggleMap[id]) {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s[toggleMap[id]] = !s[toggleMap[id]];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // -- Button: browse source server + channels --
+  if (interaction.isButton() && id === "sp_browse_src") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guilds = [...client.guilds.cache.values()].slice(0, 25);
+    if (guilds.length === 0) return interaction.reply({ content: "❌ Nessun server trovato nella cache del bot.", flags: 64 });
+    const options = guilds.map(g => ({
+      label: g.name.slice(0, 100),
+      value: g.id,
+      description: `ID: ${g.id}`,
+      default: g.id === s.sourceId,
+    }));
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_src_guild_pick")
+        .setPlaceholder("🌐 Seleziona server SORGENTE...")
+        .addOptions(options)
+    );
+    return interaction.reply({ content: "**Step 1/2 — Source** — Scegli il server sorgente:", components: [selRow], flags: 64 });
+  }
+
+  // -- Select: source guild picked → fetch channels → show channel picker --
+  if (interaction.isStringSelectMenu() && id === "sp_src_guild_pick") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guildId = interaction.values[0];
+    s.sourceId = guildId;
+    // Silently update the panel
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    // Fetch channels via REST
+    let rawChannels;
+    try {
+      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
+      rawChannels = await res.json();
+    } catch (e) {
+      return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
+    }
+    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
+    const cats  = rawChannels.filter(c => c.type === 4).slice(0, 12);
+    const chans = rawChannels.filter(c => [0, 5].includes(c.type)).slice(0, 12);
+    const options = [
+      { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
+      ...cats.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
+      ...chans.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}`   })),
+    ].slice(0, 25);
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_src_ch_pick")
+        .setPlaceholder("📂 Scegli canale/categoria sorgente...")
+        .addOptions(options)
+    );
+    return interaction.update({
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\nScegli il canale o la categoria da clonare:`,
+      components: [selRow],
+    });
+  }
+
+  // -- Select: source channel/category picked --
+  if (interaction.isStringSelectMenu() && id === "sp_src_ch_pick") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const val = interaction.values[0];
+    if (val === "__all__") {
+      s.selectedSrcIds  = [];
+      s.selectedSrcName = "";
+    } else {
+      s.selectedSrcIds  = [val];
+      const g = client.guilds.cache.get(s.sourceId);
+      const ch = g?.channels.cache.get(val);
+      // If not in cache, try to build name from the REST result stored in session
+      s.selectedSrcName = ch?.name ?? val;
+    }
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `✅ **Sorgente impostata:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "tutti i canali"} — torna al panel e premi 🚀`,
+      components: [],
+    });
+  }
+
+  // -- Button: browse target server + category --
+  if (interaction.isButton() && id === "sp_browse_tgt") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guilds = [...client.guilds.cache.values()].slice(0, 25);
+    if (guilds.length === 0) return interaction.reply({ content: "❌ Nessun server trovato nella cache del bot.", flags: 64 });
+    const options = guilds.map(g => ({
+      label: g.name.slice(0, 100),
+      value: g.id,
+      description: `ID: ${g.id}`,
+      default: g.id === s.targetId,
+    }));
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_tgt_guild_pick")
+        .setPlaceholder("🌐 Seleziona server DESTINAZIONE...")
+        .addOptions(options)
+    );
+    return interaction.reply({ content: "**Step 1/2 — Target** — Scegli il server destinazione:", components: [selRow], flags: 64 });
+  }
+
+  // -- Select: target guild picked → fetch categories → show category picker --
+  if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guildId = interaction.values[0];
+    s.targetId = guildId;
+    // Silently update the panel
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    // Fetch channels via REST
+    let rawChannels;
+    try {
+      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
+      rawChannels = await res.json();
+    } catch (e) {
+      return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
+    }
+    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
+    const cats = rawChannels.filter(c => c.type === 4).slice(0, 24);
+    const options = [
+      { label: "📌 Root — nessuna categoria", value: "__root__", description: "Mette i canali clonati senza categoria" },
+      ...cats.map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
+    ].slice(0, 25);
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_tgt_cat_pick")
+        .setPlaceholder("📁 Scegli categoria destinazione...")
+        .addOptions(options)
+    );
+    return interaction.update({
+      content: `**Step 2/2 — Target** — Server: **${guildName}**\nScegli la categoria dove inserire i canali clonati:`,
+      components: [selRow],
+    });
+  }
+
+  // -- Select: target category picked --
+  if (interaction.isStringSelectMenu() && id === "sp_tgt_cat_pick") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const val = interaction.values[0];
+    if (val === "__root__") {
+      s.selectedTgtCatId = "";
+      s.selectedTgtName  = "";
+    } else {
+      s.selectedTgtCatId = val;
+      const g   = client.guilds.cache.get(s.targetId);
+      const cat = g?.channels.cache.get(val);
+      s.selectedTgtName  = cat?.name ?? val;
+    }
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `✅ **Destinazione impostata:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — torna al panel e premi 🚀`,
+      components: [],
+    });
+  }
+
+  // -- Button: clear all selection --
+  if (interaction.isButton() && id === "sp_clr_sel") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    s.selectedSrcIds   = [];
+    s.selectedSrcName  = "";
+    s.selectedTgtCatId = "";
+    s.selectedTgtName  = "";
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
@@ -9693,19 +9895,47 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
 
-    const rCount = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
-    const cCount = rawChannels.filter(c => c.type === 4).length;
-    const chCount = rawChannels.filter(c => c.type !== 4).length;
+    // Filter channels by selection if set
+    let filteredChannels = rawChannels;
+    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
+      const selId = s.selectedSrcIds[0];
+      const selCh = rawChannels.find(c => c.id === selId);
+      if (selCh && selCh.type === 4) {
+        // It's a category: include the category + all its children
+        filteredChannels = rawChannels.filter(c => c.id === selId || c.parent_id === selId);
+      } else {
+        // It's a specific channel
+        filteredChannels = rawChannels.filter(c => c.id === selId);
+      }
+    }
+
+    const rCount  = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
+    const cCount  = filteredChannels.filter(c => c.type === 4).length;
+    const chCount = filteredChannels.filter(c => c.type !== 4).length;
     await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categorie, **${chCount}** canali → **${targetGuild.name}**`);
 
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
     await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie...`);
-    const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
+    const categoryMap = await cloneCategories(filteredChannels, targetGuild, roleMap);
+
+    // If a target category is selected, override the parent for all cloned channels
+    if (s.selectedTgtCatId) {
+      // Put everything under the selected target category
+      for (const [srcId, tgtId] of categoryMap.entries()) {
+        categoryMap.set(srcId, s.selectedTgtCatId);
+      }
+      if (categoryMap.size === 0) {
+        // No categories in source — still need a mapping for flat channels
+        filteredChannels.filter(c => c.type !== 4).forEach(c => {
+          if (!c.parent_id) categoryMap.set("__root__", s.selectedTgtCatId);
+        });
+      }
+    }
 
     await updateStatus(`[3/3] ✅ Categorie (${categoryMap.size}). Clonando canali...`);
-    const { channelMap, channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
+    const { channelMap, channelCount } = await cloneChannels(filteredChannels, targetGuild, roleMap, categoryMap);
 
     // Optional: copy messages/content
     let filesCopied = 0;
@@ -9765,18 +9995,29 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const MEDIA_EXT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
     const URL_RE    = /https?:\/\/\S+/g;
 
-    const srcCh = client.channels.cache.get(s.sourceId) ?? await client.channels.fetch(s.sourceId).catch(() => null);
-    if (!srcCh) throw new Error(`source channel \`${s.sourceId}\` non trovato`);
+    // Source channel: prefer selectedSrcIds[0], fall back to sourceId
+    const srcChId = (s.selectedSrcIds && s.selectedSrcIds.length > 0) ? s.selectedSrcIds[0] : s.sourceId;
+    const srcCh = client.channels.cache.get(srcChId) ?? await client.channels.fetch(srcChId).catch(() => null);
+    if (!srcCh) throw new Error(`source channel \`${srcChId}\` non trovato`);
 
     let dstCh;
-    if (s.targetId) {
-      dstCh = client.channels.cache.get(s.targetId) ?? await client.channels.fetch(s.targetId).catch(() => null);
-      if (!dstCh) throw new Error(`destination channel \`${s.targetId}\` non trovato`);
+    if (s.targetId && s.targetId.length > 5) {
+      // If targetId looks like a channel (not a guild), use directly
+      const maybeChannel = client.channels.cache.get(s.targetId) ?? await client.channels.fetch(s.targetId).catch(() => null);
+      if (maybeChannel && maybeChannel.isTextBased?.()) {
+        dstCh = maybeChannel;
+      } else {
+        // targetId is a guild — create channel there (optionally in selectedTgtCatId)
+        const tg = await client.guilds.fetch(s.targetId).catch(() => null);
+        if (!tg) throw new Error(`target guild \`${s.targetId}\` non accessibile`);
+        await tg.channels.fetch().catch(() => {});
+        const opts = { name: srcCh.name, type: 0, reason: "[setup panel channel clone]" };
+        if (s.selectedTgtCatId) opts.parent = s.selectedTgtCatId;
+        dstCh = await tg.channels.create(opts).catch(() => null);
+        if (!dstCh) throw new Error("impossibile creare il canale destinazione");
+      }
     } else {
-      const tg = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
-      if (!tg) throw new Error("TARGET_GUILD non accessibile");
-      dstCh = await tg.channels.create({ name: srcCh.name, type: 0, reason: "[setup panel channel clone]" }).catch(() => null);
-      if (!dstCh) throw new Error("impossibile creare il canale destinazione");
+      throw new Error("Target non impostato — usa 📂 Target Server/Category per selezionarlo");
     }
 
     await updateStatus(`Scanning **#${srcCh.name}** → **#${dstCh.name}**...`);
