@@ -9419,7 +9419,9 @@ function buildPanelEmbed(s) {
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
-  const ready = chReady ?? (srcOk && dstOk);
+  const srcChOk = s.operation === "cloneperks_channel" && (s.singleSrcChId || "").length > 5;
+  const dstChOk = s.operation === "cloneperks_channel" && (s.singleTgtChId || "").length > 5;
+  const ready   = s.operation === "cloneperks_channel" ? (srcChOk && dstChOk) : (srcOk && dstOk);
 
   // ANSI helpers
   const R  = "\u001b[0m";
@@ -9461,16 +9463,12 @@ function buildPanelEmbed(s) {
   }[s.videoRenameMode] ?? s.videoRenameMode;
 
   // For single channel clone, show channel IDs if set
-  const srcChOk = s.operation === "cloneperks_channel" && s.singleSrcChId.length > 5;
-  const dstChOk = s.operation === "cloneperks_channel" && s.singleTgtChId.length > 5;
   const srcVal = srcChOk ? `${GR}${s.singleSrcChId.slice(0,18)}${R}`
                : srcOk   ? `${GR}${s.sourceId.slice(0,18)}${R}`
                :            `${RD}not configured    ${R}`;
   const dstVal = dstChOk ? `${GR}${s.singleTgtChId.slice(0,18)}${R}`
                : dstOk   ? `${GR}${s.targetId.slice(0,18)}${R}`
                :            `${RD}not configured    ${R}`;
-  // For channel clone: ready when both channel IDs are set
-  const chReady = s.operation === "cloneperks_channel" ? (srcChOk && dstChOk) : (srcOk && dstOk);
 
   const border   = `${DM}║${R}`;
   const divider  = `${DM}╠══════════════════════════╣${R}`;
