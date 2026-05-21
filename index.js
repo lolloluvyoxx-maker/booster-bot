@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -9160,6 +9160,7 @@ function buildPanelEmbed(s) {
 
 // -- Build panel components (4 rows) ------------------------------------------
 function buildPanelComponents(s) {
+  const { StringSelectMenuBuilder } = require("discord.js");
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
 
   // Row 1: Operation select menu
@@ -9253,6 +9254,7 @@ client.on("interactionCreate", async (interaction) => {
   // -- Button: open IDs modal --
   if (interaction.isButton() && id === "sp_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
       .setTitle("🌸 Configura IDs & Parametri")
@@ -9284,6 +9286,7 @@ client.on("interactionCreate", async (interaction) => {
   // -- Button: open video options modal --
   if (interaction.isButton() && id === "sp_video") {
     if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
       .setTitle("🎬 Opzioni Video & Rinomina")
