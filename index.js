@@ -10203,6 +10203,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     let clonedCount = 0;
     const allVideoUrls = [];
+    const clonedTextChannels = []; // track cloned text channels for video distribution
 
     for (const ch of catChans) {
       try {
@@ -10218,44 +10219,73 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 1000)); }
         }
 
-        // Collect video URLs from text/announcement channels
+        // Collect video URLs from text/announcement channels via REST
         if ([0, 5].includes(ch.type)) {
-          const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
-          if (srcCh) {
-            let before = undefined, hasMore = true;
-            while (hasMore) {
-              const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-              if (!batch || batch.size === 0) break;
-              for (const msg of batch.values()) {
-                if (!msg.author?.bot) {
-                  for (const att of msg.attachments.values()) {
-                    if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
-                  }
-                }
+          if (newCh) clonedTextChannels.push(newCh);
+          let before = undefined, hasMore = true;
+          await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
+          while (hasMore) {
+            const query = before ? `?limit=100&before=${before}` : `?limit=100`;
+            const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
+              headers: { Authorization: `Bot ${process.env.TOKEN}` }
+            }).then(r => r.ok ? r.json() : null).catch(() => null);
+            if (!batch || batch.length === 0) break;
+            for (const msg of batch) {
+              for (const att of (msg.attachments ?? [])) {
+                const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
+                if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name)) allVideoUrls.push(att.url);
               }
-              before = batch.last()?.id;
-              hasMore = batch.size === 100;
-              await new Promise(r => setTimeout(r, 300));
             }
+            before = batch[batch.length - 1]?.id;
+            hasMore = batch.length === 100;
+            await new Promise(r => setTimeout(r, 300));
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, "error"); }
     }
 
-    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video in coppie da 2...`);
-    const { sent1, sent2, excl1Name, excl2Name } = await distributeVideos(allVideoUrls, targetGuild);
+    // Distribute videos round-robin into the cloned channels (no auto-created exclusive channels)
+    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video nei canali...`);
+
+    // Fisher-Yates shuffle
+    for (let i = allVideoUrls.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [allVideoUrls[i], allVideoUrls[j]] = [allVideoUrls[j], allVideoUrls[i]];
+    }
+
+    const sentPerChannel = new Map(clonedTextChannels.map(c => [c.id, 0]));
+    let vidIndex = 0;
+    for (let i = 0; i < allVideoUrls.length; i += 2) {
+      if (clonedTextChannels.length === 0) break;
+      const target = clonedTextChannels[(Math.floor(i / 2)) % clonedTextChannels.length];
+      const pair = allVideoUrls.slice(i, i + 2);
+      try {
+        const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
+        vidIndex += pair.length;
+        await target.send({ files: attachments });
+        sentPerChannel.set(target.id, (sentPerChannel.get(target.id) ?? 0) + pair.length);
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (e) {
+        log(`[setup] video send to #${target.name}: ${e.message}`, "error");
+        vidIndex += pair.length;
+      }
+    }
+
+    const totalSent = [...sentPerChannel.values()].reduce((a, b) => a + b, 0);
+    const channelSummary = clonedTextChannels
+      .map(c => `#${c.name}: ${sentPerChannel.get(c.id) ?? 0} video`)
+      .join("\n") || "nessun canale";
 
     await statusMsg?.edit({
       embeds: [{
         color: PINK, title: "🌸 Clone Categoria Completo",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,           inline: true },
-          { name: "Video trovati",    value: `${allVideoUrls.length}`,   inline: true },
-          { name: "\u200b",           value: "\u200b",                   inline: true },
-          { name: `#${excl1Name}`,    value: `${sent1} video`,           inline: true },
-          { name: `#${excl2Name}`,    value: `${sent2} video`,           inline: true },
-          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+          { name: "Canali clonati",   value: `${clonedCount}`,         inline: true },
+          { name: "Video trovati",    value: `${allVideoUrls.length}`, inline: true },
+          { name: "Video inviati",    value: `${totalSent}`,           inline: true },
+          { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
+          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
         ],
         timestamp: new Date()
       }]
@@ -10286,23 +10316,22 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus("[3/3] Raccogliendo video per distribuzione...");
     const allVideoUrls = [];
     for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
-      const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
-      if (!srcCh) continue;
       let before = undefined, hasMore = true;
-      const allMsgs = [];
       while (hasMore) {
-        const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-        if (!batch || batch.size === 0) break;
-        allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && m.attachments.size > 0));
-        before = batch.last()?.id;
-        hasMore = batch.size === 100;
-        await new Promise(r => setTimeout(r, 300));
-      }
-      allMsgs.reverse();
-      for (const msg of allMsgs) {
-        for (const att of msg.attachments.values()) {
-          if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+        const query = before ? `?limit=100&before=${before}` : `?limit=100`;
+        const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        }).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (!batch || batch.length === 0) break;
+        for (const msg of batch) {
+          for (const att of (msg.attachments ?? [])) {
+            const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
+            if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name)) allVideoUrls.push(att.url);
+          }
         }
+        before = batch[batch.length - 1]?.id;
+        hasMore = batch.length === 100;
+        await new Promise(r => setTimeout(r, 300));
       }
     }
 
