@@ -9443,7 +9443,7 @@ function buildPanelEmbed(s) {
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
-    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categoriess  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
+    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories   ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
     `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
     divider,
     midTitle("SELECTION"),
@@ -9485,45 +9485,53 @@ function buildPanelEmbed(s) {
 function buildPanelComponents(s) {
   const { StringSelectMenuBuilder } = require("discord.js");
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
+  const videoOps = ["cloneperks", "cloneperks_channel", "clonecategoryperks", "setuppaidperks"];
+  const isVideoOp = videoOps.includes(s.operation);
 
-  // Row 1: Operation select menu
+  // Row 1: Operation select menu (always)
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
       .setPlaceholder("📋 Select operation...")
       .addOptions([
-        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categoriess + channels + videos", default: s.operation === "cloneperks"         },
-        { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
-        { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
-        { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
-        { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categoriess",    default: s.operation === "sortchannels"       },
+        { label: "Full Server Clone",    value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos",  default: s.operation === "cloneperks"         },
+        { label: "Single Channel Clone", value: "cloneperks_channel", emoji: "💬", description: "Copy media from one channel to another",  default: s.operation === "cloneperks_channel" },
+        { label: "Category + Videos",   value: "clonecategoryperks", emoji: "📁", description: "Clone category + video distribution",     default: s.operation === "clonecategoryperks" },
+        { label: "Paid Perks Setup",     value: "setuppaidperks",     emoji: "🔧", description: "Full premium server setup",               default: s.operation === "setuppaidperks"     },
+        { label: "Hide Channels",        value: "hidepaidperks",      emoji: "🙈", description: "Deny ViewChannel to @everyone",           default: s.operation === "hidepaidperks"      },
+        { label: "Sort Channels",        value: "sortchannels",       emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
       ])
   );
 
-  // Row 2: Clone toggles
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Roles`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categories`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Channels`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messages`).setStyle(bs(s.cloneMessages)),
-  );
+  const rows = [row1];
 
-  // Row 3: Video rename select + skip toggle
-  const row3 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬 Video rename mode...")
-      .addOptions([
-        { label: "Prefix + Number",  value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4", default: s.videoRenameMode === "prefix"   },
-        { label: "Numbers only",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
-        { label: "Fixed name",         value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",     default: s.videoRenameMode === "replace"  },
-        { label: "Number + Suffix",  value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",default: s.videoRenameMode === "suffix"  },
-      ])
-  );
+  // Row 2: Clone toggles — only relevant for Full Server Clone
+  if (s.operation === "cloneperks") {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles      ? "✅":"❌"} Roles`      ).setStyle(bs(s.cloneRoles)),
+      new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories ? "✅":"❌"} Categories` ).setStyle(bs(s.cloneCategories)),
+      new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels   ? "✅":"❌"} Channels`   ).setStyle(bs(s.cloneChannels)),
+      new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions? "✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
+      new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages   ? "✅":"❌"} Messages`   ).setStyle(bs(s.cloneMessages)),
+    ));
+  }
 
-  // Row 4: Browse buttons — labels adapt to the current operation
+  // Row 3: Video rename mode — only for operations that use video
+  if (isVideoOp) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_vid_mode")
+        .setPlaceholder("🎬 Video rename mode...")
+        .addOptions([
+          { label: "Prefix + Number", value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4",     default: s.videoRenameMode === "prefix"   },
+          { label: "Numbers only",    value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                   default: s.videoRenameMode === "numbered" },
+          { label: "Fixed name",      value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",        default: s.videoRenameMode === "replace"  },
+          { label: "Number + Suffix", value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",  default: s.videoRenameMode === "suffix"   },
+        ])
+    ));
+  }
+
+  // Browse buttons — labels adapt to the current operation
   const browseConfig = {
     cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
     cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
@@ -9537,17 +9545,18 @@ function buildPanelComponents(s) {
   if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
   browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
   browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
-  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
+  rows.push(new ActionRowBuilder().addComponents(...browseButtons));
 
-  // Row 5: Action buttons
-  const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"      ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"       ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"       ).setStyle(ButtonStyle.Danger),
-  );
+  // Action buttons — Video Options only for video operations
+  const actionButtons = [
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs").setStyle(ButtonStyle.Primary),
+  ];
+  if (isVideoOp) actionButtons.push(new ButtonBuilder().setCustomId("sp_video").setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary));
+  actionButtons.push(new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch").setStyle(ButtonStyle.Success));
+  actionButtons.push(new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Danger));
+  rows.push(new ActionRowBuilder().addComponents(...actionButtons));
 
-  return [row1, row2, row3, row4, row5];
+  return rows;
 }
 
 // -- Interaction handler for the Config Panel ----------------------------------
@@ -9648,7 +9657,7 @@ client.on("interactionCreate", async (interaction) => {
       new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ All Channels").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categoriess found\nPress 🔍 to search or ⭐ to clone all:`,
+      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress 🔍 to search or ⭐ to clone all:`,
       components: [searchBtn],
     });
   }
@@ -9694,6 +9703,7 @@ client.on("interactionCreate", async (interaction) => {
     const isCatOp = s.operation === "clonecategoryperks";
 
     let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    // For non-category ops also show text/announcement channels
     let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 
     if (query) {
@@ -9701,29 +9711,40 @@ client.on("interactionCreate", async (interaction) => {
       chans = chans.filter(c => c.name.toLowerCase().includes(query));
     }
 
+    // Build options: always put __all__ first, then fill up to 24 slots
+    // Cats get priority; remaining slots go to channels
+    const MAX = 24; // 1 slot reserved for __all__
+    const catSlice  = cats.slice(0, MAX);
+    const chanSlots = MAX - catSlice.length;
+    const chanSlice = chans.slice(0, chanSlots);
+
     const options = [
-      { label: "⭐ All Channels (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
-      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
-    ].slice(0, 25);
+      { label: "⭐ All Channels (no filter)", value: "__all__", description: "Clone the entire server without filters" },
+      ...catSlice.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Category · ${c.id}` })),
+      ...chanSlice.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Channel · ${c.id}`  })),
+    ];
 
     if (options.length === 1) {
-      // Only "__all__" means no match — let user search again
       return interaction.reply({
-        content: `❌ No results for **"${query}"** in **${guildName}**. Click 📂 Source Category again to search.`,
+        content: `❌ No results for **"${query}"** in **${guildName}**. Click 📂 Source again to search.`,
         flags: 64,
       });
     }
 
+    const totalFound = catSlice.length + chanSlice.length;
+    const totalAvail = cats.length + chans.length;
+    const hint = query
+      ? `Results for **"${query}"**: ${totalFound} shown`
+      : `${totalFound} of ${totalAvail} items shown${totalAvail > MAX ? ` — **type a name to filter**` : ""}`;
+
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_ch_pick")
-        .setPlaceholder("📂 Scegli canale/categoria sorgente...")
+        .setPlaceholder("📂 Choose source channel/category...")
         .addOptions(options)
     );
-    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
     return interaction.reply({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — choose:`,
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint}`,
       components: [selRow],
       flags: 64,
     });
@@ -9808,7 +9829,7 @@ client.on("interactionCreate", async (interaction) => {
       new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (no category)").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categoriess available\nPress 🔍 to search or 📌 for Root:`,
+      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress 🔍 to search or 📌 for Root:`,
       components: [searchBtn],
     });
   }
