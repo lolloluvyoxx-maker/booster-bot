@@ -9549,11 +9549,6 @@ client.on("interactionCreate", async (interaction) => {
             .setValue(s.targetId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra  (category name / Cat1 | Cat2 / count)")
-            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  categoryname  /  Cat1 | Cat2  /  20")
-            .setValue(s.extraParam).setRequired(false)
-        ),
-        new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("excl_name").setLabel("Exclusive channel name (default: exclusive)")
             .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
             .setValue(s.exclusiveName).setRequired(false)
@@ -9599,7 +9594,6 @@ client.on("interactionCreate", async (interaction) => {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
     s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
-    s.extraParam = interaction.fields.getTextInputValue("extra_param").trim();
     const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
     if (rawExcl) s.exclusiveName = rawExcl;
     // Update the panel message
