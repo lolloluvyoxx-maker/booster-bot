@@ -3,12 +3,12 @@ const fs = require("fs");
 const path = require("path");
 
 // ===================================================
-// ===== PERSISTENCE SYSTEM (Discord-backed) =========
+// ===== PERSISTENCE SYSTEM (File-backed) ============
 // ===================================================
-// Saves config to a Discord channel so it survives Railway restarts
-const CONFIG_CHANNEL_ID = "1482107392463474921";
-const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";
-let _configMessageId = null; // cached message ID
+// Saves config to a local JSON file so it survives restarts.
+// On Railway: add a Volume with mount path /data and set
+// the env var CONFIG_PATH=/data/config.json
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, "config.json");
 
 // Serializer -- handles Map and Set
 function serialize(data) {
@@ -16,7 +16,7 @@ function serialize(data) {
     if (value instanceof Set) return { __type: "Set", values: [...value] };
     if (value instanceof Map) return { __type: "Map", entries: [...value.entries()] };
     return value;
-  });
+  }, 2);
 }
 
 function deserialize(raw) {
@@ -36,6 +36,8 @@ function buildConfigSnapshot() {
     autoroles,
     welcomeConfig,
     goodbyeConfig,
+    pingOnJoinConfig,
+    embedColors,
     ticketConfig,
     filterConfig,
     modlogChannel,
@@ -56,72 +58,32 @@ function buildConfigSnapshot() {
   };
 }
 
-// Save all configs to Discord channel
-async function saveAllConfigs() {
+// Save all configs to file (atomic write: tmp → rename)
+function saveAllConfigs() {
   try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
-
-    const content = `\`\`\`json\n${CONFIG_MESSAGE_TAG}\n${serialize(buildConfigSnapshot())}\n\`\`\``;
-
-    if (_configMessageId) {
-      // Edit existing message
-      const msg = await ch.messages.fetch(_configMessageId).catch(() => null);
-      if (msg) {
-        await msg.edit(content).catch(() => {});
-        return;
-      }
-    }
-
-    // No existing message -- find it or create new one
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (messages) {
-      const existing = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-      if (existing) {
-        _configMessageId = existing.id;
-        await existing.edit(content).catch(() => {});
-        return;
-      }
-    }
-
-    // Create new message
-    const sent = await ch.send(content).catch(() => null);
-    if (sent) _configMessageId = sent.id;
+    const tmp = CONFIG_PATH + ".tmp";
+    fs.writeFileSync(tmp, serialize(buildConfigSnapshot()), "utf8");
+    fs.renameSync(tmp, CONFIG_PATH);
+    console.log("[Config] ✅ Saved to", CONFIG_PATH);
   } catch (e) {
     console.error("[Config] Failed to save:", e.message);
   }
 }
 
-// Load configs from Discord channel on startup
-async function loadAllConfigs() {
+// Load configs from file on startup
+function loadAllConfigs() {
   try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) { console.log("[Config] Config channel not found, starting fresh"); return; }
-
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (!messages) return;
-
-    const configMsg = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-    if (!configMsg) { console.log("[Config] No saved config found, starting fresh"); return; }
-
-    _configMessageId = configMsg.id;
-
-    // Extract JSON from codeblock
-    const match = configMsg.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
-    if (!match) return;
-
-    const data = deserialize(match[1]);
-
-    // Restore each config -- ensure Sets/Maps are valid
-    function restoreMap(saved, defaultVal) {
-      if (!saved) return defaultVal;
-      if (saved instanceof Map) return saved;
-      return defaultVal;
+    if (!fs.existsSync(CONFIG_PATH)) {
+      console.log("[Config] No config file found, starting fresh");
+      return;
     }
+
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const data = deserialize(raw);
 
     function ensureSetInMap(map) {
       for (const [key, val] of map.entries()) {
-        if (val && typeof val === 'object') {
+        if (val && typeof val === "object") {
           if (val.channels && !(val.channels instanceof Set)) val.channels = new Set(Array.isArray(val.channels) ? val.channels : []);
           if (val.requireAttach && !(val.requireAttach instanceof Set)) val.requireAttach = new Set(Array.isArray(val.requireAttach) ? val.requireAttach : []);
           if (val.whitelist && !(val.whitelist instanceof Set)) val.whitelist = new Set(Array.isArray(val.whitelist) ? val.whitelist : []);
@@ -136,6 +98,8 @@ async function loadAllConfigs() {
     if (data.autoroles instanceof Map) { autoroles.clear(); data.autoroles.forEach((v,k) => autoroles.set(k,v)); }
     if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
     if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
+    if (data.pingOnJoinConfig instanceof Map) { pingOnJoinConfig.clear(); data.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k,v)); }
+    if (data.embedColors instanceof Map) { embedColors.clear(); data.embedColors.forEach((v,k) => embedColors.set(k,v)); }
     if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
     if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
     if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
@@ -154,7 +118,7 @@ async function loadAllConfigs() {
     if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
     if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
 
-    console.log("[Config] ✅ All configs restored from Discord");
+    console.log("[Config] ✅ All configs restored from", CONFIG_PATH);
   } catch (e) {
     console.error("[Config] Failed to load:", e.message);
   }
@@ -168,11 +132,14 @@ setInterval(() => saveAllConfigs(), 2 * 60 * 1000);
 // ===== GREED-STYLE RESPONSE SYSTEM =================
 // ===================================================
 
-const PINK = 0xFF69B4;  // Hot pink color for all embeds
+const PINK = 0xFF69B4;  // Hot pink color for all embeds (default)
+// Returns the embed color for a guild (falls back to PINK)
+function guildColor(guildId) { return embedColors.get(guildId) ?? PINK; }
 
 // ✅ Success response -- pink embed, no title, inline style
 function ok(message, text) {
-  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `🌸 ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
@@ -180,52 +147,17 @@ function ok(message, text) {
 
 // ❌ Error response
 function err(message, text) {
-  const embed = { color: PINK, description: `✖ ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `✖ ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
 }
 
-// 🗑️ Delete ALL messages from a user across every text channel in the guild.
-// Runs in the background (not awaited by callers) so it doesn't block the ban response.
-async function purgeUserMessages(guild, userId) {
-  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
-  const textChannels = guild.channels.cache.filter(c => c.isTextBased && c.isTextBased() && !c.isThread());
-  for (const ch of textChannels.values()) {
-    try {
-      let before = undefined;
-      let hasMore = true;
-      while (hasMore) {
-        const opts = { limit: 100 };
-        if (before) opts.before = before;
-        const msgs = await ch.messages.fetch(opts).catch(() => null);
-        if (!msgs || msgs.size === 0) break;
-
-        const userMsgs = msgs.filter(m => m.author?.id === userId);
-        if (userMsgs.size > 0) {
-          const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
-          const old    = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
-          // Bulk-delete messages < 14 days (Discord limit)
-          if (recent.size === 1) await recent.first().delete().catch(() => {});
-          else if (recent.size > 1) await ch.bulkDelete(recent).catch(() => {});
-          // Delete older messages one by one
-          for (const msg of old.values()) {
-            await msg.delete().catch(() => {});
-            await new Promise(r => setTimeout(r, 500));
-          }
-        }
-
-        before = msgs.last()?.id;
-        hasMore = msgs.size === 100;
-        await new Promise(r => setTimeout(r, 500));
-      }
-    } catch { /* skip channels where we lack permissions */ }
-  }
-}
-
 // ℹ️ Info response
 function info(message, text) {
-  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `🌸 ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
@@ -242,6 +174,40 @@ function embed(title, fields, color = PINK) {
       timestamp: new Date()
     }]
   };
+}
+
+// 🧹 Delete ALL messages from a userId across every text channel in a guild
+// Runs in background — fire and forget (pass statusMsg to get a summary edit)
+async function purgeUserMessages(guild, userId, statusMsg = null) {
+  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
+  const textChannels = [...guild.channels.cache.values()].filter(c => [0, 5].includes(c.type));
+  let totalDeleted = 0;
+  for (const ch of textChannels) {
+    try {
+      let before = undefined, hasMore = true;
+      while (hasMore) {
+        const fetched = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!fetched || fetched.size === 0) break;
+        const userMsgs = [...fetched.values()].filter(m => m.author.id === userId);
+        // Split into bulk-deletable (< 14 days) and old messages
+        const bulk = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
+        const old  = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
+        if (bulk.length > 1) {
+          await ch.bulkDelete(bulk, true).catch(() => {});
+          totalDeleted += bulk.length;
+        } else if (bulk.length === 1) {
+          await bulk[0].delete().catch(() => {});
+          totalDeleted++;
+        }
+        for (const m of old) { await m.delete().catch(() => {}); totalDeleted++; await new Promise(r => setTimeout(r, 300)); }
+        before = fetched.last()?.id;
+        hasMore = fetched.size === 100;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch { /* skip channels we can't read */ }
+  }
+  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `🗑️ Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
+  return totalDeleted;
 }
 
 // 🔒 Confirm button (for dangerous actions like nuke, unbanall, etc.)
@@ -275,36 +241,73 @@ async function confirm(message, text, onConfirm) {
 // banStats[guildId][modId] = { tag, actions, bans, ignores }
 const banStats = {};
 
-async function loadBanStatsFromAuditLogs(guild) {
+async function loadBanStatsFromAuditLogs(guild, existingStats = {}) {
+  // Start fresh for ban/action counts, but preserve ignores from memory
+  // since ignores are bot-tracked only and don't exist in audit logs
   const stats = {};
+  for (const [modId, data] of Object.entries(existingStats)) {
+    stats[modId] = { username: data.username ?? data.tag ?? modId, bans: 0, actions: 0, ignores: data.ignores ?? 0 };
+  }
+
+  const TWO_MONTHS_AGO = Date.now() - (61 * 24 * 60 * 60 * 1000);
+
   try {
     let before = undefined;
-    let fetched;
+    let totalFetched = 0;
+    let keepGoing = true;
 
-    // Fetch all ban audit log entries (100 at a time)
-    do {
-      fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, before });
-      if (fetched.entries.size === 0) break;
+    while (keepGoing) {
+      let fetched;
+      try {
+        fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, ...(before ? { before } : {}) });
+      } catch (e) {
+        log(`[modstats] Audit log page error for ${guild.name}: ${e.message}`, "error");
+        break;
+      }
+
+      if (!fetched || fetched.entries.size === 0) break;
 
       for (const entry of fetched.entries.values()) {
+        // Stop paginating once we are past 2 months
+        if (entry.createdTimestamp < TWO_MONTHS_AGO) {
+          keepGoing = false;
+          break;
+        }
         if (!entry.executor) continue;
-        const modId = entry.executor.id;
-        const modTag = entry.executor.username || entry.executor.username;
+
+        const modId  = entry.executor.id;
+        const modTag = entry.executor.username ?? modId;
 
         if (!stats[modId]) {
-          stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+          stats[modId] = { username: modTag, bans: 0, actions: 0, ignores: existingStats[modId]?.ignores ?? 0 };
         }
         stats[modId].username = modTag;
-        stats[modId].actions += 1;
         stats[modId].bans += 1;
       }
 
-      before = fetched.entries.last()?.id;
-    } while (fetched.entries.size === 100);
+      totalFetched += fetched.entries.size;
 
+      // Stop if this was the last page
+      if (fetched.entries.size < 100) break;
+
+      const lastId = fetched.entries.last()?.id;
+      if (!lastId || lastId === before) break;
+      before = lastId;
+
+      // Respect rate limits between pages
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    log(`[modstats] Fetched ${totalFetched} ban audit entries for ${guild.name}`, "info");
   } catch (e) {
-    log(`Failed to load audit logs for ${guild.name}: ${e.message}`, "error");
+    log(`[modstats] Fatal error loading audit logs for ${guild.name}: ${e.message}`, "error");
   }
+
+  // Final pass: actions = bans + ignores for every mod
+  for (const data of Object.values(stats)) {
+    data.actions = data.bans + data.ignores;
+  }
+
   return stats;
 }
 
@@ -321,6 +324,9 @@ const client = new Client({
   ],
   partials: ["CHANNEL"]
 });
+// Raise listener limit to suppress MaxListenersExceededWarning
+// (bot intentionally uses many separate handlers for modularity)
+client.setMaxListeners(50);
 
 // ===== CONFIGURATION =====
 const OWNER_ID = "1005237630113419315";
@@ -396,11 +402,12 @@ async function fetchMemberWithRetry(guild, userId, maxRetries = 3) {
       const member = await guild.members.fetch(userId);
       return member;
     } catch (error) {
+      // 10007 = Unknown Member, 10013 = Unknown User — no point retrying
+      const code = error.code ?? error?.rawError?.code;
+      if (code === 10007 || code === 10013 || error.status === 404) return null;
       if (i < maxRetries - 1) {
         await new Promise(resolve => setTimeout(resolve, 500 + (i * 500)));
         log(`Retry ${i + 1}/${maxRetries} fetching member ${userId}...`, "info");
-      } else {
-        throw error;
       }
     }
   }
@@ -574,8 +581,8 @@ async function checkAllTargetMembers() {
 client.once("clientReady", async () => {
   log(`Logged in as ${client.user.username}`, "success");
 
-  // Load all configs from Discord backup channel
-  await loadAllConfigs();
+  // Load all configs from file
+  loadAllConfigs();
 
   // Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
@@ -593,7 +600,7 @@ client.once("clientReady", async () => {
     (async () => {
       for (const guild of [sourceGuild, targetGuild]) {
         log(`Loading ban history from audit logs for ${guild.name}...`, "info");
-        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
+        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild, banStats[guild.id] ?? {});
         const total = Object.values(banStats[guild.id]).reduce((sum, m) => sum + m.bans, 0);
         log(`Loaded ${total} historical bans for ${guild.name}`, "success");
       }
@@ -938,7 +945,7 @@ client.on("messageCreate", async (message) => {
   // Send typing indicator while loading
   await message.channel.sendTyping().catch(() => {});
   // Load fresh from audit logs
-  const freshStats = await loadBanStatsFromAuditLogs(message.guild);
+  const freshStats = await loadBanStatsFromAuditLogs(message.guild, banStats[message.guild.id] ?? {});
   banStats[message.guild.id] = freshStats;
 
   // Filter out bots
@@ -957,17 +964,22 @@ client.on("messageCreate", async (message) => {
   const totalPages = Math.ceil(allEntries.length / PER_PAGE);
   let page = 0;
 
+  const medals = ["🥇", "🥈", "🥉"];
+  const totalBans = allEntries.reduce((s, [, d]) => s + d.bans, 0);
+
   function buildEmbed(p) {
     const slice = allEntries.slice(p * PER_PAGE, p * PER_PAGE + PER_PAGE);
-    const lines = slice.map(([modId, data]) => {
-      const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0";
-      return `<@${modId}>\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
+    const lines = slice.map(([modId, data], i) => {
+      const rank   = p * PER_PAGE + i;
+      const medal  = medals[rank] ?? `**#${rank + 1}**`;
+      const banPct = totalBans > 0 ? ((data.bans / totalBans) * 100).toFixed(1) : "0.0";
+      return `${medal} <@${modId}>\n🔨 \`${data.bans}\` bans  👁 \`${data.ignores}\` ignores  ⚡ \`${data.actions}\` total  *(${banPct}% of server bans)*`;
     });
     return {
       color: PINK,
       title: "📊 Mod Stats",
       description: lines.join("\n\n"),
-      footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name}` },
+      footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name} • ${totalBans} total bans` },
       timestamp: new Date()
     };
   }
@@ -1078,6 +1090,10 @@ const lastfmUsers = new Map();
 const afkUsers = new Map();
 const ticketConfig = new Map();
 const openTickets = new Map();
+// guildId → { channelId, message, deleteAfter, roles: [] }
+const pingOnJoinConfig = new Map();
+// guildId → hex color integer (default PINK)
+const embedColors = new Map();
 
 // ===== SNIPE EVENTS =====
 client.on("messageDelete", (message) => {
@@ -1127,6 +1143,19 @@ client.on("guildMemberAdd", async (member) => {
   if (wc) {
     const ch = member.guild.channels.cache.get(wc.channelId);
     if (ch) ch.send(wc.message.replace("{user}", `<@${member.id}>`).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
+  }
+
+  // ── Ping On Join ──
+  // ── Ghost Ping on Join (multi-channel) ──
+  const poj = pingOnJoinConfig.get(member.guild.id);
+  if (poj?.enabled && poj.channels?.length) {
+    for (const chId of poj.channels) {
+      const pojCh = member.guild.channels.cache.get(chId);
+      if (!pojCh) continue;
+      // Ghost ping: send mention then immediately delete
+      const sent = await pojCh.send({ content: `<@${member.id}>` }).catch(() => null);
+      if (sent) sent.delete().catch(() => {});
+    }
   }
 });
 client.on("guildMemberRemove", async (member) => {
@@ -1669,8 +1698,9 @@ client.on("messageCreate", async (message) => {
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
-    return ok(message, `banned **${target.user.username}** | ${reason}`);
+    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
+    purgeUserMessages(message.guild, target.id, banPurgeMsg);
+    return;
   }
 
   // ,unban <userId>
@@ -1774,7 +1804,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `unhidden ${channel}`);
   }
 
-  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categories/vcs
+  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categoriess/vcs
   if (command === "hider") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -2269,7 +2299,7 @@ client.on("messageCreate", async (message) => {
   if (command === "help") {
     const { StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
 
-    const categories = {
+    const categoriess = {
       moderation: {
         label: "Moderation",
         emoji: "🛡️",
@@ -2610,11 +2640,11 @@ client.on("messageCreate", async (message) => {
         emoji: "🌸",
         description: "Clone, sort and manage perks servers",
         commands: [
-          [",cloneperks <sourceId> <targetId>", "Clone all roles, categories and channels from one server to another"],
+          [",cloneperks <sourceId> <targetId>", "Clone all roles, categoriess and channels from one server to another"],
           [",clonecategoryperks <sourceId> <targetId> <catName>", "Clone a category and distribute its videos 2-by-2 into exclusive1/exclusive2"],
           [",setuppaidperks <sourceId> <targetId> [exclusiveName]", "Setup paid perks server with cloned + exclusive channels"],
           [",hidepaidperks <targetId> [count]", "Randomly hide N channels in a server (default 20)"],
-          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categories (auto overflow at 50)"],
+          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categoriess (auto overflow at 50)"],
         ]
       },
       nsfw: {
@@ -2648,7 +2678,7 @@ client.on("messageCreate", async (message) => {
         .setCustomId("help_category")
         .setPlaceholder("Choose a category...")
         .addOptions(
-          Object.entries(categories)
+          Object.entries(categoriess)
             .filter(([key]) => key !== 'nsfw' || message.author.id === OWNER_ID)
             .map(([key, cat]) =>
               new SMOB()
@@ -2674,7 +2704,7 @@ client.on("messageCreate", async (message) => {
         "Select a category from the dropdown menu below to view commands."
       ].join("\n"),
       thumbnail: { url: client.user.displayAvatarURL() },
-      footer: { text: `${client.user.username} • ${Object.values(categories).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+      footer: { text: `${client.user.username} • ${Object.values(categoriess).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
     };
 
     const msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
@@ -2710,7 +2740,7 @@ client.on("messageCreate", async (message) => {
         }
         // Handle select menu
         if (i.isStringSelectMenu()) {
-          const cat = categories[i.values[0]];
+          const cat = categoriess[i.values[0]];
           if (!cat) return;
           currentCategory = cat;
           currentPage = 0;
@@ -2813,8 +2843,8 @@ client.on("messageCreate", async (message) => {
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
     ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
+    purgeUserMessages(message.guild, target.id);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
       message.channel.send(`🔓 **${target.user.username}**'s tempban has expired.`).catch(() => {});
@@ -2832,7 +2862,9 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    return ok(message, `softbanned **${target.user.username}** (messages deleted) | ${reason}`);
+    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
+    purgeUserMessages(message.guild, target.id, softPurgeMsg);
+    return;
   }
 
   // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
@@ -2846,8 +2878,9 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
-    return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
+    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
+    purgeUserMessages(message.guild, target.id, hbPurgeMsg);
+    return;
   }
 
   // ,jail <user> [reason]
@@ -3228,6 +3261,66 @@ client.on("messageCreate", async (message) => {
     if (!msg) return err(message, "Please provide a message.");
     goodbyeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
     saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
+  }
+
+  // ,embedcolor [#hex | reset] -- set or reset the embed color for this server
+  if (command === "embedcolor" || command === "embedcolour") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+
+    const input = args[1]?.toLowerCase();
+
+    if (!input || input === "view") {
+      const current = embedColors.get(message.guild.id);
+      const hex = current ? `#${current.toString(16).toUpperCase().padStart(6, "0")}` : "#FF69B4 (default pink)";
+      return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "🎨 Embed Color", description: `Current color: **${hex}**\n\nUse \`,embedcolor #RRGGBB\` to change it.\nUse \`,embedcolor reset\` to go back to default pink.`, thumbnail: { url: `https://singlecolorimage.com/get/${(current ?? PINK).toString(16).padStart(6,"0")}/64x64` } }] });
+    }
+
+    if (input === "reset" || input === "default") {
+      embedColors.delete(message.guild.id);
+      saveAllConfigs();
+      return message.reply({ embeds: [{ color: PINK, title: "🎨 Embed Color Reset", description: "Embed color reset to default **#FF69B4** (pink)." }] });
+    }
+
+    // Parse hex: accept #RRGGBB or RRGGBB
+    const hex = input.replace("#", "");
+    if (!/^[0-9a-f]{6}$/i.test(hex)) return err(message, "Invalid color. Use a hex code like `,embedcolor #FF69B4`");
+
+    const colorInt = parseInt(hex, 16);
+    embedColors.set(message.guild.id, colorInt);
+    saveAllConfigs();
+    return message.reply({ embeds: [{ color: colorInt, title: "🎨 Embed Color Updated", description: `All embeds in this server will now use **#${hex.toUpperCase()}**.` }] });
+  }
+
+
+  if (command === "pingonjoin" || command === "poj") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+
+    function pojEmbed(cfg) {
+      const channels = (cfg?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*";
+      return {
+        color: 0x2B2D31,
+        title: "Ping on join",
+        description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+        fields: [
+          { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+          { name: "Channels", value: channels,                               inline: false },
+        ],
+      };
+    }
+
+    function pojComponents(guildId) {
+      const { ActionRowBuilder } = require("discord.js");
+      return [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+      )];
+    }
+
+    const cfg = pingOnJoinConfig.get(message.guild.id) ?? { enabled: false, channels: [] };
+    pingOnJoinConfig.set(message.guild.id, cfg);
+    return message.reply({ embeds: [pojEmbed(cfg)], components: pojComponents(message.guild.id) });
   }
 
   // ,starboard <#channel> [threshold]
@@ -4313,7 +4406,7 @@ client.on("guildMemberAdd", async (member) => {
     }
     // Apply action to raider
     try {
-      if (cfg.action === "ban") { await member.ban({ reason: "[AntiRaid] Raid detected", deleteMessageSeconds: 604800 }); purgeUserMessages(member.guild, member.id); }
+      if (cfg.action === "ban") await member.ban({ reason: "[AntiRaid] Raid detected" });
       else if (cfg.action === "kick") await member.kick("[AntiRaid] Raid detected");
       else if (cfg.action === "mute") await member.timeout(10 * 60 * 1000, "[AntiRaid] Raid detected");
     } catch {}
@@ -5164,8 +5257,9 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
     await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    purgeUserMessages(message.guild, userId); // delete all messages in background
-    return ok(message, `hackbanned user **${userId}** | ${reason}`);
+    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — 🗑️ deleting messages...`);
+    purgeUserMessages(message.guild, userId, hkPurgeMsg);
+    return;
   }
 
   // ,unbanall -- unban everyone
@@ -5527,10 +5621,11 @@ client.on("messageCreate", async (message) => {
     for (const id of ids) {
       recentBoosters.delete(id);
       const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-      if (ok2) { banned++; purgeUserMessages(message.guild, id); } else { failed++; }
+      ok2 ? banned++ : failed++;
       addCase(message.guild.id, "ban", id, message.author.id, reason);
+      if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
     }
-    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} | ${reason}` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban complete — **${banned}** banned${failed ? `, **${failed}** failed` : ""} — 🗑️ messages deleted | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -6456,11 +6551,11 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
   }
 
-  // ,channel list -- elenca tutti i canali del server raggruppati per categoria
+  // ,channel list -- elenca all channels del server raggruppati per categoria
   if (command === "channel" && args[1]?.toLowerCase() === "list") {
     const guild = message.guild;
 
-    // Raccogli categorie ordinate per posizione
+    // Raccogli categories ordinate per posizione
     const cats = guild.channels.cache
       .filter(c => c.type === 4)
       .sort((a, b) => a.position - b.position);
@@ -7205,12 +7300,12 @@ client.on("messageCreate", async (message) => {
     const online = members.filter(m => m.presence?.status === "online").size;
     const textChannels = g.channels.cache.filter(c => c.type === 0).size;
     const voiceChannels = g.channels.cache.filter(c => c.type === 2).size;
-    const categories = g.channels.cache.filter(c => c.type === 4).size;
+    const categoriess = g.channels.cache.filter(c => c.type === 4).size;
     const animated = g.emojis.cache.filter(e => e.animated).size;
     const static_ = g.emojis.cache.filter(e => !e.animated).size;
     return message.reply({ embeds: [{ color: PINK, title: `📊 ${g.name} Stats`, thumbnail: { url: g.iconURL() }, fields: [
       { name: "👥 Members", value: `Total: ${g.memberCount}\nHumans: ${humans}\nBots: ${bots}`, inline: true },
-      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categories}`, inline: true },
+      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categoriess}`, inline: true },
       { name: "🏷️ Roles", value: `${g.roles.cache.size}`, inline: true },
       { name: "😀 Emojis", value: `Static: ${static_}\nAnimated: ${animated}`, inline: true },
       { name: "💜 Boosts", value: `${g.premiumSubscriptionCount} (Tier ${g.premiumTier})`, inline: true },
@@ -7557,7 +7652,7 @@ client.on("messageCreate", async (message) => {
     if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${suspects.size}** suspicious members...` }] });
     let count = 0;
-    for (const m of suspects.values()) { await m.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => {}); purgeUserMessages(message.guild, m.id); count++; }
+    for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** members.` }] });
   }
 
@@ -8574,10 +8669,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
     if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
-    for (const id of ids) {
-      await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}`, deleteMessageSeconds: 604800 }).catch(() => {});
-      purgeUserMessages(message.guild, id);
-    }
+    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
     return ok(message, `hackbanned **${ids.length}** users`);
   }
   if (command === "modnick") {
@@ -8996,7 +9088,6 @@ client.on("interactionCreate", async (interaction) => {
         reason: `[Anti-Minors] underage — banned by ${mod.username}`,
         deleteMessageSeconds: 604800 // delete 7 days of messages
       }).catch(() => null);
-      if (banResult) purgeUserMessages(guild, userId); // delete all messages in background
 
       const updatedEmbed = {
         ...interaction.message.embeds[0].data,
@@ -9052,6 +9143,132 @@ client.on("interactionCreate", async (interaction) => {
   } catch (e) {
     interaction.update({ components: [] }).catch(() => {});
   }
+});
+
+// -- PING ON JOIN BUTTON HANDLERS --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  const id = interaction.customId;
+  if (!id.startsWith("poj_")) return;
+
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild))
+    return interaction.reply({ content: "❌ Missing permissions.", flags: 64 });
+
+  const [action, guildId] = id.split(":");
+  if (guildId !== interaction.guild.id) return;
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  function pojEmbed(cfg) {
+    const channels = (cfg?.channels ?? []).map(chId => `<#${chId}>`).join(", ") || "*None*";
+    return {
+      color: 0x2B2D31,
+      title: "Ping on join",
+      description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+      fields: [
+        { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+        { name: "Channels", value: channels,                               inline: false },
+      ],
+    };
+  }
+
+  function pojRows(gId) {
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${gId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${gId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${gId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )];
+  }
+
+  let cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  pingOnJoinConfig.set(guildId, cfg);
+
+  // Toggle on/off
+  if (action === "poj_toggle") {
+    cfg.enabled = !cfg.enabled;
+    saveAllConfigs();
+    return interaction.update({ embeds: [pojEmbed(cfg)], components: pojRows(guildId) });
+  }
+
+  // Add channel — show modal with channel ID or mention input
+  if (action === "poj_add") {
+    const modal = new ModalBuilder().setCustomId(`poj_add_modal:${guildId}`).setTitle("Add Channel");
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId("poj_channel_input")
+        .setLabel("Channel ID or #mention")
+        .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder("123456789 or paste channel ID")
+    ));
+    return interaction.showModal(modal);
+  }
+
+  // Remove channel — show select if channels exist
+  if (action === "poj_remove") {
+    if (!cfg.channels.length) return interaction.reply({ content: "❌ No channels configured.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const options = cfg.channels.map(chId => {
+      const ch = interaction.guild.channels.cache.get(chId);
+      return { label: ch ? `#${ch.name}` : chId, value: chId };
+    });
+    return interaction.reply({
+      content: "Select a channel to remove:",
+      components: [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`poj_remove_pick:${guildId}`).setPlaceholder("Choose channel...").addOptions(options)
+      )],
+      flags: 64,
+    });
+  }
+});
+
+// poj_add modal submit
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  if (!interaction.customId.startsWith("poj_add_modal:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const input   = interaction.fields.getTextInputValue("poj_channel_input").trim();
+  // Accept raw ID or <#ID> mention
+  const chId    = input.replace(/[<#>]/g, "");
+  const ch      = interaction.guild.channels.cache.get(chId);
+  if (!ch) return interaction.reply({ content: `❌ Channel \`${chId}\` not found in this server.`, flags: 64 });
+
+  const cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  if (cfg.channels.includes(chId)) return interaction.reply({ content: `❌ <#${chId}> is already added.`, flags: 64 });
+  cfg.channels.push(chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+  function pojEmbed2(c) {
+    return { color: 0x2B2D31, title: "Ping on join", description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.", fields: [{ name: "Status", value: c?.enabled ? "Enabled" : "Disabled", inline: false }, { name: "Channels", value: (c?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*", inline: false }] };
+  }
+  return interaction.update({
+    embeds: [pojEmbed2(cfg)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )],
+  });
+});
+
+// poj_remove select
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (!interaction.customId.startsWith("poj_remove_pick:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const chId    = interaction.values[0];
+  const cfg     = pingOnJoinConfig.get(guildId);
+  if (!cfg) return interaction.reply({ content: "❌ Config not found.", flags: 64 });
+  cfg.channels   = cfg.channels.filter(id => id !== chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const ch = interaction.guild.channels.cache.get(chId);
+  return interaction.update({
+    content: `✅ Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
+    components: [],
+  });
 });
 
 // -- ANTI-MINORS COMMANDS (OWNER ONLY) ------------─
@@ -9146,7 +9363,7 @@ client.on("messageCreate", async (message) => {
 //    ,clonecategoryperks  -> Clone categoria + video
 //    ,setuppaidperks      -> Setup paid perks completo
 //    ,hidepaidperks       -> Nascondi canali
-//    ,sortchannels        -> Ordina canali in categorie
+//    ,sortchannels        -> Ordina canali in categories
 //
 // ===================================================
 
@@ -9161,7 +9378,7 @@ function defaultSession() {
     extraParam:       "",
     msgId:            null,
     channelId:        null,
-    // Selected channels/categories
+    // Selected channels/categoriess
     selectedSrcIds:   [],   // specific source channel/category IDs (empty = all)
     selectedTgtCatId: "",   // target category ID to put clones into (empty = root)
     selectedSrcName:  "",   // display name for selected source
@@ -9181,6 +9398,9 @@ function defaultSession() {
     videoCounterStart:  1,
     videoExtension:     "keep",
     exclusiveName:      "exclusive",
+    // Single Channel Clone: direct channel IDs (bypass server browse)
+    singleSrcChId:      "",
+    singleTgtChId:      "",
   };
 }
 
@@ -9199,7 +9419,9 @@ function buildPanelEmbed(s) {
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
-  const ready = srcOk && dstOk;
+  const srcChOk = s.operation === "cloneperks_channel" && (s.singleSrcChId || "").length > 5;
+  const dstChOk = s.operation === "cloneperks_channel" && (s.singleTgtChId || "").length > 5;
+  const ready   = s.operation === "cloneperks_channel" ? (srcChOk && dstChOk) : (srcOk && dstOk);
 
   // ANSI helpers
   const R  = "\u001b[0m";
@@ -9240,8 +9462,13 @@ function buildPanelEmbed(s) {
     suffix:   "Number + Suffix",
   }[s.videoRenameMode] ?? s.videoRenameMode;
 
-  const srcVal = srcOk ? `${GR}${s.sourceId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-  const dstVal = dstOk ? `${GR}${s.targetId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
+  // For single channel clone, show channel IDs if set
+  const srcVal = srcChOk ? `${GR}${s.singleSrcChId.slice(0,18)}${R}`
+               : srcOk   ? `${GR}${s.sourceId.slice(0,18)}${R}`
+               :            `${RD}not configured    ${R}`;
+  const dstVal = dstChOk ? `${GR}${s.singleTgtChId.slice(0,18)}${R}`
+               : dstOk   ? `${GR}${s.targetId.slice(0,18)}${R}`
+               :            `${RD}not configured    ${R}`;
 
   const border   = `${DM}║${R}`;
   const divider  = `${DM}╠══════════════════════════╣${R}`;
@@ -9258,17 +9485,18 @@ function buildPanelEmbed(s) {
     hidepaidperks:      "target ",
     sortchannels:       "target ",
   }[s.operation] ?? "source ";
+  const tgtLabel = s.operation === "cloneperks_channel" ? "tgt ch " : "tgt srv";
 
   const ansiBlock = [
     topBar,
     midTitle("SERVERS"),
     divider,
     row(opSrcLabel, srcVal),
-    row("tgt srv", dstVal),
+    row(tgtLabel, dstVal),
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
-    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
+    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories   ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
     `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
     divider,
     midTitle("SELECTION"),
@@ -9310,45 +9538,53 @@ function buildPanelEmbed(s) {
 function buildPanelComponents(s) {
   const { StringSelectMenuBuilder } = require("discord.js");
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
+  const videoOps = ["cloneperks", "cloneperks_channel", "clonecategoryperks", "setuppaidperks"];
+  const isVideoOp = videoOps.includes(s.operation);
 
-  // Row 1: Operation select menu
+  // Row 1: Operation select menu (always)
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
       .setPlaceholder("📋 Select operation...")
       .addOptions([
-        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos", default: s.operation === "cloneperks"         },
-        { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
-        { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
-        { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
-        { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
+        { label: "Full Server Clone",    value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos",  default: s.operation === "cloneperks"         },
+        { label: "Single Channel Clone", value: "cloneperks_channel", emoji: "💬", description: "Copy media from one channel to another",  default: s.operation === "cloneperks_channel" },
+        { label: "Category + Videos",   value: "clonecategoryperks", emoji: "📁", description: "Clone category + video distribution",     default: s.operation === "clonecategoryperks" },
+        { label: "Paid Perks Setup",     value: "setuppaidperks",     emoji: "🔧", description: "Full premium server setup",               default: s.operation === "setuppaidperks"     },
+        { label: "Hide Channels",        value: "hidepaidperks",      emoji: "🙈", description: "Deny ViewChannel to @everyone",           default: s.operation === "hidepaidperks"      },
+        { label: "Sort Channels",        value: "sortchannels",       emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
       ])
   );
 
-  // Row 2: Clone toggles
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Roles`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categories`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Channels`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messages`).setStyle(bs(s.cloneMessages)),
-  );
+  const rows = [row1];
 
-  // Row 3: Video rename select + skip toggle
-  const row3 = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬 Video rename mode...")
-      .addOptions([
-        { label: "Prefix + Number",  value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4", default: s.videoRenameMode === "prefix"   },
-        { label: "Numbers only",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
-        { label: "Fixed name",         value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",     default: s.videoRenameMode === "replace"  },
-        { label: "Number + Suffix",  value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",default: s.videoRenameMode === "suffix"  },
-      ])
-  );
+  // Row 2: Clone toggles — only relevant for Full Server Clone
+  if (s.operation === "cloneperks") {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles      ? "✅":"❌"} Roles`      ).setStyle(bs(s.cloneRoles)),
+      new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories ? "✅":"❌"} Categories` ).setStyle(bs(s.cloneCategories)),
+      new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels   ? "✅":"❌"} Channels`   ).setStyle(bs(s.cloneChannels)),
+      new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions? "✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
+      new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages   ? "✅":"❌"} Messages`   ).setStyle(bs(s.cloneMessages)),
+    ));
+  }
 
-  // Row 4: Browse buttons — labels adapt to the current operation
+  // Row 3: Video rename mode — only for operations that use video
+  if (isVideoOp) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_vid_mode")
+        .setPlaceholder("🎬 Video rename mode...")
+        .addOptions([
+          { label: "Prefix + Number", value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4",     default: s.videoRenameMode === "prefix"   },
+          { label: "Numbers only",    value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                   default: s.videoRenameMode === "numbered" },
+          { label: "Fixed name",      value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",        default: s.videoRenameMode === "replace"  },
+          { label: "Number + Suffix", value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",  default: s.videoRenameMode === "suffix"   },
+        ])
+    ));
+  }
+
+  // Browse buttons — labels adapt to the current operation
   const browseConfig = {
     cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
     cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
@@ -9362,17 +9598,18 @@ function buildPanelComponents(s) {
   if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
   browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
   browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
-  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
+  rows.push(new ActionRowBuilder().addComponents(...browseButtons));
 
-  // Row 5: Action buttons
-  const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"      ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"       ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"       ).setStyle(ButtonStyle.Danger),
-  );
+  // Action buttons — Video Options only for video operations
+  const actionButtons = [
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs").setStyle(ButtonStyle.Primary),
+  ];
+  if (isVideoOp) actionButtons.push(new ButtonBuilder().setCustomId("sp_video").setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary));
+  actionButtons.push(new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch").setStyle(ButtonStyle.Success));
+  actionButtons.push(new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Danger));
+  rows.push(new ActionRowBuilder().addComponents(...actionButtons));
 
-  return [row1, row2, row3, row4, row5];
+  return rows;
 }
 
 // -- Interaction handler for the Config Panel ----------------------------------
@@ -9382,9 +9619,11 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.user.id !== OWNER_ID) return;
 
   // Only handle setup panel interactions
-  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video","sp_browse_src","sp_browse_tgt","sp_clr_sel","sp_src_pick","sp_tgt_pick","sp_src_guild_pick","sp_tgt_guild_pick","sp_src_ch_pick","sp_tgt_cat_pick"];
+  // Accept any setup-panel interaction (prefix check is safer than a static list)
   const id = interaction.customId;
-  if (!id || !spIds.includes(id)) return;
+  if (!id) return;
+  const isSpId = id.startsWith("sp_");
+  if (!isSpId) return;
 
   const s = setupSessions.get(interaction.user.id);
 
@@ -9464,17 +9703,47 @@ client.on("interactionCreate", async (interaction) => {
     // Store rawChannels in session so the search modal can filter them
     s._srcRawChannels = rawChannels;
     s._srcGuildName   = guildName;
-    // Show a search modal so the user can filter by name (no 25-option limit)
+    // Show a button so the user can open the search modal (modals require a button/slash interaction)
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ All Channels").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress 🔍 to search or ⭐ to clone all:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open source search modal --
+  if (interaction.isButton() && id === "sp_btn_src_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca canale — ${guildName}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca — ${s._srcGuildName ?? "sorgente"}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("src_search_query")
-          .setLabel("Nome categoria (lascia vuoto = mostra prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, premium...")
       )
     );
     return interaction.showModal(modal);
+  }
+
+  // -- Button: select all channels (no filter) --
+  if (interaction.isButton() && id === "sp_btn_src_all") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    s.selectedSrcIds  = [];
+    s.selectedSrcName = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `✅ **Source set:** all channels — go back to the panel and press 🚀`,
+      components: [],
+    });
   }
 
   // -- Modal submit: source channel search --
@@ -9487,6 +9756,7 @@ client.on("interactionCreate", async (interaction) => {
     const isCatOp = s.operation === "clonecategoryperks";
 
     let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    // For non-category ops also show text/announcement channels
     let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 
     if (query) {
@@ -9494,29 +9764,40 @@ client.on("interactionCreate", async (interaction) => {
       chans = chans.filter(c => c.name.toLowerCase().includes(query));
     }
 
+    // Build options: always put __all__ first, then fill up to 24 slots
+    // Cats get priority; remaining slots go to channels
+    const MAX = 24; // 1 slot reserved for __all__
+    const catSlice  = cats.slice(0, MAX);
+    const chanSlots = MAX - catSlice.length;
+    const chanSlice = chans.slice(0, chanSlots);
+
     const options = [
-      { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
-      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
-    ].slice(0, 25);
+      { label: "⭐ All Channels (no filter)", value: "__all__", description: "Clone the entire server without filters" },
+      ...catSlice.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Category · ${c.id}` })),
+      ...chanSlice.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Channel · ${c.id}`  })),
+    ];
 
     if (options.length === 1) {
-      // Only "__all__" means no match — let user search again
       return interaction.reply({
-        content: `❌ Nessun risultato per **"${query}"** in **${guildName}**. Ripremi 📂 Source Category e cerca di nuovo.`,
+        content: `❌ No results for **"${query}"** in **${guildName}**. Click 📂 Source again to search.`,
         flags: 64,
       });
     }
 
+    const totalFound = catSlice.length + chanSlice.length;
+    const totalAvail = cats.length + chans.length;
+    const hint = query
+      ? `Results for **"${query}"**: ${totalFound} shown`
+      : `${totalFound} of ${totalAvail} items shown${totalAvail > MAX ? ` — **type a name to filter**` : ""}`;
+
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_ch_pick")
-        .setPlaceholder("📂 Scegli canale/categoria sorgente...")
+        .setPlaceholder("📂 Choose source channel/category...")
         .addOptions(options)
     );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
     return interaction.reply({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — scegli:`,
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint}`,
       components: [selRow],
       flags: 64,
     });
@@ -9542,7 +9823,7 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `✅ **Sorgente impostata:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "tutti i canali"} — torna al panel e premi 🚀`,
+      content: `✅ **Source set:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "all channels"} — go back to the panel and press 🚀`,
       components: [],
     });
   }
@@ -9568,7 +9849,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "**Step 1/2 — Target** — Scegli il server destinazione:", components: [selRow], flags: 64 });
   }
 
-  // -- Select: target guild picked → fetch categories → show category picker --
+  // -- Select: target guild picked → fetch categoriess → show category picker --
   if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
@@ -9595,17 +9876,43 @@ client.on("interactionCreate", async (interaction) => {
     // Store raw channels in session for the search modal
     s._tgtRawChannels = rawChannels;
     s._tgtGuildName   = guildName;
-    // Show search modal as the direct response (must be first and only response)
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (no category)").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress 🔍 to search or 📌 for Root:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open target search modal --
+  if (interaction.isButton() && id === "sp_btn_tgt_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca categoria — ${guildName}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca — ${s._tgtGuildName ?? "destinazione"}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("tgt_search_query")
-          .setLabel("Nome categoria (lascia vuoto = prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, paid...")
       )
     );
     return interaction.showModal(modal);
+  }
+
+  // -- Button: target root (no category) --
+  if (interaction.isButton() && id === "sp_btn_tgt_root") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    s.selectedTgtCatId = "";
+    s.selectedTgtName  = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({ content: `✅ **Target set:** Root (no category) — go back to the panel and press 🚀`, components: [] });
   }
 
   // -- Modal submit: target category search --
@@ -9622,7 +9929,7 @@ client.on("interactionCreate", async (interaction) => {
       ...cats.slice(0, 24).map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
     ].slice(0, 25);
     if (options.length === 1 && query) {
-      return interaction.reply({ content: `❌ Nessuna categoria trovata per **"${query}"** in **${guildName}**. Ripremi 🎯 Target Category e cerca di nuovo.`, flags: 64 });
+      return interaction.reply({ content: `❌ No categories found for **"${query}"** in **${guildName}**. Click 🎯 Target Category again to search.`, flags: 64 });
     }
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
@@ -9630,8 +9937,8 @@ client.on("interactionCreate", async (interaction) => {
         .setPlaceholder("📁 Scegli categoria destinazione...")
         .addOptions(options)
     );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
-    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — scegli:`, components: [selRow], flags: 64 });
+    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
+    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — choose:`, components: [selRow], flags: 64 });
   }
 
   // -- Select: target category picked --
@@ -9653,7 +9960,7 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `✅ **Destinazione impostata:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — torna al panel e premi 🚀`,
+      content: `✅ **Target set:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — go back to the panel and press 🚀`,
       components: [],
     });
   }
@@ -9672,17 +9979,41 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && id === "sp_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+    if (s.operation === "cloneperks_channel") {
+      // Channel clone: ask for direct channel IDs (no server needed)
+      const modal = new ModalBuilder()
+        .setCustomId("sp_modal_ids")
+        .setTitle("💬 Single Channel Clone — IDs")
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("src_id")
+              .setLabel("Source Channel ID (canale da copiare)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+              .setValue(s.singleSrcChId || s.selectedSrcIds[0] || "").setRequired(true)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId("dst_id")
+              .setLabel("Target Channel ID (canale destinazione)")
+              .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+              .setValue(s.singleTgtChId || s.targetId || "").setRequired(true)
+          ),
+        );
+      return interaction.showModal(modal);
+    }
+
+    // Default: server IDs + exclusive name
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
       .setTitle("🌸 Configure IDs & Parameters")
       .addComponents(
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
+          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server ID")
             .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
             .setValue(s.sourceId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server / Channel ID")
+          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server ID")
             .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
             .setValue(s.targetId).setRequired(true)
         ),
@@ -9730,17 +10061,30 @@ client.on("interactionCreate", async (interaction) => {
   // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
-    s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
-    s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
-    const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
-    if (rawExcl) s.exclusiveName = rawExcl;
+
+    const srcVal = interaction.fields.getTextInputValue("src_id").trim();
+    const dstVal = interaction.fields.getTextInputValue("dst_id").trim();
+
+    if (s.operation === "cloneperks_channel") {
+      // Save directly as channel IDs — no server ID needed
+      s.singleSrcChId   = srcVal;
+      s.singleTgtChId   = dstVal;
+      s.selectedSrcIds  = [srcVal];  // also set for execution compatibility
+      s.targetId        = dstVal;    // execution reads targetId for dst channel
+    } else {
+      s.sourceId = srcVal;
+      s.targetId = dstVal;
+      const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
+      if (rawExcl) s.exclusiveName = rawExcl;
+    }
+
     // Update the panel message
     try {
       const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ IDs and parameters updated!", flags: 64 });
+    return interaction.reply({ content: "✅ IDs updated!", flags: 64 });
   }
 
   // -- Modal submit: video options --
@@ -9900,7 +10244,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }));
   }
 
-  // Clone categories -- returns categoryMap
+  // Clone categoriess -- returns categoryMap
   async function cloneCategories(rawChannels, targetGuild, roleMap) {
     const categoryMap = new Map();
     if (!s.cloneCategories) return categoryMap;
@@ -10044,12 +10388,12 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const rCount  = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
     const cCount  = filteredChannels.filter(c => c.type === 4).length;
     const chCount = filteredChannels.filter(c => c.type !== 4).length;
-    await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categorie, **${chCount}** canali → **${targetGuild.name}**`);
+    await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categories, **${chCount}** canali → **${targetGuild.name}**`);
 
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie...`);
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categories...`);
     const categoryMap = await cloneCategories(filteredChannels, targetGuild, roleMap);
 
     // If a target category is selected, override the parent for all cloned channels
@@ -10059,7 +10403,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         categoryMap.set(srcId, s.selectedTgtCatId);
       }
       if (categoryMap.size === 0) {
-        // No categories in source — still need a mapping for flat channels
+        // No categoriess in source — still need a mapping for flat channels
         filteredChannels.filter(c => c.type !== 4).forEach(c => {
           if (!c.parent_id) categoryMap.set("__root__", s.selectedTgtCatId);
         });
@@ -10247,7 +10591,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
       if ((i + 1) % 10 === 0 || i === uniqueMedia.length - 1) {
         const pct = Math.round(((i + 1) / uniqueMedia.length) * 100);
-        await updateStatus(`Uploading... **${uploaded}** inviati, **${failedCount}** falliti (${pct}%)`);
+        await updateStatus(`Uploading... **${uploaded}** inviati, **${failedCount}** failed (${pct}%)`);
       }
       await new Promise(r => setTimeout(r, 700));
     }
@@ -10343,7 +10687,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         if ([0, 5].includes(ch.type) && newCh) {
           const channelVideoUrls = [];
           let before = undefined, hasMore = true;
-          await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
+          await updateStatus(`🔍 Scanning #${ch.name} for videos...`);
           while (hasMore) {
             const query = before ? `?limit=100&before=${before}` : `?limit=100`;
             const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
@@ -10369,7 +10713,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
           // Send this channel's videos into its own cloned channel
           if (channelVideoUrls.length > 0) {
-            await updateStatus(`📤 Inviando **${channelVideoUrls.length}** video in #${newCh.name}...`);
+            await updateStatus(`📤 Sending **${channelVideoUrls.length}** videos to #${newCh.name}...`);
             let sent = 0, vidIndex = 0;
             for (let i = 0; i < channelVideoUrls.length; i += 2) {
               const pair = channelVideoUrls.slice(i, i + 2);
@@ -10394,18 +10738,18 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const totalFound = seenVideoUrls.size;
     const channelSummary = [...sentPerChannel.entries()]
       .map(([name, count]) => `#${name}: ${count} video`)
-      .join("\n") || "nessun video trovato";
+      .join("\n") || "no videos found";
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: "🌸 Clone Categoria Completo",
+        color: PINK, title: "🌸 Category Clone Complete",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,     inline: true },
-          { name: "Video trovati",    value: `${totalFound}`,      inline: true },
-          { name: "Video inviati",    value: `${totalVideosSent}`, inline: true },
-          { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
-          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
+          { name: "Channels cloned",   value: `${clonedCount}`,     inline: true },
+          { name: "Video found",    value: `${totalFound}`,      inline: true },
+          { name: "Videos sent",    value: `${totalVideosSent}`, inline: true },
+          { name: "Distribution",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
+          { name: "Video pattern",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
         ],
         timestamp: new Date()
       }]
@@ -10429,7 +10773,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie + canali...`);
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categories + canali...`);
     const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
     const { channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
 
@@ -10475,7 +10819,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           { name: "Canali",            value: `${channelCount}`,     inline: true },
           { name: `#${excl1Name}`,     value: `${sent1} video`,      inline: true },
           { name: `#${excl2Name}`,     value: `${sent2} video`,      inline: true },
-          { name: "Pattern video",     value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+          { name: "Video pattern",     value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
         ],
         footer: { text: "usa ,setup → Nascondi Canali per nascondere canali dopo il setup" },
         timestamp: new Date()
@@ -10524,7 +10868,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   }
 
   // --------------------------------------------------------------------------
-  // OPERATION: sortchannels -- distribute channels into 2 categories
+  // OPERATION: sortchannels -- distribute channels into 2 categoriess
   // --------------------------------------------------------------------------
   if (s.operation === "sortchannels") {
     const parts = s.extraParam.split("|").map(x => x.trim());
@@ -10542,7 +10886,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       .values()
     ];
 
-    await updateStatus(`Trovati **${allChans.length}** canali. Creando categorie...`);
+    await updateStatus(`Trovati **${allChans.length}** canali. Creando categories...`);
 
     const half  = Math.ceil(allChans.length / 2);
     const half1 = allChans.slice(0, half);
