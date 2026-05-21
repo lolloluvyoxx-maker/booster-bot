@@ -36,6 +36,7 @@ function buildConfigSnapshot() {
     autoroles,
     welcomeConfig,
     goodbyeConfig,
+    pingOnJoinConfig,
     ticketConfig,
     filterConfig,
     modlogChannel,
@@ -136,6 +137,7 @@ async function loadAllConfigs() {
     if (data.autoroles instanceof Map) { autoroles.clear(); data.autoroles.forEach((v,k) => autoroles.set(k,v)); }
     if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
     if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
+    if (data.pingOnJoinConfig instanceof Map) { pingOnJoinConfig.clear(); data.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k,v)); }
     if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
     if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
     if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
@@ -186,43 +188,6 @@ function err(message, text) {
   );
 }
 
-// 🗑️ Delete ALL messages from a user across every text channel in the guild.
-// Runs in the background (not awaited by callers) so it doesn't block the ban response.
-async function purgeUserMessages(guild, userId) {
-  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
-  const textChannels = guild.channels.cache.filter(c => c.isTextBased && c.isTextBased() && !c.isThread());
-  for (const ch of textChannels.values()) {
-    try {
-      let before = undefined;
-      let hasMore = true;
-      while (hasMore) {
-        const opts = { limit: 100 };
-        if (before) opts.before = before;
-        const msgs = await ch.messages.fetch(opts).catch(() => null);
-        if (!msgs || msgs.size === 0) break;
-
-        const userMsgs = msgs.filter(m => m.author?.id === userId);
-        if (userMsgs.size > 0) {
-          const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
-          const old    = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
-          // Bulk-delete messages < 14 days (Discord limit)
-          if (recent.size === 1) await recent.first().delete().catch(() => {});
-          else if (recent.size > 1) await ch.bulkDelete(recent).catch(() => {});
-          // Delete older messages one by one
-          for (const msg of old.values()) {
-            await msg.delete().catch(() => {});
-            await new Promise(r => setTimeout(r, 500));
-          }
-        }
-
-        before = msgs.last()?.id;
-        hasMore = msgs.size === 100;
-        await new Promise(r => setTimeout(r, 500));
-      }
-    } catch { /* skip channels where we lack permissions */ }
-  }
-}
-
 // ℹ️ Info response
 function info(message, text) {
   const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
@@ -242,6 +207,40 @@ function embed(title, fields, color = PINK) {
       timestamp: new Date()
     }]
   };
+}
+
+// 🧹 Delete ALL messages from a userId across every text channel in a guild
+// Runs in background — fire and forget (pass statusMsg to get a summary edit)
+async function purgeUserMessages(guild, userId, statusMsg = null) {
+  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
+  const textChannels = [...guild.channels.cache.values()].filter(c => [0, 5].includes(c.type));
+  let totalDeleted = 0;
+  for (const ch of textChannels) {
+    try {
+      let before = undefined, hasMore = true;
+      while (hasMore) {
+        const fetched = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!fetched || fetched.size === 0) break;
+        const userMsgs = [...fetched.values()].filter(m => m.author.id === userId);
+        // Split into bulk-deletable (< 14 days) and old messages
+        const bulk = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
+        const old  = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
+        if (bulk.length > 1) {
+          await ch.bulkDelete(bulk, true).catch(() => {});
+          totalDeleted += bulk.length;
+        } else if (bulk.length === 1) {
+          await bulk[0].delete().catch(() => {});
+          totalDeleted++;
+        }
+        for (const m of old) { await m.delete().catch(() => {}); totalDeleted++; await new Promise(r => setTimeout(r, 300)); }
+        before = fetched.last()?.id;
+        hasMore = fetched.size === 100;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch { /* skip channels we can't read */ }
+  }
+  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `🗑️ Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
+  return totalDeleted;
 }
 
 // 🔒 Confirm button (for dangerous actions like nuke, unbanall, etc.)
@@ -1078,6 +1077,8 @@ const lastfmUsers = new Map();
 const afkUsers = new Map();
 const ticketConfig = new Map();
 const openTickets = new Map();
+// guildId → { channelId, message, deleteAfter, roles: [] }
+const pingOnJoinConfig = new Map();
 
 // ===== SNIPE EVENTS =====
 client.on("messageDelete", (message) => {
@@ -1127,6 +1128,19 @@ client.on("guildMemberAdd", async (member) => {
   if (wc) {
     const ch = member.guild.channels.cache.get(wc.channelId);
     if (ch) ch.send(wc.message.replace("{user}", `<@${member.id}>`).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
+  }
+
+  // ── Ping On Join ──
+  // ── Ghost Ping on Join (multi-channel) ──
+  const poj = pingOnJoinConfig.get(member.guild.id);
+  if (poj?.enabled && poj.channels?.length) {
+    for (const chId of poj.channels) {
+      const pojCh = member.guild.channels.cache.get(chId);
+      if (!pojCh) continue;
+      // Ghost ping: send mention then immediately delete
+      const sent = await pojCh.send({ content: `<@${member.id}>` }).catch(() => null);
+      if (sent) sent.delete().catch(() => {});
+    }
   }
 });
 client.on("guildMemberRemove", async (member) => {
@@ -1669,8 +1683,9 @@ client.on("messageCreate", async (message) => {
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
-    return ok(message, `banned **${target.user.username}** | ${reason}`);
+    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    purgeUserMessages(message.guild, target.id, banPurgeMsg);
+    return;
   }
 
   // ,unban <userId>
@@ -2813,8 +2828,8 @@ client.on("messageCreate", async (message) => {
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
     ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
+    purgeUserMessages(message.guild, target.id);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
       message.channel.send(`🔓 **${target.user.username}**'s tempban has expired.`).catch(() => {});
@@ -2832,7 +2847,9 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    return ok(message, `softbanned **${target.user.username}** (messages deleted) | ${reason}`);
+    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    purgeUserMessages(message.guild, target.id, softPurgeMsg);
+    return;
   }
 
   // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
@@ -2846,8 +2863,9 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    purgeUserMessages(message.guild, target.id); // delete all messages in background
-    return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
+    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    purgeUserMessages(message.guild, target.id, hbPurgeMsg);
+    return;
   }
 
   // ,jail <user> [reason]
@@ -3228,6 +3246,38 @@ client.on("messageCreate", async (message) => {
     if (!msg) return err(message, "Please provide a message.");
     goodbyeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
     saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
+  }
+
+  // ,pingonjoin -- Tippy-style ghost ping on join with buttons
+  if (command === "pingonjoin" || command === "poj") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+
+    function pojEmbed(cfg) {
+      const channels = (cfg?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*";
+      return {
+        color: 0x2B2D31,
+        title: "Ping on join",
+        description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+        fields: [
+          { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+          { name: "Channels", value: channels,                               inline: false },
+        ],
+      };
+    }
+
+    function pojComponents(guildId) {
+      const { ActionRowBuilder } = require("discord.js");
+      return [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+      )];
+    }
+
+    const cfg = pingOnJoinConfig.get(message.guild.id) ?? { enabled: false, channels: [] };
+    pingOnJoinConfig.set(message.guild.id, cfg);
+    return message.reply({ embeds: [pojEmbed(cfg)], components: pojComponents(message.guild.id) });
   }
 
   // ,starboard <#channel> [threshold]
@@ -4313,7 +4363,7 @@ client.on("guildMemberAdd", async (member) => {
     }
     // Apply action to raider
     try {
-      if (cfg.action === "ban") { await member.ban({ reason: "[AntiRaid] Raid detected", deleteMessageSeconds: 604800 }); purgeUserMessages(member.guild, member.id); }
+      if (cfg.action === "ban") await member.ban({ reason: "[AntiRaid] Raid detected" });
       else if (cfg.action === "kick") await member.kick("[AntiRaid] Raid detected");
       else if (cfg.action === "mute") await member.timeout(10 * 60 * 1000, "[AntiRaid] Raid detected");
     } catch {}
@@ -5164,8 +5214,9 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
     await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    purgeUserMessages(message.guild, userId); // delete all messages in background
-    return ok(message, `hackbanned user **${userId}** | ${reason}`);
+    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — 🗑️ cancellando messaggi...`);
+    purgeUserMessages(message.guild, userId, hkPurgeMsg);
+    return;
   }
 
   // ,unbanall -- unban everyone
@@ -5527,10 +5578,11 @@ client.on("messageCreate", async (message) => {
     for (const id of ids) {
       recentBoosters.delete(id);
       const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-      if (ok2) { banned++; purgeUserMessages(message.guild, id); } else { failed++; }
+      ok2 ? banned++ : failed++;
       addCase(message.guild.id, "ban", id, message.author.id, reason);
+      if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
     }
-    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} | ${reason}` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} — 🗑️ messaggi cancellati | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -7557,7 +7609,7 @@ client.on("messageCreate", async (message) => {
     if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${suspects.size}** suspicious members...` }] });
     let count = 0;
-    for (const m of suspects.values()) { await m.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => {}); purgeUserMessages(message.guild, m.id); count++; }
+    for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** members.` }] });
   }
 
@@ -8574,10 +8626,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
     if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
-    for (const id of ids) {
-      await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}`, deleteMessageSeconds: 604800 }).catch(() => {});
-      purgeUserMessages(message.guild, id);
-    }
+    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
     return ok(message, `hackbanned **${ids.length}** users`);
   }
   if (command === "modnick") {
@@ -8996,7 +9045,6 @@ client.on("interactionCreate", async (interaction) => {
         reason: `[Anti-Minors] underage — banned by ${mod.username}`,
         deleteMessageSeconds: 604800 // delete 7 days of messages
       }).catch(() => null);
-      if (banResult) purgeUserMessages(guild, userId); // delete all messages in background
 
       const updatedEmbed = {
         ...interaction.message.embeds[0].data,
@@ -9052,6 +9100,132 @@ client.on("interactionCreate", async (interaction) => {
   } catch (e) {
     interaction.update({ components: [] }).catch(() => {});
   }
+});
+
+// -- PING ON JOIN BUTTON HANDLERS --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  const id = interaction.customId;
+  if (!id.startsWith("poj_")) return;
+
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild))
+    return interaction.reply({ content: "❌ Missing permissions.", flags: 64 });
+
+  const [action, guildId] = id.split(":");
+  if (guildId !== interaction.guild.id) return;
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  function pojEmbed(cfg) {
+    const channels = (cfg?.channels ?? []).map(chId => `<#${chId}>`).join(", ") || "*None*";
+    return {
+      color: 0x2B2D31,
+      title: "Ping on join",
+      description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+      fields: [
+        { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+        { name: "Channels", value: channels,                               inline: false },
+      ],
+    };
+  }
+
+  function pojRows(gId) {
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${gId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${gId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${gId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )];
+  }
+
+  let cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  pingOnJoinConfig.set(guildId, cfg);
+
+  // Toggle on/off
+  if (action === "poj_toggle") {
+    cfg.enabled = !cfg.enabled;
+    saveAllConfigs();
+    return interaction.update({ embeds: [pojEmbed(cfg)], components: pojRows(guildId) });
+  }
+
+  // Add channel — show modal with channel ID or mention input
+  if (action === "poj_add") {
+    const modal = new ModalBuilder().setCustomId(`poj_add_modal:${guildId}`).setTitle("Add Channel");
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId("poj_channel_input")
+        .setLabel("Channel ID or #mention")
+        .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder("123456789 or paste channel ID")
+    ));
+    return interaction.showModal(modal);
+  }
+
+  // Remove channel — show select if channels exist
+  if (action === "poj_remove") {
+    if (!cfg.channels.length) return interaction.reply({ content: "❌ No channels configured.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const options = cfg.channels.map(chId => {
+      const ch = interaction.guild.channels.cache.get(chId);
+      return { label: ch ? `#${ch.name}` : chId, value: chId };
+    });
+    return interaction.reply({
+      content: "Select a channel to remove:",
+      components: [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`poj_remove_pick:${guildId}`).setPlaceholder("Choose channel...").addOptions(options)
+      )],
+      flags: 64,
+    });
+  }
+});
+
+// poj_add modal submit
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  if (!interaction.customId.startsWith("poj_add_modal:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const input   = interaction.fields.getTextInputValue("poj_channel_input").trim();
+  // Accept raw ID or <#ID> mention
+  const chId    = input.replace(/[<#>]/g, "");
+  const ch      = interaction.guild.channels.cache.get(chId);
+  if (!ch) return interaction.reply({ content: `❌ Channel \`${chId}\` not found in this server.`, flags: 64 });
+
+  const cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  if (cfg.channels.includes(chId)) return interaction.reply({ content: `❌ <#${chId}> is already added.`, flags: 64 });
+  cfg.channels.push(chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+  function pojEmbed2(c) {
+    return { color: 0x2B2D31, title: "Ping on join", description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.", fields: [{ name: "Status", value: c?.enabled ? "Enabled" : "Disabled", inline: false }, { name: "Channels", value: (c?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*", inline: false }] };
+  }
+  return interaction.update({
+    embeds: [pojEmbed2(cfg)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )],
+  });
+});
+
+// poj_remove select
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (!interaction.customId.startsWith("poj_remove_pick:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const chId    = interaction.values[0];
+  const cfg     = pingOnJoinConfig.get(guildId);
+  if (!cfg) return interaction.reply({ content: "❌ Config not found.", flags: 64 });
+  cfg.channels   = cfg.channels.filter(id => id !== chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const ch = interaction.guild.channels.cache.get(chId);
+  return interaction.update({
+    content: `✅ Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
+    components: [],
+  });
 });
 
 // -- ANTI-MINORS COMMANDS (OWNER ONLY) ------------─
@@ -9464,17 +9638,47 @@ client.on("interactionCreate", async (interaction) => {
     // Store rawChannels in session so the search modal can filter them
     s._srcRawChannels = rawChannels;
     s._srcGuildName   = guildName;
-    // Show a search modal so the user can filter by name (no 25-option limit)
+    // Show a button so the user can open the search modal (modals require a button/slash interaction)
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ Tutti i canali").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Server sorgente:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie trovate\nPremi 🔍 per cercare o ⭐ per clonare tutto:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open source search modal --
+  if (interaction.isButton() && id === "sp_btn_src_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca canale — ${guildName}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca — ${s._srcGuildName ?? "sorgente"}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("src_search_query")
-          .setLabel("Nome categoria (lascia vuoto = mostra prime 24)")
+          .setLabel("Nome categoria (vuoto = prime 24)")
           .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
       )
     );
     return interaction.showModal(modal);
+  }
+
+  // -- Button: select all channels (no filter) --
+  if (interaction.isButton() && id === "sp_btn_src_all") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    s.selectedSrcIds  = [];
+    s.selectedSrcName = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `✅ **Destinazione impostata:** categoria : HELP — torna al panel e premi 🚀`,
+      components: [],
+    });
   }
 
   // -- Modal submit: source channel search --
@@ -9595,17 +9799,43 @@ client.on("interactionCreate", async (interaction) => {
     // Store raw channels in session for the search modal
     s._tgtRawChannels = rawChannels;
     s._tgtGuildName   = guildName;
-    // Show search modal as the direct response (must be first and only response)
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (nessuna categoria)").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Server destinazione:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie disponibili\nPremi 🔍 per cercare o 📌 per Root:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open target search modal --
+  if (interaction.isButton() && id === "sp_btn_tgt_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca categoria — ${guildName}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca — ${s._tgtGuildName ?? "destinazione"}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("tgt_search_query")
-          .setLabel("Nome categoria (lascia vuoto = prime 24)")
+          .setLabel("Nome categoria (vuoto = prime 24)")
           .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
       )
     );
     return interaction.showModal(modal);
+  }
+
+  // -- Button: target root (no category) --
+  if (interaction.isButton() && id === "sp_btn_tgt_root") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    s.selectedTgtCatId = "";
+    s.selectedTgtName  = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({ content: `✅ **Destinazione impostata:** Root (nessuna categoria) — torna al panel e premi 🚀`, components: [] });
   }
 
   // -- Modal submit: target category search --
