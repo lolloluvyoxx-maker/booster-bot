@@ -9286,12 +9286,21 @@ function buildPanelComponents(s) {
       ])
   );
 
-  // Row 4: Browse buttons
-  const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_browse_src").setLabel("📂 Source Server/Channel").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel("📂 Target Server/Category").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("🗑 Clear Selection").setStyle(ButtonStyle.Secondary),
-  );
+  // Row 4: Browse buttons — labels adapt to the current operation
+  const browseConfig = {
+    cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
+    cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
+    clonecategoryperks: { srcLabel: "📂 Source Category", tgtLabel: "📂 Target Category" },
+    setuppaidperks:     { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
+    hidepaidperks:      { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
+    sortchannels:       { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
+  };
+  const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
+  const browseButtons = [];
+  if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
+  browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
+  browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
+  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
 
   // Row 5: Action buttons
   const row5 = new ActionRowBuilder().addComponents(
@@ -10136,9 +10145,6 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   // OPERATION: clonecategoryperks -- clone one category + distribute videos
   // --------------------------------------------------------------------------
   if (s.operation === "clonecategoryperks") {
-    const catName = s.extraParam;
-    if (!catName) throw new Error("Specifica il nome della categoria nel campo 'Extra' del panel");
-
     await updateStatus("Fetching canali via REST...");
     const [rawChannels, rawRoles, targetGuild] = await Promise.all([
       discordREST(`/guilds/${s.sourceId}/channels`),
@@ -10148,8 +10154,17 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
 
-    const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
-    if (!srcCat) throw new Error(`Categoria "${catName}" non trovata nel server sorgente`);
+    // Resolve source category: prefer selected ID, fall back to extraParam name
+    let srcCat;
+    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.id === s.selectedSrcIds[0]);
+      if (!srcCat) throw new Error(`Categoria con ID \`${s.selectedSrcIds[0]}\` non trovata — usa 📂 Source Category per selezionarla`);
+    } else if (s.extraParam) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === s.extraParam.toLowerCase());
+      if (!srcCat) throw new Error(`Categoria "${s.extraParam}" non trovata nel server sorgente`);
+    } else {
+      throw new Error("Nessuna categoria selezionata — usa il bottone 📂 Source Category per sceglierla");
+    }
 
     const catChans = rawChannels
       .filter(c => c.type !== 4 && c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
