@@ -9129,57 +9129,101 @@ function defaultSession() {
 function buildPanelEmbed(s) {
   const pad = n => String(n).padStart(s.videoPadZeros, "0");
   const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
-  const p1 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
-           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
-           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-           :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
-  const p2 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
-           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
-           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-           :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
+  const p1  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
+            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+            :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
+  const p2  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
+            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+            :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
   const ready = srcOk && dstOk;
 
+  // ANSI helpers
+  const R  = "\u001b[0m";
+  const PK = "\u001b[1;35m";   // bright pink/magenta
+  const DM = "\u001b[2;35m";   // dim purple (borders)
+  const CY = "\u001b[0;36m";   // cyan (labels)
+  const GR = "\u001b[1;32m";   // green (set values)
+  const RD = "\u001b[1;31m";   // red (unset / warning)
+  const YL = "\u001b[0;33m";   // yellow (extra param)
+  const WH = "\u001b[1;37m";   // bright white (headers)
+  const DG = "\u001b[2;37m";   // dim gray (empty)
+
   const opMeta = {
-    cloneperks:         { e: "🌐", n: "Clone Server Completo"  },
-    cloneperks_channel: { e: "💬", n: "Clone Singolo Canale"   },
-    clonecategoryperks: { e: "📁", n: "Clone Categoria"        },
-    setuppaidperks:     { e: "🔧", n: "Setup Paid Perks"       },
-    hidepaidperks:      { e: "🙈", n: "Nascondi Canali"        },
-    sortchannels:       { e: "🔀", n: "Sort Canali"            },
+    cloneperks:         { e: "🌐", n: "Full Server Clone"     },
+    cloneperks_channel: { e: "💬", n: "Single Channel Clone"  },
+    clonecategoryperks: { e: "📁", n: "Category + Videos"     },
+    setuppaidperks:     { e: "🔧", n: "Paid Perks Setup"      },
+    hidepaidperks:      { e: "🙈", n: "Hide Channels"         },
+    sortchannels:       { e: "🔀", n: "Sort Channels"         },
   };
-  const op  = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
-  const dot = v => v ? "<:_:>" || "●" : "○";
-  const tog = v => v ? "\`ON \`" : "\`OFF\`";
+  const op = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
+
+  const extraHint = s.extraParam
+    ? `${YL}${s.extraParam.slice(0,17).padEnd(17)}${R}`
+    : s.operation === "clonecategoryperks" ? `${RD}⚠  category name     ${R}`
+    : s.operation === "sortchannels"       ? `${RD}⚠  Cat1 | Cat2       ${R}`
+    : s.operation === "hidepaidperks"      ? `${DG}count  (default 20) ${R}`
+    :                                        `${DG}—                   ${R}`;
+
+  const tog = v => v
+    ? `${GR} ✦ ${R}`
+    : `${DG} ✧ ${R}`;
+
+  const renameMode = {
+    prefix:   "Prefix + Number",
+    numbered: "Numbers only",
+    replace:  "Fixed name",
+    suffix:   "Number + Suffix",
+  }[s.videoRenameMode] ?? s.videoRenameMode;
+
+  const srcVal = srcOk ? `${GR}${s.sourceId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
+  const dstVal = dstOk ? `${GR}${s.targetId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
+
+  const border   = `${DM}║${R}`;
+  const divider  = `${DM}╠══════════════════════════╣${R}`;
+  const topBar   = `${DM}╔══════════════════════════╗${R}`;
+  const botBar   = `${DM}╚══════════════════════════╝${R}`;
+  const midTitle = (t) => `${border}  ${WH}${t.padEnd(24)}${R}  ${border}`;
+  const row      = (label, val) => `${border}  ${CY}${label.padEnd(7)}${R}  ${val}  ${border}`;
+
+  const ansiBlock = [
+    topBar,
+    midTitle("SERVERS"),
+    divider,
+    row("source", srcVal),
+    row("target", dstVal),
+    row("extra",  extraHint),
+    divider,
+    midTitle("CLONE OPTIONS"),
+    divider,
+    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
+    `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
+    divider,
+    midTitle("VIDEO PAIRS"),
+    divider,
+    `${border}  ${CY}channels${R}  ${GR}#${s.exclusiveName}${R}  ${DG}+${R}  ${GR}#${s.exclusiveName}-2${R}${"".padEnd(Math.max(0, 5 - s.exclusiveName.length))}  ${border}`,
+    `${border}  ${CY}rename  ${R}  ${YL}${renameMode.padEnd(18)}${R}  ${border}`,
+    `${border}  ${CY}preview ${R}  ${WH}${p1.slice(0,9).padEnd(9)}${R} ${WH}${p2.slice(0,9).padEnd(9)}${R}  ${border}`,
+    botBar,
+  ].join("\n");
+
+  const statusLine = ready
+    ? "### ✦  All set — hit 🚀 Launch"
+    : "### ⚠  Configure Source & Target first — hit 📝";
 
   const desc = [
     `### ${op.e}  ${op.n}`,
-    ``,
-    `\`\`\`ansi`,
-    `[2;35m╔══════════════════════════════╗[0m`,
-    `[2;35m║[0m  [1;37mSERVERS[0m                       [2;35m║[0m`,
-    `[2;35m╠══════════════════════════════╣[0m`,
-    `[2;35m║[0m  [0;36mSource[0m  ${srcOk ? `[1;32m${s.sourceId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
-    `[2;35m║[0m  [0;36mTarget[0m  ${dstOk ? `[1;32m${s.targetId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
-    s.extraParam
-      ? `[2;35m║[0m  [0;36mExtra  [0m  [0;33m${s.extraParam.slice(0,18).padEnd(18)}[0m  [2;35m║[0m`
-      : `[2;35m║[0m  [0;36mExtra  [0m  [2;37m—                 [0m  [2;35m║[0m`,
-    `[2;35m╚══════════════════════════════╝[0m`,
-    `\`\`\``,
-    ``,
-    `-# ⬡  ELEMENTI DA CLONARE`,
-    `> ${s.cloneRoles     ? "🩷" : "🩶"} **Ruoli**  ${s.cloneCategories ? "🩷" : "🩶"} **Categorie**  ${s.cloneChannels ? "🩷" : "🩶"} **Canali**`,
-    `> ${s.clonePermissions? "🩷" : "🩶"} **Permessi**  ${s.cloneMessages ? "🩷" : "🩶"} **Messaggi**  ${s.skipExisting ? "🩷" : "🩶"} **Skip dup.**`,
-    ``,
-    `-# ⬡  VIDEO — coppie da 2`,
-    `> 📂  \`#${s.exclusiveName}\`  ＋  \`#${s.exclusiveName}-2\``,
-    `> 🎞  \`${p1}\`  \`${p2}\``,
-    ``,
-    ready
-      ? `> ### ✦  Tutto pronto  —  premi 🚀`
-      : `> ### ⚠  Imposta Source e Target  —  premi 📝`,
+    "",
+    "```ansi",
+    ansiBlock,
+    "```",
+    "",
+    statusLine,
   ].join("\n");
 
   return {
@@ -9199,45 +9243,45 @@ function buildPanelComponents(s) {
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
-      .setPlaceholder("📋 Seleziona operazione...")
+      .setPlaceholder("📋 Select operation...")
       .addOptions([
-        { label: "Clone Server Completo",  value: "cloneperks",         emoji: "🌐", description: "Ruoli + categorie + canali + video", default: s.operation === "cloneperks"         },
-        { label: "Clone Singolo Canale",   value: "cloneperks_channel",  emoji: "💬", description: "Copia media da un canale a un altro", default: s.operation === "cloneperks_channel" },
-        { label: "Clone Categoria + Video",value: "clonecategoryperks",  emoji: "📁", description: "Clone categoria + distribuzione video", default: s.operation === "clonecategoryperks" },
-        { label: "Setup Paid Perks",       value: "setuppaidperks",      emoji: "🔧", description: "Setup completo server premium",        default: s.operation === "setuppaidperks"     },
-        { label: "Nascondi Canali",        value: "hidepaidperks",       emoji: "🙈", description: "Nega ViewChannel a @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Canali",            value: "sortchannels",        emoji: "🔀", description: "Distribuisce canali in 2 categorie",    default: s.operation === "sortchannels"       },
+        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos", default: s.operation === "cloneperks"         },
+        { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
+        { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
+        { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
+        { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
+        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
       ])
   );
 
   // Row 2: Clone toggles
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Ruoli`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categorie`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Canali`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permessi`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messaggi`).setStyle(bs(s.cloneMessages)),
+    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Roles`).setStyle(bs(s.cloneRoles)),
+    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categories`).setStyle(bs(s.cloneCategories)),
+    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Channels`).setStyle(bs(s.cloneChannels)),
+    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
+    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messages`).setStyle(bs(s.cloneMessages)),
   );
 
   // Row 3: Video rename select + skip toggle
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬 Modalità rinomina video...")
+      .setPlaceholder("🎬 Video rename mode...")
       .addOptions([
-        { label: "Prefisso + Numero",  value: "prefix",   emoji: "🔤", description: "SENSATIONAL01.mp4 + SENSATIONAL02.mp4", default: s.videoRenameMode === "prefix"   },
-        { label: "Solo Numerato",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
-        { label: "Nome Fisso",         value: "replace",  emoji: "📝", description: "SENSATIONAL.mp4 × tutte le coppie",     default: s.videoRenameMode === "replace"  },
-        { label: "Numero + Suffisso",  value: "suffix",   emoji: "🔚", description: "01_SENSATIONAL.mp4 + 02_SENSATIONAL.mp4",default: s.videoRenameMode === "suffix"  },
+        { label: "Prefix + Number",  value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4", default: s.videoRenameMode === "prefix"   },
+        { label: "Numbers only",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
+        { label: "Fixed name",         value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",     default: s.videoRenameMode === "replace"  },
+        { label: "Number + Suffix",  value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",default: s.videoRenameMode === "suffix"  },
       ])
   );
 
   // Row 4: Action buttons
   const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Imposta IDs"  ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"  ).setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options" ).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Avvia"         ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Annulla"        ).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"         ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"        ).setStyle(ButtonStyle.Danger),
   );
 
   return [row1, row2, row3, row4];
@@ -9245,26 +9289,27 @@ function buildPanelComponents(s) {
 
 // -- Interaction handler for the Config Panel ----------------------------------
 client.on("interactionCreate", async (interaction) => {
+  try {
   // Only owner can use the setup panel
   if (interaction.user.id !== OWNER_ID) return;
 
   // Only handle setup panel interactions
   const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video"];
   const id = interaction.customId;
-  if (!spIds.includes(id)) return;
+  if (!id || !spIds.includes(id)) return;
 
   const s = setupSessions.get(interaction.user.id);
 
   // -- Select: operation --
   if (interaction.isStringSelectMenu() && id === "sp_op") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Digita `,clone` di nuovo.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired. Type `,clone` again.", flags: 64 });
     s.operation = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
   // -- Select: video rename mode --
   if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s.videoRenameMode = interaction.values[0];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
@@ -9278,18 +9323,18 @@ client.on("interactionCreate", async (interaction) => {
     sp_t_msgs:  "cloneMessages",
   };
   if (interaction.isButton() && toggleMap[id]) {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s[toggleMap[id]] = !s[toggleMap[id]];
     return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   }
 
   // -- Button: open IDs modal --
   if (interaction.isButton() && id === "sp_ids") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
-      .setTitle("🌸 Configura IDs & Parametri")
+      .setTitle("🌸 Configure IDs & Parameters")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
@@ -9302,12 +9347,12 @@ client.on("interactionCreate", async (interaction) => {
             .setValue(s.targetId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra (categoria | Categoria1 | Categoria2 | count)")
-            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  nomecategoria  /  Cat1 | Cat2  /  20")
+          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra  (category name / Cat1 | Cat2 / count)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  categoryname  /  Cat1 | Cat2  /  20")
             .setValue(s.extraParam).setRequired(false)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("excl_name").setLabel("Nome canali esclusivi (default: exclusive)")
+          new TextInputBuilder().setCustomId("excl_name").setLabel("Exclusive channel name (default: exclusive)")
             .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
             .setValue(s.exclusiveName).setRequired(false)
         ),
@@ -9317,29 +9362,29 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: open video options modal --
   if (interaction.isButton() && id === "sp_video") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
-      .setTitle("🎬 Opzioni Video & Rinomina")
+      .setTitle("🎬 Video & Rename Options")
       .addComponents(
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Nome base file")
+          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
             .setStyle(TextInputStyle.Short).setPlaceholder("SENSATIONAL")
             .setValue(s.videoPattern).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_counter").setLabel("Numero iniziale contatore")
+          new TextInputBuilder().setCustomId("vid_counter").setLabel("Counter start number")
             .setStyle(TextInputStyle.Short).setPlaceholder("1")
             .setValue(String(s.videoCounterStart)).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_pad").setLabel("Padding zeri  (1 → 1  |  2 → 01  |  3 → 001)")
+          new TextInputBuilder().setCustomId("vid_pad").setLabel("Zero padding  (1 → 1  |  2 → 01  |  3 → 001)")
             .setStyle(TextInputStyle.Short).setPlaceholder("2")
             .setValue(String(s.videoPadZeros)).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_ext").setLabel("Estensione  (keep / mp4 / mov / webm)")
+          new TextInputBuilder().setCustomId("vid_ext").setLabel("Extension  (keep / mp4 / mov / webm)")
             .setStyle(TextInputStyle.Short).setPlaceholder("keep")
             .setValue(s.videoExtension).setRequired(true)
         ),
@@ -9349,7 +9394,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
     s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
     s.extraParam = interaction.fields.getTextInputValue("extra_param").trim();
@@ -9361,12 +9406,12 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ IDs e parametri aggiornati!", flags: 64 });
+    return interaction.reply({ content: "✅ IDs and parameters updated!", flags: 64 });
   }
 
   // -- Modal submit: video options --
   if (interaction.isModalSubmit() && id === "sp_modal_video") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
     s.videoCounterStart = parseInt(interaction.fields.getTextInputValue("vid_counter")) || 1;
     s.videoPadZeros     = Math.min(4, Math.max(1, parseInt(interaction.fields.getTextInputValue("vid_pad")) || 2));
@@ -9378,23 +9423,23 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "✅ Opzioni video aggiornate!", flags: 64 });
+    return interaction.reply({ content: "✅ Video options updated!", flags: 64 });
   }
 
   // -- Button: cancel --
   if (interaction.isButton() && id === "sp_cancel") {
     setupSessions.delete(interaction.user.id);
     return interaction.update({
-      embeds:     [{ color: PINK, description: "❌ Config Panel annullato." }],
+      embeds:     [{ color: PINK, description: "❌ Config Panel cancelled." }],
       components: [],
     });
   }
 
   // -- Button: launch --
   if (interaction.isButton() && id === "sp_launch") {
-    if (!s) return interaction.reply({ content: "⚠️ Sessione scaduta. Usa `,clone` di nuovo.", flags: 64 });
+    if (!s) return interaction.reply({ content: "⚠️ Session expired. Use `,clone` again.", flags: 64 });
     if (!s.sourceId || !s.targetId) {
-      return interaction.reply({ content: "⚠️ Imposta prima **Source ID** e **Target ID** con il pulsante 📝 Imposta IDs.", flags: 64 });
+      return interaction.reply({ content: "⚠️ Set **Source ID** and **Target ID** first using the 📝 Set IDs button.", flags: 64 });
     }
     // Lock panel -- disable all components
     const lockedEmbed = buildPanelEmbed(s);
@@ -9405,7 +9450,7 @@ client.on("interactionCreate", async (interaction) => {
     setupSessions.delete(interaction.user.id);
 
     const statusCh  = interaction.channel;
-    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Inizializzazione..." }] }).catch(() => null);
+    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Initializing..." }] }).catch(() => null);
     const updateStatus = async (text) => {
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `🌸 ${text}` }] }).catch(() => {});
     };
@@ -9416,6 +9461,15 @@ client.on("interactionCreate", async (interaction) => {
       log(`[setup panel] fatal: ${e.message}`, "error");
       if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `❌ Operazione fallita: \`${e.message}\`` }] }).catch(() => {});
     }
+  }
+
+  } catch (e) {
+    log(`[clone interaction] unhandled error id=${interaction.customId}: ${e.message}\n${e.stack}`, "error");
+    try {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: `❌ Errore: \`${e.message}\``, flags: 64 });
+      }
+    } catch (_) {}
   }
 });
 
