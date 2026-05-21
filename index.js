@@ -3,12 +3,12 @@ const fs = require("fs");
 const path = require("path");
 
 // ===================================================
-// ===== PERSISTENCE SYSTEM (Discord-backed) =========
+// ===== PERSISTENCE SYSTEM (File-backed) ============
 // ===================================================
-// Saves config to a Discord channel so it survives Railway restarts
-const CONFIG_CHANNEL_ID = "1482107392463474921";
-const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";
-let _configMessageId = null; // cached message ID
+// Saves config to a local JSON file so it survives restarts.
+// On Railway: add a Volume with mount path /data and set
+// the env var CONFIG_PATH=/data/config.json
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, "config.json");
 
 // Serializer -- handles Map and Set
 function serialize(data) {
@@ -16,7 +16,7 @@ function serialize(data) {
     if (value instanceof Set) return { __type: "Set", values: [...value] };
     if (value instanceof Map) return { __type: "Map", entries: [...value.entries()] };
     return value;
-  });
+  }, 2);
 }
 
 function deserialize(raw) {
@@ -58,72 +58,32 @@ function buildConfigSnapshot() {
   };
 }
 
-// Save all configs to Discord channel
-async function saveAllConfigs() {
+// Save all configs to file (atomic write: tmp → rename)
+function saveAllConfigs() {
   try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
-
-    const content = `\`\`\`json\n${CONFIG_MESSAGE_TAG}\n${serialize(buildConfigSnapshot())}\n\`\`\``;
-
-    if (_configMessageId) {
-      // Edit existing message
-      const msg = await ch.messages.fetch(_configMessageId).catch(() => null);
-      if (msg) {
-        await msg.edit(content).catch(() => {});
-        return;
-      }
-    }
-
-    // No existing message -- find it or create new one
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (messages) {
-      const existing = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-      if (existing) {
-        _configMessageId = existing.id;
-        await existing.edit(content).catch(() => {});
-        return;
-      }
-    }
-
-    // Create new message
-    const sent = await ch.send(content).catch(() => null);
-    if (sent) _configMessageId = sent.id;
+    const tmp = CONFIG_PATH + ".tmp";
+    fs.writeFileSync(tmp, serialize(buildConfigSnapshot()), "utf8");
+    fs.renameSync(tmp, CONFIG_PATH);
+    console.log("[Config] ✅ Saved to", CONFIG_PATH);
   } catch (e) {
     console.error("[Config] Failed to save:", e.message);
   }
 }
 
-// Load configs from Discord channel on startup
-async function loadAllConfigs() {
+// Load configs from file on startup
+function loadAllConfigs() {
   try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) { console.log("[Config] Config channel not found, starting fresh"); return; }
-
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (!messages) return;
-
-    const configMsg = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-    if (!configMsg) { console.log("[Config] No saved config found, starting fresh"); return; }
-
-    _configMessageId = configMsg.id;
-
-    // Extract JSON from codeblock
-    const match = configMsg.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
-    if (!match) return;
-
-    const data = deserialize(match[1]);
-
-    // Restore each config -- ensure Sets/Maps are valid
-    function restoreMap(saved, defaultVal) {
-      if (!saved) return defaultVal;
-      if (saved instanceof Map) return saved;
-      return defaultVal;
+    if (!fs.existsSync(CONFIG_PATH)) {
+      console.log("[Config] No config file found, starting fresh");
+      return;
     }
+
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const data = deserialize(raw);
 
     function ensureSetInMap(map) {
       for (const [key, val] of map.entries()) {
-        if (val && typeof val === 'object') {
+        if (val && typeof val === "object") {
           if (val.channels && !(val.channels instanceof Set)) val.channels = new Set(Array.isArray(val.channels) ? val.channels : []);
           if (val.requireAttach && !(val.requireAttach instanceof Set)) val.requireAttach = new Set(Array.isArray(val.requireAttach) ? val.requireAttach : []);
           if (val.whitelist && !(val.whitelist instanceof Set)) val.whitelist = new Set(Array.isArray(val.whitelist) ? val.whitelist : []);
@@ -158,7 +118,7 @@ async function loadAllConfigs() {
     if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
     if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
 
-    console.log("[Config] ✅ All configs restored from Discord");
+    console.log("[Config] ✅ All configs restored from", CONFIG_PATH);
   } catch (e) {
     console.error("[Config] Failed to load:", e.message);
   }
@@ -327,6 +287,9 @@ const client = new Client({
   ],
   partials: ["CHANNEL"]
 });
+// Raise listener limit to suppress MaxListenersExceededWarning
+// (bot intentionally uses many separate handlers for modularity)
+client.setMaxListeners(50);
 
 // ===== CONFIGURATION =====
 const OWNER_ID = "1005237630113419315";
@@ -402,11 +365,12 @@ async function fetchMemberWithRetry(guild, userId, maxRetries = 3) {
       const member = await guild.members.fetch(userId);
       return member;
     } catch (error) {
+      // 10007 = Unknown Member, 10013 = Unknown User — no point retrying
+      const code = error.code ?? error?.rawError?.code;
+      if (code === 10007 || code === 10013 || error.status === 404) return null;
       if (i < maxRetries - 1) {
         await new Promise(resolve => setTimeout(resolve, 500 + (i * 500)));
         log(`Retry ${i + 1}/${maxRetries} fetching member ${userId}...`, "info");
-      } else {
-        throw error;
       }
     }
   }
@@ -580,8 +544,8 @@ async function checkAllTargetMembers() {
 client.once("clientReady", async () => {
   log(`Logged in as ${client.user.username}`, "success");
 
-  // Load all configs from Discord backup channel
-  await loadAllConfigs();
+  // Load all configs from file
+  loadAllConfigs();
 
   // Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
@@ -9596,7 +9560,7 @@ client.on("interactionCreate", async (interaction) => {
   // Accept any setup-panel interaction (prefix check is safer than a static list)
   const id = interaction.customId;
   if (!id) return;
-  const isSpId = id.startsWith("sp_") || id.startsWith("poj_");
+  const isSpId = id.startsWith("sp_");
   if (!isSpId) return;
 
   const s = setupSessions.get(interaction.user.id);
