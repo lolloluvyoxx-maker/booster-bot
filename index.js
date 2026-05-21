@@ -9196,13 +9196,21 @@ function buildPanelEmbed(s) {
   const midTitle = (t) => `${border}  ${WH}${t.padEnd(24)}${R}  ${border}`;
   const row      = (label, val) => `${border}  ${CY}${label.padEnd(7)}${R}  ${val}  ${border}`;
 
+  const opSrcLabel = {
+    cloneperks:         "src srv",
+    cloneperks_channel: "src ch ",
+    clonecategoryperks: "src cat",
+    setuppaidperks:     "src srv",
+    hidepaidperks:      "target ",
+    sortchannels:       "target ",
+  }[s.operation] ?? "source ";
+
   const ansiBlock = [
     topBar,
     midTitle("SERVERS"),
     divider,
-    row("source", srcVal),
-    row("target", dstVal),
-    row("extra",  extraHint),
+    row(opSrcLabel, srcVal),
+    row("tgt srv", dstVal),
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
@@ -9399,12 +9407,14 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
+    // For clonecategoryperks, show only categories; otherwise show cats + channels
     const cats  = rawChannels.filter(c => c.type === 4).slice(0, 12);
     const chans = rawChannels.filter(c => [0, 5].includes(c.type)).slice(0, 12);
+    const isCatOp = s.operation === "clonecategoryperks";
     const options = [
       { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
       ...cats.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...chans.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}`   })),
+      ...(!isCatOp ? chans.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })) : []),
     ].slice(0, 25);
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
@@ -10173,15 +10183,22 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus(`Categoria **${srcCat.name}** — **${catChans.length}** canali. Clonando ruoli...`);
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    // Create or find target category
-    let tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
-    if (!tgtCat) {
-      tgtCat = await targetGuild.channels.create({
-        name: srcCat.name, type: 4,
-        permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
-        reason: "[setup panel]"
-      });
-      await new Promise(r => setTimeout(r, 1000));
+    // Resolve target category: use selectedTgtCatId if set, otherwise find/create by name
+    let tgtCat;
+    if (s.selectedTgtCatId) {
+      tgtCat = targetGuild.channels.cache.get(s.selectedTgtCatId)
+        ?? await targetGuild.channels.fetch(s.selectedTgtCatId).catch(() => null);
+      if (!tgtCat) throw new Error(`Categoria destinazione \`${s.selectedTgtCatId}\` non trovata nel server target`);
+    } else {
+      tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+      if (!tgtCat) {
+        tgtCat = await targetGuild.channels.create({
+          name: srcCat.name, type: 4,
+          permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
+          reason: "[setup panel]"
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
 
     let clonedCount = 0;
