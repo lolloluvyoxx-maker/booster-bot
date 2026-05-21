@@ -37,6 +37,7 @@ function buildConfigSnapshot() {
     welcomeConfig,
     goodbyeConfig,
     pingOnJoinConfig,
+    embedColors,
     ticketConfig,
     filterConfig,
     modlogChannel,
@@ -138,6 +139,7 @@ async function loadAllConfigs() {
     if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
     if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
     if (data.pingOnJoinConfig instanceof Map) { pingOnJoinConfig.clear(); data.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k,v)); }
+    if (data.embedColors instanceof Map) { embedColors.clear(); data.embedColors.forEach((v,k) => embedColors.set(k,v)); }
     if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
     if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
     if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
@@ -170,11 +172,14 @@ setInterval(() => saveAllConfigs(), 2 * 60 * 1000);
 // ===== GREED-STYLE RESPONSE SYSTEM =================
 // ===================================================
 
-const PINK = 0xFF69B4;  // Hot pink color for all embeds
+const PINK = 0xFF69B4;  // Hot pink color for all embeds (default)
+// Returns the embed color for a guild (falls back to PINK)
+function guildColor(guildId) { return embedColors.get(guildId) ?? PINK; }
 
 // ✅ Success response -- pink embed, no title, inline style
 function ok(message, text) {
-  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `🌸 ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
@@ -182,7 +187,8 @@ function ok(message, text) {
 
 // ❌ Error response
 function err(message, text) {
-  const embed = { color: PINK, description: `✖ ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `✖ ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
@@ -190,7 +196,8 @@ function err(message, text) {
 
 // ℹ️ Info response
 function info(message, text) {
-  const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `🌸 ${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
@@ -1079,6 +1086,8 @@ const ticketConfig = new Map();
 const openTickets = new Map();
 // guildId → { channelId, message, deleteAfter, roles: [] }
 const pingOnJoinConfig = new Map();
+// guildId → hex color integer (default PINK)
+const embedColors = new Map();
 
 // ===== SNIPE EVENTS =====
 client.on("messageDelete", (message) => {
@@ -1683,7 +1692,7 @@ client.on("messageCreate", async (message) => {
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
-    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
     purgeUserMessages(message.guild, target.id, banPurgeMsg);
     return;
   }
@@ -1789,7 +1798,7 @@ client.on("messageCreate", async (message) => {
     return ok(message, `unhidden ${channel}`);
   }
 
-  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categories/vcs
+  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categoriess/vcs
   if (command === "hider") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const role = message.mentions.roles.first();
@@ -2284,7 +2293,7 @@ client.on("messageCreate", async (message) => {
   if (command === "help") {
     const { StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
 
-    const categories = {
+    const categoriess = {
       moderation: {
         label: "Moderation",
         emoji: "🛡️",
@@ -2625,11 +2634,11 @@ client.on("messageCreate", async (message) => {
         emoji: "🌸",
         description: "Clone, sort and manage perks servers",
         commands: [
-          [",cloneperks <sourceId> <targetId>", "Clone all roles, categories and channels from one server to another"],
+          [",cloneperks <sourceId> <targetId>", "Clone all roles, categoriess and channels from one server to another"],
           [",clonecategoryperks <sourceId> <targetId> <catName>", "Clone a category and distribute its videos 2-by-2 into exclusive1/exclusive2"],
           [",setuppaidperks <sourceId> <targetId> [exclusiveName]", "Setup paid perks server with cloned + exclusive channels"],
           [",hidepaidperks <targetId> [count]", "Randomly hide N channels in a server (default 20)"],
-          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categories (auto overflow at 50)"],
+          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categoriess (auto overflow at 50)"],
         ]
       },
       nsfw: {
@@ -2663,7 +2672,7 @@ client.on("messageCreate", async (message) => {
         .setCustomId("help_category")
         .setPlaceholder("Choose a category...")
         .addOptions(
-          Object.entries(categories)
+          Object.entries(categoriess)
             .filter(([key]) => key !== 'nsfw' || message.author.id === OWNER_ID)
             .map(([key, cat]) =>
               new SMOB()
@@ -2689,7 +2698,7 @@ client.on("messageCreate", async (message) => {
         "Select a category from the dropdown menu below to view commands."
       ].join("\n"),
       thumbnail: { url: client.user.displayAvatarURL() },
-      footer: { text: `${client.user.username} • ${Object.values(categories).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+      footer: { text: `${client.user.username} • ${Object.values(categoriess).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
     };
 
     const msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
@@ -2725,7 +2734,7 @@ client.on("messageCreate", async (message) => {
         }
         // Handle select menu
         if (i.isStringSelectMenu()) {
-          const cat = categories[i.values[0]];
+          const cat = categoriess[i.values[0]];
           if (!cat) return;
           currentCategory = cat;
           currentPage = 0;
@@ -2847,7 +2856,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
     purgeUserMessages(message.guild, target.id, softPurgeMsg);
     return;
   }
@@ -2863,7 +2872,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — 🗑️ cancellando messaggi...`);
+    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — 🗑️ deleting messages...`);
     purgeUserMessages(message.guild, target.id, hbPurgeMsg);
     return;
   }
@@ -3248,7 +3257,35 @@ client.on("messageCreate", async (message) => {
     saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
   }
 
-  // ,pingonjoin -- Tippy-style ghost ping on join with buttons
+  // ,embedcolor [#hex | reset] -- set or reset the embed color for this server
+  if (command === "embedcolor" || command === "embedcolour") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+
+    const input = args[1]?.toLowerCase();
+
+    if (!input || input === "view") {
+      const current = embedColors.get(message.guild.id);
+      const hex = current ? `#${current.toString(16).toUpperCase().padStart(6, "0")}` : "#FF69B4 (default pink)";
+      return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "🎨 Embed Color", description: `Current color: **${hex}**\n\nUse \`,embedcolor #RRGGBB\` to change it.\nUse \`,embedcolor reset\` to go back to default pink.`, thumbnail: { url: `https://singlecolorimage.com/get/${(current ?? PINK).toString(16).padStart(6,"0")}/64x64` } }] });
+    }
+
+    if (input === "reset" || input === "default") {
+      embedColors.delete(message.guild.id);
+      saveAllConfigs();
+      return message.reply({ embeds: [{ color: PINK, title: "🎨 Embed Color Reset", description: "Embed color reset to default **#FF69B4** (pink)." }] });
+    }
+
+    // Parse hex: accept #RRGGBB or RRGGBB
+    const hex = input.replace("#", "");
+    if (!/^[0-9a-f]{6}$/i.test(hex)) return err(message, "Invalid color. Use a hex code like `,embedcolor #FF69B4`");
+
+    const colorInt = parseInt(hex, 16);
+    embedColors.set(message.guild.id, colorInt);
+    saveAllConfigs();
+    return message.reply({ embeds: [{ color: colorInt, title: "🎨 Embed Color Updated", description: `All embeds in this server will now use **#${hex.toUpperCase()}**.` }] });
+  }
+
+
   if (command === "pingonjoin" || command === "poj") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
@@ -5214,7 +5251,7 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
     await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — 🗑️ cancellando messaggi...`);
+    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — 🗑️ deleting messages...`);
     purgeUserMessages(message.guild, userId, hkPurgeMsg);
     return;
   }
@@ -5582,7 +5619,7 @@ client.on("messageCreate", async (message) => {
       addCase(message.guild.id, "ban", id, message.author.id, reason);
       if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
     }
-    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} — 🗑️ messaggi cancellati | ${reason}` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban complete — **${banned}** banned${failed ? `, **${failed}** failed` : ""} — 🗑️ messages deleted | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -6508,11 +6545,11 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
   }
 
-  // ,channel list -- elenca tutti i canali del server raggruppati per categoria
+  // ,channel list -- elenca all channels del server raggruppati per categoria
   if (command === "channel" && args[1]?.toLowerCase() === "list") {
     const guild = message.guild;
 
-    // Raccogli categorie ordinate per posizione
+    // Raccogli categories ordinate per posizione
     const cats = guild.channels.cache
       .filter(c => c.type === 4)
       .sort((a, b) => a.position - b.position);
@@ -7257,12 +7294,12 @@ client.on("messageCreate", async (message) => {
     const online = members.filter(m => m.presence?.status === "online").size;
     const textChannels = g.channels.cache.filter(c => c.type === 0).size;
     const voiceChannels = g.channels.cache.filter(c => c.type === 2).size;
-    const categories = g.channels.cache.filter(c => c.type === 4).size;
+    const categoriess = g.channels.cache.filter(c => c.type === 4).size;
     const animated = g.emojis.cache.filter(e => e.animated).size;
     const static_ = g.emojis.cache.filter(e => !e.animated).size;
     return message.reply({ embeds: [{ color: PINK, title: `📊 ${g.name} Stats`, thumbnail: { url: g.iconURL() }, fields: [
       { name: "👥 Members", value: `Total: ${g.memberCount}\nHumans: ${humans}\nBots: ${bots}`, inline: true },
-      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categories}`, inline: true },
+      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categoriess}`, inline: true },
       { name: "🏷️ Roles", value: `${g.roles.cache.size}`, inline: true },
       { name: "😀 Emojis", value: `Static: ${static_}\nAnimated: ${animated}`, inline: true },
       { name: "💜 Boosts", value: `${g.premiumSubscriptionCount} (Tier ${g.premiumTier})`, inline: true },
@@ -9320,7 +9357,7 @@ client.on("messageCreate", async (message) => {
 //    ,clonecategoryperks  -> Clone categoria + video
 //    ,setuppaidperks      -> Setup paid perks completo
 //    ,hidepaidperks       -> Nascondi canali
-//    ,sortchannels        -> Ordina canali in categorie
+//    ,sortchannels        -> Ordina canali in categories
 //
 // ===================================================
 
@@ -9335,7 +9372,7 @@ function defaultSession() {
     extraParam:       "",
     msgId:            null,
     channelId:        null,
-    // Selected channels/categories
+    // Selected channels/categoriess
     selectedSrcIds:   [],   // specific source channel/category IDs (empty = all)
     selectedTgtCatId: "",   // target category ID to put clones into (empty = root)
     selectedSrcName:  "",   // display name for selected source
@@ -9442,7 +9479,7 @@ function buildPanelEmbed(s) {
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
-    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
+    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categoriess  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
     `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
     divider,
     midTitle("SELECTION"),
@@ -9491,12 +9528,12 @@ function buildPanelComponents(s) {
       .setCustomId("sp_op")
       .setPlaceholder("📋 Select operation...")
       .addOptions([
-        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos", default: s.operation === "cloneperks"         },
+        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categoriess + channels + videos", default: s.operation === "cloneperks"         },
         { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
         { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
         { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
         { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categories",    default: s.operation === "sortchannels"       },
+        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 2 categoriess",    default: s.operation === "sortchannels"       },
       ])
   );
 
@@ -9556,9 +9593,11 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.user.id !== OWNER_ID) return;
 
   // Only handle setup panel interactions
-  const spIds = ["sp_op","sp_vid_mode","sp_t_roles","sp_t_cats","sp_t_chans","sp_t_perms","sp_t_msgs","sp_ids","sp_video","sp_launch","sp_cancel","sp_modal_ids","sp_modal_video","sp_browse_src","sp_browse_tgt","sp_clr_sel","sp_src_pick","sp_tgt_pick","sp_src_guild_pick","sp_tgt_guild_pick","sp_src_ch_pick","sp_tgt_cat_pick"];
+  // Accept any setup-panel interaction (prefix check is safer than a static list)
   const id = interaction.customId;
-  if (!id || !spIds.includes(id)) return;
+  if (!id) return;
+  const isSpId = id.startsWith("sp_") || id.startsWith("poj_");
+  if (!isSpId) return;
 
   const s = setupSessions.get(interaction.user.id);
 
@@ -9641,11 +9680,11 @@ client.on("interactionCreate", async (interaction) => {
     // Show a button so the user can open the search modal (modals require a button/slash interaction)
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ Tutti i canali").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("⭐ All Channels").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Server sorgente:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie trovate\nPremi 🔍 per cercare o ⭐ per clonare tutto:`,
+      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categoriess found\nPress 🔍 to search or ⭐ to clone all:`,
       components: [searchBtn],
     });
   }
@@ -9658,8 +9697,8 @@ client.on("interactionCreate", async (interaction) => {
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("src_search_query")
-          .setLabel("Nome categoria (vuoto = prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, premium...")
       )
     );
     return interaction.showModal(modal);
@@ -9676,7 +9715,7 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `✅ **Destinazione impostata:** categoria : HELP — torna al panel e premi 🚀`,
+      content: `✅ **Source set:** all channels — go back to the panel and press 🚀`,
       components: [],
     });
   }
@@ -9699,7 +9738,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const options = [
-      { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
+      { label: "⭐ All Channels (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
       ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
       ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
     ].slice(0, 25);
@@ -9707,7 +9746,7 @@ client.on("interactionCreate", async (interaction) => {
     if (options.length === 1) {
       // Only "__all__" means no match — let user search again
       return interaction.reply({
-        content: `❌ Nessun risultato per **"${query}"** in **${guildName}**. Ripremi 📂 Source Category e cerca di nuovo.`,
+        content: `❌ No results for **"${query}"** in **${guildName}**. Click 📂 Source Category again to search.`,
         flags: 64,
       });
     }
@@ -9718,9 +9757,9 @@ client.on("interactionCreate", async (interaction) => {
         .setPlaceholder("📂 Scegli canale/categoria sorgente...")
         .addOptions(options)
     );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
+    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
     return interaction.reply({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — scegli:`,
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — choose:`,
       components: [selRow],
       flags: 64,
     });
@@ -9746,7 +9785,7 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `✅ **Sorgente impostata:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "tutti i canali"} — torna al panel e premi 🚀`,
+      content: `✅ **Source set:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "all channels"} — go back to the panel and press 🚀`,
       components: [],
     });
   }
@@ -9772,7 +9811,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "**Step 1/2 — Target** — Scegli il server destinazione:", components: [selRow], flags: 64 });
   }
 
-  // -- Select: target guild picked → fetch categories → show category picker --
+  // -- Select: target guild picked → fetch categoriess → show category picker --
   if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
@@ -9801,11 +9840,11 @@ client.on("interactionCreate", async (interaction) => {
     s._tgtGuildName   = guildName;
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Cerca categoria").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (nessuna categoria)").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("📌 Root (no category)").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Server destinazione:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categorie disponibili\nPremi 🔍 per cercare o 📌 per Root:`,
+      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categoriess available\nPress 🔍 to search or 📌 for Root:`,
       components: [searchBtn],
     });
   }
@@ -9818,8 +9857,8 @@ client.on("interactionCreate", async (interaction) => {
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("tgt_search_query")
-          .setLabel("Nome categoria (vuoto = prime 24)")
-          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, paid...")
       )
     );
     return interaction.showModal(modal);
@@ -9835,7 +9874,7 @@ client.on("interactionCreate", async (interaction) => {
       const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.update({ content: `✅ **Destinazione impostata:** Root (nessuna categoria) — torna al panel e premi 🚀`, components: [] });
+    return interaction.update({ content: `✅ **Target set:** Root (no category) — go back to the panel and press 🚀`, components: [] });
   }
 
   // -- Modal submit: target category search --
@@ -9852,7 +9891,7 @@ client.on("interactionCreate", async (interaction) => {
       ...cats.slice(0, 24).map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
     ].slice(0, 25);
     if (options.length === 1 && query) {
-      return interaction.reply({ content: `❌ Nessuna categoria trovata per **"${query}"** in **${guildName}**. Ripremi 🎯 Target Category e cerca di nuovo.`, flags: 64 });
+      return interaction.reply({ content: `❌ No categories found for **"${query}"** in **${guildName}**. Click 🎯 Target Category again to search.`, flags: 64 });
     }
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
@@ -9860,8 +9899,8 @@ client.on("interactionCreate", async (interaction) => {
         .setPlaceholder("📁 Scegli categoria destinazione...")
         .addOptions(options)
     );
-    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
-    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — scegli:`, components: [selRow], flags: 64 });
+    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
+    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — choose:`, components: [selRow], flags: 64 });
   }
 
   // -- Select: target category picked --
@@ -9883,7 +9922,7 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `✅ **Destinazione impostata:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — torna al panel e premi 🚀`,
+      content: `✅ **Target set:** ${s.selectedTgtName ? `categoria \`${s.selectedTgtName}\`` : "root server"} — go back to the panel and press 🚀`,
       components: [],
     });
   }
@@ -10130,7 +10169,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }));
   }
 
-  // Clone categories -- returns categoryMap
+  // Clone categoriess -- returns categoryMap
   async function cloneCategories(rawChannels, targetGuild, roleMap) {
     const categoryMap = new Map();
     if (!s.cloneCategories) return categoryMap;
@@ -10274,12 +10313,12 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const rCount  = rawRoles.filter(r => !r.managed && r.name !== "@everyone").length;
     const cCount  = filteredChannels.filter(c => c.type === 4).length;
     const chCount = filteredChannels.filter(c => c.type !== 4).length;
-    await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categorie, **${chCount}** canali → **${targetGuild.name}**`);
+    await updateStatus(`Trovati **${rCount}** ruoli, **${cCount}** categories, **${chCount}** canali → **${targetGuild.name}**`);
 
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie...`);
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categories...`);
     const categoryMap = await cloneCategories(filteredChannels, targetGuild, roleMap);
 
     // If a target category is selected, override the parent for all cloned channels
@@ -10289,7 +10328,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         categoryMap.set(srcId, s.selectedTgtCatId);
       }
       if (categoryMap.size === 0) {
-        // No categories in source — still need a mapping for flat channels
+        // No categoriess in source — still need a mapping for flat channels
         filteredChannels.filter(c => c.type !== 4).forEach(c => {
           if (!c.parent_id) categoryMap.set("__root__", s.selectedTgtCatId);
         });
@@ -10477,7 +10516,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
       if ((i + 1) % 10 === 0 || i === uniqueMedia.length - 1) {
         const pct = Math.round(((i + 1) / uniqueMedia.length) * 100);
-        await updateStatus(`Uploading... **${uploaded}** inviati, **${failedCount}** falliti (${pct}%)`);
+        await updateStatus(`Uploading... **${uploaded}** inviati, **${failedCount}** failed (${pct}%)`);
       }
       await new Promise(r => setTimeout(r, 700));
     }
@@ -10573,7 +10612,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         if ([0, 5].includes(ch.type) && newCh) {
           const channelVideoUrls = [];
           let before = undefined, hasMore = true;
-          await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
+          await updateStatus(`🔍 Scanning #${ch.name} for videos...`);
           while (hasMore) {
             const query = before ? `?limit=100&before=${before}` : `?limit=100`;
             const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
@@ -10599,7 +10638,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
           // Send this channel's videos into its own cloned channel
           if (channelVideoUrls.length > 0) {
-            await updateStatus(`📤 Inviando **${channelVideoUrls.length}** video in #${newCh.name}...`);
+            await updateStatus(`📤 Sending **${channelVideoUrls.length}** videos to #${newCh.name}...`);
             let sent = 0, vidIndex = 0;
             for (let i = 0; i < channelVideoUrls.length; i += 2) {
               const pair = channelVideoUrls.slice(i, i + 2);
@@ -10624,18 +10663,18 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const totalFound = seenVideoUrls.size;
     const channelSummary = [...sentPerChannel.entries()]
       .map(([name, count]) => `#${name}: ${count} video`)
-      .join("\n") || "nessun video trovato";
+      .join("\n") || "no videos found";
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: "🌸 Clone Categoria Completo",
+        color: PINK, title: "🌸 Category Clone Complete",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,     inline: true },
-          { name: "Video trovati",    value: `${totalFound}`,      inline: true },
-          { name: "Video inviati",    value: `${totalVideosSent}`, inline: true },
-          { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
-          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
+          { name: "Channels cloned",   value: `${clonedCount}`,     inline: true },
+          { name: "Video found",    value: `${totalFound}`,      inline: true },
+          { name: "Videos sent",    value: `${totalVideosSent}`, inline: true },
+          { name: "Distribution",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
+          { name: "Video pattern",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
         ],
         timestamp: new Date()
       }]
@@ -10659,7 +10698,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus("[1/3] Clonando ruoli...");
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categorie + canali...`);
+    await updateStatus(`[2/3] ✅ Ruoli (${roleMap.size}). Clonando categories + canali...`);
     const categoryMap = await cloneCategories(rawChannels, targetGuild, roleMap);
     const { channelCount } = await cloneChannels(rawChannels, targetGuild, roleMap, categoryMap);
 
@@ -10705,7 +10744,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           { name: "Canali",            value: `${channelCount}`,     inline: true },
           { name: `#${excl1Name}`,     value: `${sent1} video`,      inline: true },
           { name: `#${excl2Name}`,     value: `${sent2} video`,      inline: true },
-          { name: "Pattern video",     value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+          { name: "Video pattern",     value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
         ],
         footer: { text: "usa ,setup → Nascondi Canali per nascondere canali dopo il setup" },
         timestamp: new Date()
@@ -10754,7 +10793,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   }
 
   // --------------------------------------------------------------------------
-  // OPERATION: sortchannels -- distribute channels into 2 categories
+  // OPERATION: sortchannels -- distribute channels into 2 categoriess
   // --------------------------------------------------------------------------
   if (s.operation === "sortchannels") {
     const parts = s.extraParam.split("|").map(x => x.trim());
@@ -10772,7 +10811,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       .values()
     ];
 
-    await updateStatus(`Trovati **${allChans.length}** canali. Creando categorie...`);
+    await updateStatus(`Trovati **${allChans.length}** canali. Creando categories...`);
 
     const half  = Math.ceil(allChans.length / 2);
     const half1 = allChans.slice(0, half);
