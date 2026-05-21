@@ -186,6 +186,43 @@ function err(message, text) {
   );
 }
 
+// 🗑️ Delete ALL messages from a user across every text channel in the guild.
+// Runs in the background (not awaited by callers) so it doesn't block the ban response.
+async function purgeUserMessages(guild, userId) {
+  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
+  const textChannels = guild.channels.cache.filter(c => c.isTextBased && c.isTextBased() && !c.isThread());
+  for (const ch of textChannels.values()) {
+    try {
+      let before = undefined;
+      let hasMore = true;
+      while (hasMore) {
+        const opts = { limit: 100 };
+        if (before) opts.before = before;
+        const msgs = await ch.messages.fetch(opts).catch(() => null);
+        if (!msgs || msgs.size === 0) break;
+
+        const userMsgs = msgs.filter(m => m.author?.id === userId);
+        if (userMsgs.size > 0) {
+          const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
+          const old    = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
+          // Bulk-delete messages < 14 days (Discord limit)
+          if (recent.size === 1) await recent.first().delete().catch(() => {});
+          else if (recent.size > 1) await ch.bulkDelete(recent).catch(() => {});
+          // Delete older messages one by one
+          for (const msg of old.values()) {
+            await msg.delete().catch(() => {});
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+
+        before = msgs.last()?.id;
+        hasMore = msgs.size === 100;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch { /* skip channels where we lack permissions */ }
+  }
+}
+
 // ℹ️ Info response
 function info(message, text) {
   const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
@@ -1182,8 +1219,10 @@ const CMD_SCHEMA = {
   tempban: { usage: ",tempban <user> <mins> [reason]", args: ["user", "mins"] },
   softban: { usage: ",softban <user> [reason]", args: ["user"] },
   hardban: { usage: ",hardban <user> [reason]", args: ["user"] },
+  hb:      { usage: ",hb <user> [reason]", args: ["user"] },
   hackban: { usage: ",hackban <userId> [reason]", args: ["userId"] },
-  massban: { usage: ",massban <id1> <id2> ...", args: ["id1"] },
+  massban: { usage: ",massban <id1|@user> <id2|@user> ...", args: ["id1"] },
+  mb:      { usage: ",mb <id1|@user> <id2|@user> ...", args: ["id1"] },
   masskick: { usage: ",masskick @user1 @user2 ...", args: ["user"] },
   warn: { usage: ",warn <user> <reason>", args: ["user", "reason"] },
   warnings: { usage: ",warnings <user>", args: [] },
@@ -1626,10 +1665,11 @@ client.on("messageCreate", async (message) => {
       return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
 
-    const banSuccess = await target.ban({ reason }).catch(() => null);
+    const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     return ok(message, `banned **${target.user.username}** | ${reason}`);
   }
 
@@ -2772,7 +2812,8 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
-    await target.ban({ reason }).catch(() => null);
+    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
@@ -2795,7 +2836,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
-  if (command === "hardban") {
+  if (command === "hardban" || command === "hb") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -2805,6 +2846,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
   }
 
@@ -4271,7 +4313,7 @@ client.on("guildMemberAdd", async (member) => {
     }
     // Apply action to raider
     try {
-      if (cfg.action === "ban") await member.ban({ reason: "[AntiRaid] Raid detected" });
+      if (cfg.action === "ban") { await member.ban({ reason: "[AntiRaid] Raid detected", deleteMessageSeconds: 604800 }); purgeUserMessages(member.guild, member.id); }
       else if (cfg.action === "kick") await member.kick("[AntiRaid] Raid detected");
       else if (cfg.action === "mute") await member.timeout(10 * 60 * 1000, "[AntiRaid] Raid detected");
     } catch {}
@@ -5121,7 +5163,8 @@ client.on("messageCreate", async (message) => {
 
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
-    await message.guild.members.ban(userId, { reason }).catch(() => null);
+    await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    purgeUserMessages(message.guild, userId); // delete all messages in background
     return ok(message, `hackbanned user **${userId}** | ${reason}`);
   }
 
@@ -5468,19 +5511,26 @@ client.on("messageCreate", async (message) => {
   // -- USEFUL EXTRAS ------------------------------------─
 
   // ,massban <userId1> <userId2> ... -- ban multiple users
-  if (command === "massban") {
+  if (command === "massban" || command === "mb") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
-    const ids = args.slice(1).filter(id => /^\d+$/.test(id));
-    if (ids.length === 0) return err(message, "missing required argument");
+    // Accept raw IDs and/or mentions (<@123456>)
+    const rawTokens = args.slice(1);
+    const reason = rawTokens.filter(t => !/^(<@!?\d+>|\d+)$/.test(t)).join(" ") || `[Massban] by ${message.author.username}`;
+    const ids = [
+      ...[...message.mentions.users.values()].map(u => u.id),
+      ...rawTokens.filter(t => /^\d{17,20}$/.test(t)),
+    ].filter((id, i, arr) => arr.indexOf(id) === i); // dedupe
+    if (ids.length === 0) return err(message, "Specifica almeno un utente o ID. Uso: `,massban @user1 @user2 123456789`");
 
-    message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${ids.length}** users...` }] });
-    let count = 0;
+    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `🔨 Banning **${ids.length}** users...` }] });
+    let banned = 0, failed = 0;
     for (const id of ids) {
       recentBoosters.delete(id);
-      await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.username}` }).catch(() => {});
-      count++;
+      const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+      if (ok2) { banned++; purgeUserMessages(message.guild, id); } else { failed++; }
+      addCase(message.guild.id, "ban", id, message.author.id, reason);
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** users.` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -7507,7 +7557,7 @@ client.on("messageCreate", async (message) => {
     if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${suspects.size}** suspicious members...` }] });
     let count = 0;
-    for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
+    for (const m of suspects.values()) { await m.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => {}); purgeUserMessages(message.guild, m.id); count++; }
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** members.` }] });
   }
 
@@ -8524,7 +8574,10 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
     if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
-    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
+    for (const id of ids) {
+      await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}`, deleteMessageSeconds: 604800 }).catch(() => {});
+      purgeUserMessages(message.guild, id);
+    }
     return ok(message, `hackbanned **${ids.length}** users`);
   }
   if (command === "modnick") {
@@ -8943,6 +8996,7 @@ client.on("interactionCreate", async (interaction) => {
         reason: `[Anti-Minors] underage — banned by ${mod.username}`,
         deleteMessageSeconds: 604800 // delete 7 days of messages
       }).catch(() => null);
+      if (banResult) purgeUserMessages(guild, userId); // delete all messages in background
 
       const updatedEmbed = {
         ...interaction.message.embeds[0].data,
@@ -9196,13 +9250,21 @@ function buildPanelEmbed(s) {
   const midTitle = (t) => `${border}  ${WH}${t.padEnd(24)}${R}  ${border}`;
   const row      = (label, val) => `${border}  ${CY}${label.padEnd(7)}${R}  ${val}  ${border}`;
 
+  const opSrcLabel = {
+    cloneperks:         "src srv",
+    cloneperks_channel: "src ch ",
+    clonecategoryperks: "src cat",
+    setuppaidperks:     "src srv",
+    hidepaidperks:      "target ",
+    sortchannels:       "target ",
+  }[s.operation] ?? "source ";
+
   const ansiBlock = [
     topBar,
     midTitle("SERVERS"),
     divider,
-    row("source", srcVal),
-    row("target", dstVal),
-    row("extra",  extraHint),
+    row(opSrcLabel, srcVal),
+    row("tgt srv", dstVal),
     divider,
     midTitle("CLONE OPTIONS"),
     divider,
@@ -9286,12 +9348,21 @@ function buildPanelComponents(s) {
       ])
   );
 
-  // Row 4: Browse buttons
-  const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_browse_src").setLabel("📂 Source Server/Channel").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel("📂 Target Server/Category").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("🗑 Clear Selection").setStyle(ButtonStyle.Secondary),
-  );
+  // Row 4: Browse buttons — labels adapt to the current operation
+  const browseConfig = {
+    cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
+    cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
+    clonecategoryperks: { srcLabel: "📂 Source Category", tgtLabel: "📂 Target Category" },
+    setuppaidperks:     { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
+    hidepaidperks:      { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
+    sortchannels:       { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
+  };
+  const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
+  const browseButtons = [];
+  if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
+  browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
+  browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
+  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
 
   // Row 5: Action buttons
   const row5 = new ActionRowBuilder().addComponents(
@@ -9390,22 +9461,64 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    const cats  = rawChannels.filter(c => c.type === 4).slice(0, 12);
-    const chans = rawChannels.filter(c => [0, 5].includes(c.type)).slice(0, 12);
+    // Store rawChannels in session so the search modal can filter them
+    s._srcRawChannels = rawChannels;
+    s._srcGuildName   = guildName;
+    // Show a search modal so the user can filter by name (no 25-option limit)
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca canale — ${guildName}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("src_search_query")
+          .setLabel("Nome categoria (lascia vuoto = mostra prime 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: source channel search --
+  if (interaction.isModalSubmit() && id === "sp_modal_src_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("src_search_query").trim().toLowerCase();
+    const rawChannels = s._srcRawChannels ?? [];
+    const guildName   = s._srcGuildName ?? s.sourceId;
+    const isCatOp = s.operation === "clonecategoryperks";
+
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    if (query) {
+      cats  = cats.filter(c => c.name.toLowerCase().includes(query));
+      chans = chans.filter(c => c.name.toLowerCase().includes(query));
+    }
+
     const options = [
       { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
-      ...cats.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...chans.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}`   })),
+      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
+      ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
     ].slice(0, 25);
+
+    if (options.length === 1) {
+      // Only "__all__" means no match — let user search again
+      return interaction.reply({
+        content: `❌ Nessun risultato per **"${query}"** in **${guildName}**. Ripremi 📂 Source Category e cerca di nuovo.`,
+        flags: 64,
+      });
+    }
+
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_ch_pick")
         .setPlaceholder("📂 Scegli canale/categoria sorgente...")
         .addOptions(options)
     );
-    return interaction.update({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\nScegli il canale o la categoria da clonare:`,
+    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
+    return interaction.reply({
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — scegli:`,
       components: [selRow],
+      flags: 64,
     });
   }
 
@@ -9479,21 +9592,46 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    const cats = rawChannels.filter(c => c.type === 4).slice(0, 24);
+    // Store raw channels in session for the search modal
+    s._tgtRawChannels = rawChannels;
+    s._tgtGuildName   = guildName;
+    // Show search modal as the direct response (must be first and only response)
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca categoria — ${guildName}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("tgt_search_query")
+          .setLabel("Nome categoria (lascia vuoto = prime 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: target category search --
+  if (interaction.isModalSubmit() && id === "sp_modal_tgt_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("tgt_search_query").trim().toLowerCase();
+    const rawChannels = s._tgtRawChannels ?? [];
+    const guildName   = s._tgtGuildName ?? s.targetId;
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    if (query) cats = cats.filter(c => c.name.toLowerCase().includes(query));
     const options = [
       { label: "📌 Root — nessuna categoria", value: "__root__", description: "Mette i canali clonati senza categoria" },
-      ...cats.map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
+      ...cats.slice(0, 24).map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
     ].slice(0, 25);
+    if (options.length === 1 && query) {
+      return interaction.reply({ content: `❌ Nessuna categoria trovata per **"${query}"** in **${guildName}**. Ripremi 🎯 Target Category e cerca di nuovo.`, flags: 64 });
+    }
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_tgt_cat_pick")
         .setPlaceholder("📁 Scegli categoria destinazione...")
         .addOptions(options)
     );
-    return interaction.update({
-      content: `**Step 2/2 — Target** — Server: **${guildName}**\nScegli la categoria dove inserire i canali clonati:`,
-      components: [selRow],
-    });
+    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
+    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — scegli:`, components: [selRow], flags: 64 });
   }
 
   // -- Select: target category picked --
@@ -9549,11 +9687,6 @@ client.on("interactionCreate", async (interaction) => {
             .setValue(s.targetId).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("extra_param").setLabel("Extra  (category name / Cat1 | Cat2 / count)")
-            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive  /  categoryname  /  Cat1 | Cat2  /  20")
-            .setValue(s.extraParam).setRequired(false)
-        ),
-        new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("excl_name").setLabel("Exclusive channel name (default: exclusive)")
             .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
             .setValue(s.exclusiveName).setRequired(false)
@@ -9599,7 +9732,6 @@ client.on("interactionCreate", async (interaction) => {
     if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
     s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
-    s.extraParam = interaction.fields.getTextInputValue("extra_param").trim();
     const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
     if (rawExcl) s.exclusiveName = rawExcl;
     // Update the panel message
@@ -10142,9 +10274,6 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   // OPERATION: clonecategoryperks -- clone one category + distribute videos
   // --------------------------------------------------------------------------
   if (s.operation === "clonecategoryperks") {
-    const catName = s.extraParam;
-    if (!catName) throw new Error("Specifica il nome della categoria nel campo 'Extra' del panel");
-
     await updateStatus("Fetching canali via REST...");
     const [rawChannels, rawRoles, targetGuild] = await Promise.all([
       discordREST(`/guilds/${s.sourceId}/channels`),
@@ -10154,8 +10283,17 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
 
-    const srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === catName.toLowerCase());
-    if (!srcCat) throw new Error(`Categoria "${catName}" non trovata nel server sorgente`);
+    // Resolve source category: prefer selected ID, fall back to extraParam name
+    let srcCat;
+    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.id === s.selectedSrcIds[0]);
+      if (!srcCat) throw new Error(`Categoria con ID \`${s.selectedSrcIds[0]}\` non trovata — usa 📂 Source Category per selezionarla`);
+    } else if (s.extraParam) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === s.extraParam.toLowerCase());
+      if (!srcCat) throw new Error(`Categoria "${s.extraParam}" non trovata nel server sorgente`);
+    } else {
+      throw new Error("Nessuna categoria selezionata — usa il bottone 📂 Source Category per sceglierla");
+    }
 
     const catChans = rawChannels
       .filter(c => c.type !== 4 && c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
@@ -10164,19 +10302,28 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus(`Categoria **${srcCat.name}** — **${catChans.length}** canali. Clonando ruoli...`);
     const roleMap = await cloneRoles(rawRoles, targetGuild);
 
-    // Create or find target category
-    let tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
-    if (!tgtCat) {
-      tgtCat = await targetGuild.channels.create({
-        name: srcCat.name, type: 4,
-        permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
-        reason: "[setup panel]"
-      });
-      await new Promise(r => setTimeout(r, 1000));
+    // Resolve target category: use selectedTgtCatId if set, otherwise find/create by name
+    let tgtCat;
+    if (s.selectedTgtCatId) {
+      tgtCat = targetGuild.channels.cache.get(s.selectedTgtCatId)
+        ?? await targetGuild.channels.fetch(s.selectedTgtCatId).catch(() => null);
+      if (!tgtCat) throw new Error(`Categoria destinazione \`${s.selectedTgtCatId}\` non trovata nel server target`);
+    } else {
+      tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+      if (!tgtCat) {
+        tgtCat = await targetGuild.channels.create({
+          name: srcCat.name, type: 4,
+          permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
+          reason: "[setup panel]"
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
 
     let clonedCount = 0;
-    const allVideoUrls = [];
+    let totalVideosSent = 0;
+    const seenVideoUrls = new Set(); // prevent duplicate video URLs across channels
+    const sentPerChannel = new Map();
 
     for (const ch of catChans) {
       try {
@@ -10192,44 +10339,73 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 1000)); }
         }
 
-        // Collect video URLs from text/announcement channels
-        if ([0, 5].includes(ch.type)) {
-          const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
-          if (srcCh) {
-            let before = undefined, hasMore = true;
-            while (hasMore) {
-              const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-              if (!batch || batch.size === 0) break;
-              for (const msg of batch.values()) {
-                if (!msg.author?.bot) {
-                  for (const att of msg.attachments.values()) {
-                    if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
-                  }
+        // Fetch videos from this source channel and send them directly into its cloned counterpart
+        if ([0, 5].includes(ch.type) && newCh) {
+          const channelVideoUrls = [];
+          let before = undefined, hasMore = true;
+          await updateStatus(`🔍 Scansionando #${ch.name} per video...`);
+          while (hasMore) {
+            const query = before ? `?limit=100&before=${before}` : `?limit=100`;
+            const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
+              headers: { Authorization: `Bot ${process.env.TOKEN}` }
+            }).then(r => r.ok ? r.json() : null).catch(() => null);
+            if (!batch || batch.length === 0) break;
+            for (const msg of batch) {
+              for (const att of (msg.attachments ?? [])) {
+                const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
+                const cleanUrl = att.url?.split("?")[0];
+                if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
+                  seenVideoUrls.add(cleanUrl);
+                  channelVideoUrls.push(att.url);
                 }
               }
-              before = batch.last()?.id;
-              hasMore = batch.size === 100;
-              await new Promise(r => setTimeout(r, 300));
             }
+            const newBefore = batch[batch.length - 1]?.id;
+            if (!newBefore || newBefore === before) break;
+            before = newBefore;
+            hasMore = batch.length === 100;
+            await new Promise(r => setTimeout(r, 300));
+          }
+
+          // Send this channel's videos into its own cloned channel
+          if (channelVideoUrls.length > 0) {
+            await updateStatus(`📤 Inviando **${channelVideoUrls.length}** video in #${newCh.name}...`);
+            let sent = 0, vidIndex = 0;
+            for (let i = 0; i < channelVideoUrls.length; i += 2) {
+              const pair = channelVideoUrls.slice(i, i + 2);
+              try {
+                const attachments = await Promise.all(pair.map((url, idx) => downloadVideo(url, vidIndex + idx)));
+                vidIndex += pair.length;
+                await newCh.send({ files: attachments });
+                sent += pair.length;
+                await new Promise(r => setTimeout(r, 1000));
+              } catch (e) {
+                log(`[setup] video send to #${newCh.name}: ${e.message}`, "error");
+                vidIndex += pair.length;
+              }
+            }
+            sentPerChannel.set(newCh.name, sent);
+            totalVideosSent += sent;
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, "error"); }
     }
 
-    await updateStatus(`✅ **${clonedCount}** canali clonati. Distribuendo **${allVideoUrls.length}** video in coppie da 2...`);
-    const { sent1, sent2, excl1Name, excl2Name } = await distributeVideos(allVideoUrls, targetGuild);
+    const totalFound = seenVideoUrls.size;
+    const channelSummary = [...sentPerChannel.entries()]
+      .map(([name, count]) => `#${name}: ${count} video`)
+      .join("\n") || "nessun video trovato";
 
     await statusMsg?.edit({
       embeds: [{
         color: PINK, title: "🌸 Clone Categoria Completo",
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
-          { name: "Canali clonati",   value: `${clonedCount}`,           inline: true },
-          { name: "Video trovati",    value: `${allVideoUrls.length}`,   inline: true },
-          { name: "\u200b",           value: "\u200b",                   inline: true },
-          { name: `#${excl1Name}`,    value: `${sent1} video`,           inline: true },
-          { name: `#${excl2Name}`,    value: `${sent2} video`,           inline: true },
-          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+          { name: "Canali clonati",   value: `${clonedCount}`,     inline: true },
+          { name: "Video trovati",    value: `${totalFound}`,      inline: true },
+          { name: "Video inviati",    value: `${totalVideosSent}`, inline: true },
+          { name: "Distribuzione",    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
+          { name: "Pattern video",    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
         ],
         timestamp: new Date()
       }]
@@ -10259,24 +10435,30 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await updateStatus("[3/3] Raccogliendo video per distribuzione...");
     const allVideoUrls = [];
+    const seenVideoUrls = new Set(); // prevent duplicate video URLs
     for (const ch of rawChannels.filter(c => [0, 5].includes(c.type))) {
-      const srcCh = client.channels.cache.get(ch.id) ?? await client.channels.fetch(ch.id).catch(() => null);
-      if (!srcCh) continue;
       let before = undefined, hasMore = true;
-      const allMsgs = [];
       while (hasMore) {
-        const batch = await srcCh.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-        if (!batch || batch.size === 0) break;
-        allMsgs.push(...[...batch.values()].filter(m => !m.author?.bot && m.attachments.size > 0));
-        before = batch.last()?.id;
-        hasMore = batch.size === 100;
-        await new Promise(r => setTimeout(r, 300));
-      }
-      allMsgs.reverse();
-      for (const msg of allMsgs) {
-        for (const att of msg.attachments.values()) {
-          if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(att.url)) allVideoUrls.push(att.url);
+        const query = before ? `?limit=100&before=${before}` : `?limit=100`;
+        const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${query}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        }).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (!batch || batch.length === 0) break;
+        for (const msg of batch) {
+          for (const att of (msg.attachments ?? [])) {
+            const name = att.filename ?? att.url?.split("?")[0].split("/").pop() ?? "";
+            const cleanUrl = att.url?.split("?")[0];
+            if (/\.(mp4|mov|webm|mkv|avi|gif)$/i.test(name) && cleanUrl && !seenVideoUrls.has(cleanUrl)) {
+              seenVideoUrls.add(cleanUrl);
+              allVideoUrls.push(att.url);
+            }
+          }
         }
+        const newBefore = batch[batch.length - 1]?.id;
+        if (!newBefore || newBefore === before) break; // no advance = stop to prevent infinite loop
+        before = newBefore;
+        hasMore = batch.length === 100;
+        await new Promise(r => setTimeout(r, 300));
       }
     }
 
