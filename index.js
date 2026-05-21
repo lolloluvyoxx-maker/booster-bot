@@ -9103,57 +9103,65 @@ function defaultSession() {
 
 // -- Build panel embed showing current session state --------------------------
 function buildPanelEmbed(s) {
-  const opLabels = {
-    cloneperks:          "🌐 Clone Server Completo",
-    cloneperks_channel:  "💬 Clone Singolo Canale",
-    clonecategoryperks:  "📁 Clone Categoria + Video",
-    setuppaidperks:      "🔧 Setup Paid Perks",
-    hidepaidperks:       "🙈 Nascondi Canali",
-    sortchannels:        "🔀 Sort Canali in Categorie",
-  };
-  const t   = v => v ? "✅" : "❌";
-  const ren = { prefix: "Prefisso+Num", numbered: "Solo Numeri", replace: "Nome Fisso", suffix: "Num+Suffisso" };
   const pad = n => String(n).padStart(s.videoPadZeros, "0");
-  const num = pad(s.videoCounterStart);
-  const extStr = s.videoExtension === "keep" ? ".mp4*" : `.${s.videoExtension}`;
-  const preview =
-    s.videoRenameMode === "prefix"   ? `${s.videoPattern}${num}${extStr} + ${s.videoPattern}${pad(s.videoCounterStart+1)}${extStr}` :
-    s.videoRenameMode === "numbered" ? `${num}${extStr} + ${pad(s.videoCounterStart+1)}${extStr}` :
-    s.videoRenameMode === "replace"  ? `${s.videoPattern}${extStr} (×2)` :
-                                       `${num}_${s.videoPattern}${extStr} + ${pad(s.videoCounterStart+1)}_${s.videoPattern}${extStr}`;
+  const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
+  const p1 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
+           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
+           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+           :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
+  const p2 = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
+           : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
+           : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+           :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
   const ready = srcOk && dstOk;
 
-  const lines = [
-    `**OPERAZIONE**`,
-    `> ${opLabels[s.operation] ?? s.operation}`,
+  const opMeta = {
+    cloneperks:         { e: "🌐", n: "Clone Server Completo"  },
+    cloneperks_channel: { e: "💬", n: "Clone Singolo Canale"   },
+    clonecategoryperks: { e: "📁", n: "Clone Categoria"        },
+    setuppaidperks:     { e: "🔧", n: "Setup Paid Perks"       },
+    hidepaidperks:      { e: "🙈", n: "Nascondi Canali"        },
+    sortchannels:       { e: "🔀", n: "Sort Canali"            },
+  };
+  const op  = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
+  const dot = v => v ? "<:_:>" || "●" : "○";
+  const tog = v => v ? "\`ON \`" : "\`OFF\`";
+
+  const desc = [
+    `### ${op.e}  ${op.n}`,
     ``,
-    `**PARAMETRI**`,
-    `> Source: ${srcOk ? `\`${s.sourceId}\`` : "⚠️ *non impostato*"}`,
-    `> Target: ${dstOk ? `\`${s.targetId}\`` : "⚠️ *non impostato*"}`,
-    s.extraParam ? `> Extra: \`${s.extraParam}\`` : `> Extra: *vuoto — per categoria/count/sort usa questo campo*`,
+    `\`\`\`ansi`,
+    `[2;35m╔══════════════════════════════╗[0m`,
+    `[2;35m║[0m  [1;37mSERVERS[0m                       [2;35m║[0m`,
+    `[2;35m╠══════════════════════════════╣[0m`,
+    `[2;35m║[0m  [0;36mSource[0m  ${srcOk ? `[1;32m${s.sourceId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
+    `[2;35m║[0m  [0;36mTarget[0m  ${dstOk ? `[1;32m${s.targetId.slice(0,18)}[0m` : `[1;31mnot set[0m         `}  [2;35m║[0m`,
+    s.extraParam
+      ? `[2;35m║[0m  [0;36mExtra  [0m  [0;33m${s.extraParam.slice(0,18).padEnd(18)}[0m  [2;35m║[0m`
+      : `[2;35m║[0m  [0;36mExtra  [0m  [2;37m—                 [0m  [2;35m║[0m`,
+    `[2;35m╚══════════════════════════════╝[0m`,
+    `\`\`\``,
     ``,
-    `**COSA CLONARE**`,
-    `> ${t(s.cloneRoles)} Ruoli  ${t(s.cloneCategories)} Categorie  ${t(s.cloneChannels)} Canali`,
-    `> ${t(s.clonePermissions)} Permessi  ${t(s.cloneMessages)} Messaggi  ${t(s.skipExisting)} Skip Esistenti`,
+    `-# ⬡  ELEMENTI DA CLONARE`,
+    `> ${s.cloneRoles     ? "🩷" : "🩶"} **Ruoli**  ${s.cloneCategories ? "🩷" : "🩶"} **Categorie**  ${s.cloneChannels ? "🩷" : "🩶"} **Canali**`,
+    `> ${s.clonePermissions? "🩷" : "🩶"} **Permessi**  ${s.cloneMessages ? "🩷" : "🩶"} **Messaggi**  ${s.skipExisting ? "🩷" : "🩶"} **Skip dup.**`,
     ``,
-    `**VIDEO & RINOMINA** *(inviati sempre a coppie da 2)*`,
-    `> Modalità: \`${ren[s.videoRenameMode]}\``,
-    `> Anteprima coppia: \`${preview}\``,
-    `> Canali esclusivi: \`#${s.exclusiveName}\` + \`#${s.exclusiveName}-2\``,
+    `-# ⬡  VIDEO — coppie da 2`,
+    `> 📂  \`#${s.exclusiveName}\`  ＋  \`#${s.exclusiveName}-2\``,
+    `> 🎞  \`${p1}\`  \`${p2}\``,
     ``,
     ready
-      ? `**✅ Pronto — premi 🚀 Avvia per eseguire**`
-      : `**⚠️ Configura Source + Target ID con il pulsante 📝 Imposta IDs**`,
-  ];
+      ? `> ### ✦  Tutto pronto  —  premi 🚀`
+      : `> ### ⚠  Imposta Source e Target  —  premi 📝`,
+  ].join("\n");
 
   return {
     color: PINK,
-    title: "🌸  SENSATIONAL  CONFIG PANEL",
-    description: lines.join("\n"),
-    footer: { text: "sensational • config panel • owner only" },
+    description: desc,
+    footer: { text: "✦ sensational  ·  config panel  ·  owner only" },
     timestamp: new Date(),
   };
 }
