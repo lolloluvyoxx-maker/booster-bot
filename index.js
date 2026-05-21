@@ -186,6 +186,43 @@ function err(message, text) {
   );
 }
 
+// 🗑️ Delete ALL messages from a user across every text channel in the guild.
+// Runs in the background (not awaited by callers) so it doesn't block the ban response.
+async function purgeUserMessages(guild, userId) {
+  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
+  const textChannels = guild.channels.cache.filter(c => c.isTextBased && c.isTextBased() && !c.isThread());
+  for (const ch of textChannels.values()) {
+    try {
+      let before = undefined;
+      let hasMore = true;
+      while (hasMore) {
+        const opts = { limit: 100 };
+        if (before) opts.before = before;
+        const msgs = await ch.messages.fetch(opts).catch(() => null);
+        if (!msgs || msgs.size === 0) break;
+
+        const userMsgs = msgs.filter(m => m.author?.id === userId);
+        if (userMsgs.size > 0) {
+          const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
+          const old    = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
+          // Bulk-delete messages < 14 days (Discord limit)
+          if (recent.size === 1) await recent.first().delete().catch(() => {});
+          else if (recent.size > 1) await ch.bulkDelete(recent).catch(() => {});
+          // Delete older messages one by one
+          for (const msg of old.values()) {
+            await msg.delete().catch(() => {});
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+
+        before = msgs.last()?.id;
+        hasMore = msgs.size === 100;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch { /* skip channels where we lack permissions */ }
+  }
+}
+
 // ℹ️ Info response
 function info(message, text) {
   const embed = { color: PINK, description: `🌸 ${message.author} ${text}` };
@@ -1182,8 +1219,10 @@ const CMD_SCHEMA = {
   tempban: { usage: ",tempban <user> <mins> [reason]", args: ["user", "mins"] },
   softban: { usage: ",softban <user> [reason]", args: ["user"] },
   hardban: { usage: ",hardban <user> [reason]", args: ["user"] },
+  hb:      { usage: ",hb <user> [reason]", args: ["user"] },
   hackban: { usage: ",hackban <userId> [reason]", args: ["userId"] },
-  massban: { usage: ",massban <id1> <id2> ...", args: ["id1"] },
+  massban: { usage: ",massban <id1|@user> <id2|@user> ...", args: ["id1"] },
+  mb:      { usage: ",mb <id1|@user> <id2|@user> ...", args: ["id1"] },
   masskick: { usage: ",masskick @user1 @user2 ...", args: ["user"] },
   warn: { usage: ",warn <user> <reason>", args: ["user", "reason"] },
   warnings: { usage: ",warnings <user>", args: [] },
@@ -1626,10 +1665,11 @@ client.on("messageCreate", async (message) => {
       return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
 
-    const banSuccess = await target.ban({ reason }).catch(() => null);
+    const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
     target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     return ok(message, `banned **${target.user.username}** | ${reason}`);
   }
 
@@ -2772,7 +2812,8 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
-    await target.ban({ reason }).catch(() => null);
+    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     ok(message, `✅ Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
@@ -2795,7 +2836,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
-  if (command === "hardban") {
+  if (command === "hardban" || command === "hb") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -2805,6 +2846,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
+    purgeUserMessages(message.guild, target.id); // delete all messages in background
     return ok(message, `hardbanned **${target.user.username}** | ${reason}`);
   }
 
@@ -4271,7 +4313,7 @@ client.on("guildMemberAdd", async (member) => {
     }
     // Apply action to raider
     try {
-      if (cfg.action === "ban") await member.ban({ reason: "[AntiRaid] Raid detected" });
+      if (cfg.action === "ban") { await member.ban({ reason: "[AntiRaid] Raid detected", deleteMessageSeconds: 604800 }); purgeUserMessages(member.guild, member.id); }
       else if (cfg.action === "kick") await member.kick("[AntiRaid] Raid detected");
       else if (cfg.action === "mute") await member.timeout(10 * 60 * 1000, "[AntiRaid] Raid detected");
     } catch {}
@@ -5121,7 +5163,8 @@ client.on("messageCreate", async (message) => {
 
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
-    await message.guild.members.ban(userId, { reason }).catch(() => null);
+    await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    purgeUserMessages(message.guild, userId); // delete all messages in background
     return ok(message, `hackbanned user **${userId}** | ${reason}`);
   }
 
@@ -5468,19 +5511,26 @@ client.on("messageCreate", async (message) => {
   // -- USEFUL EXTRAS ------------------------------------─
 
   // ,massban <userId1> <userId2> ... -- ban multiple users
-  if (command === "massban") {
+  if (command === "massban" || command === "mb") {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
-    const ids = args.slice(1).filter(id => /^\d+$/.test(id));
-    if (ids.length === 0) return err(message, "missing required argument");
+    // Accept raw IDs and/or mentions (<@123456>)
+    const rawTokens = args.slice(1);
+    const reason = rawTokens.filter(t => !/^(<@!?\d+>|\d+)$/.test(t)).join(" ") || `[Massban] by ${message.author.username}`;
+    const ids = [
+      ...[...message.mentions.users.values()].map(u => u.id),
+      ...rawTokens.filter(t => /^\d{17,20}$/.test(t)),
+    ].filter((id, i, arr) => arr.indexOf(id) === i); // dedupe
+    if (ids.length === 0) return err(message, "Specifica almeno un utente o ID. Uso: `,massban @user1 @user2 123456789`");
 
-    message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${ids.length}** users...` }] });
-    let count = 0;
+    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `🔨 Banning **${ids.length}** users...` }] });
+    let banned = 0, failed = 0;
     for (const id of ids) {
       recentBoosters.delete(id);
-      await message.guild.members.ban(id, { reason: `[Massban] by ${message.author.username}` }).catch(() => {});
-      count++;
+      const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+      if (ok2) { banned++; purgeUserMessages(message.guild, id); } else { failed++; }
+      addCase(message.guild.id, "ban", id, message.author.id, reason);
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** users.` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `✅ Massban completato — **${banned}** bannati${failed ? `, **${failed}** falliti` : ""} | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -7507,7 +7557,7 @@ client.on("messageCreate", async (message) => {
     if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
     message.reply({ embeds: [{ color: PINK, description: `🌸 Banning **${suspects.size}** suspicious members...` }] });
     let count = 0;
-    for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
+    for (const m of suspects.values()) { await m.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => {}); purgeUserMessages(message.guild, m.id); count++; }
     return message.channel.send({ embeds: [{ color: PINK, description: "🌸 " + `✅ Banned **${count}** members.` }] });
   }
 
@@ -8524,7 +8574,10 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
     const ids = args.slice(1).filter(id => /^\d+$/.test(id));
     if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
-    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
+    for (const id of ids) {
+      await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}`, deleteMessageSeconds: 604800 }).catch(() => {});
+      purgeUserMessages(message.guild, id);
+    }
     return ok(message, `hackbanned **${ids.length}** users`);
   }
   if (command === "modnick") {
@@ -8943,6 +8996,7 @@ client.on("interactionCreate", async (interaction) => {
         reason: `[Anti-Minors] underage — banned by ${mod.username}`,
         deleteMessageSeconds: 604800 // delete 7 days of messages
       }).catch(() => null);
+      if (banResult) purgeUserMessages(guild, userId); // delete all messages in background
 
       const updatedEmbed = {
         ...interaction.message.embeds[0].data,
@@ -9407,24 +9461,64 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    // For clonecategoryperks, show only categories; otherwise show cats + channels
-    const cats  = rawChannels.filter(c => c.type === 4).slice(0, 12);
-    const chans = rawChannels.filter(c => [0, 5].includes(c.type)).slice(0, 12);
+    // Store rawChannels in session so the search modal can filter them
+    s._srcRawChannels = rawChannels;
+    s._srcGuildName   = guildName;
+    // Show a search modal so the user can filter by name (no 25-option limit)
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`📂 Cerca canale — ${guildName}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("src_search_query")
+          .setLabel("Nome categoria (lascia vuoto = mostra prime 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, premium...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: source channel search --
+  if (interaction.isModalSubmit() && id === "sp_modal_src_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("src_search_query").trim().toLowerCase();
+    const rawChannels = s._srcRawChannels ?? [];
+    const guildName   = s._srcGuildName ?? s.sourceId;
     const isCatOp = s.operation === "clonecategoryperks";
+
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    if (query) {
+      cats  = cats.filter(c => c.name.toLowerCase().includes(query));
+      chans = chans.filter(c => c.name.toLowerCase().includes(query));
+    }
+
     const options = [
       { label: "⭐ Tutti i canali (nessun filtro)", value: "__all__", description: "Clona l'intero server senza filtri" },
-      ...cats.map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
-      ...(!isCatOp ? chans.map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })) : []),
+      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `Categoria · ${c.id}` })),
+      ...chans.slice(0, 12).map(c => ({ label: `💬 ${c.name}`.slice(0, 100), value: c.id, description: `Canale · ${c.id}` })),
     ].slice(0, 25);
+
+    if (options.length === 1) {
+      // Only "__all__" means no match — let user search again
+      return interaction.reply({
+        content: `❌ Nessun risultato per **"${query}"** in **${guildName}**. Ripremi 📂 Source Category e cerca di nuovo.`,
+        flags: 64,
+      });
+    }
+
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_ch_pick")
         .setPlaceholder("📂 Scegli canale/categoria sorgente...")
         .addOptions(options)
     );
-    return interaction.update({
-      content: `**Step 2/2 — Source** — Server: **${guildName}**\nScegli il canale o la categoria da clonare:`,
+    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
+    return interaction.reply({
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — scegli:`,
       components: [selRow],
+      flags: 64,
     });
   }
 
@@ -9498,21 +9592,46 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ content: `❌ Impossibile caricare i canali: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
-    const cats = rawChannels.filter(c => c.type === 4).slice(0, 24);
+    // Store raw channels in session for the search modal
+    s._tgtRawChannels = rawChannels;
+    s._tgtGuildName   = guildName;
+    // Show search modal as the direct response (must be first and only response)
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`📁 Cerca categoria — ${guildName}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("tgt_search_query")
+          .setLabel("Nome categoria (lascia vuoto = prime 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("es. exclusive, vip, paid...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: target category search --
+  if (interaction.isModalSubmit() && id === "sp_modal_tgt_search") {
+    if (!s) return interaction.reply({ content: "⚠️ Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("tgt_search_query").trim().toLowerCase();
+    const rawChannels = s._tgtRawChannels ?? [];
+    const guildName   = s._tgtGuildName ?? s.targetId;
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    if (query) cats = cats.filter(c => c.name.toLowerCase().includes(query));
     const options = [
       { label: "📌 Root — nessuna categoria", value: "__root__", description: "Mette i canali clonati senza categoria" },
-      ...cats.map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
+      ...cats.slice(0, 24).map(c => ({ label: `📁 ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
     ].slice(0, 25);
+    if (options.length === 1 && query) {
+      return interaction.reply({ content: `❌ Nessuna categoria trovata per **"${query}"** in **${guildName}**. Ripremi 🎯 Target Category e cerca di nuovo.`, flags: 64 });
+    }
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_tgt_cat_pick")
         .setPlaceholder("📁 Scegli categoria destinazione...")
         .addOptions(options)
     );
-    return interaction.update({
-      content: `**Step 2/2 — Target** — Server: **${guildName}**\nScegli la categoria dove inserire i canali clonati:`,
-      components: [selRow],
-    });
+    const hint = query ? `Risultati per **"${query}"** (${options.length - 1} trovati)` : `Prime ${options.length - 1} categorie`;
+    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — scegli:`, components: [selRow], flags: 64 });
   }
 
   // -- Select: target category picked --
