@@ -3,6 +3,55 @@ const fs = require("fs");
 const path = require("path");
 
 // ===================================================
+// ===== BAN STATS DATABASE (Railway Volume) =========
+// ===================================================
+// Il volume è montato su /data (configurabile via env VOLUME_PATH).
+// banStats[guildId][modId] = { username, actions, bans, ignores }
+// banStatsLastSaved[guildId] = epoch ms — usato al restart per fetchare
+// solo le voci di audit log avvenute mentre il bot era offline.
+// ===================================================
+
+const VOLUME_PATH   = process.env.VOLUME_PATH || "/data";
+const BAN_STATS_FILE = path.join(VOLUME_PATH, "banStats.json");
+
+// banStats[guildId][modId] = { username, actions, bans, ignores }
+const banStats = {};
+let banStatsLastSaved = {}; // { [guildId]: epochMs }
+
+function saveBanStats() {
+  try {
+    if (!fs.existsSync(VOLUME_PATH)) fs.mkdirSync(VOLUME_PATH, { recursive: true });
+    fs.writeFileSync(BAN_STATS_FILE, JSON.stringify({ banStats, banStatsLastSaved }, null, 2), "utf8");
+  } catch (e) {
+    console.error("[BanStats] Failed to save:", e.message);
+  }
+}
+
+function loadBanStats() {
+  try {
+    if (!fs.existsSync(BAN_STATS_FILE)) {
+      console.log("[BanStats] No saved file found, starting fresh");
+      return;
+    }
+    const data = JSON.parse(fs.readFileSync(BAN_STATS_FILE, "utf8"));
+    if (data.banStats && typeof data.banStats === "object") {
+      for (const [guildId, guildData] of Object.entries(data.banStats)) {
+        if (guildData && typeof guildData === "object") banStats[guildId] = guildData;
+      }
+    }
+    if (data.banStatsLastSaved && typeof data.banStatsLastSaved === "object") {
+      Object.assign(banStatsLastSaved, data.banStatsLastSaved);
+    }
+    const total = Object.values(banStats).reduce((s, g) => s + Object.values(g).reduce((a, m) => a + (m.bans || 0), 0), 0);
+    console.log(`[BanStats] ✅ Loaded ${total} total bans from volume`);
+  } catch (e) {
+    console.error("[BanStats] Failed to load:", e.message);
+  }
+}
+
+
+
+// ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
 // ===================================================
 // Saves config to a Discord channel so it survives Railway restarts
@@ -235,40 +284,41 @@ async function confirm(message, text, onConfirm) {
   });
 }
 
-// banStats[guildId][modId] = { tag, actions, bans, ignores }
-const banStats = {};
-
-async function loadBanStatsFromAuditLogs(guild) {
-  const stats = {};
+// Fetch ban audit logs e MERGE in banStats (mai sovrascrivere).
+// afterTimestamp (epoch ms): processa solo le voci più nuove di questo valore.
+// Passa 0 per fetchare tutta la storia (primo avvio senza dati salvati).
+async function loadBanStatsFromAuditLogs(guild, afterTimestamp = 0) {
+  const guildId = guild.id;
+  if (!banStats[guildId]) banStats[guildId] = {};
+  let newEntries = 0;
   try {
     let before = undefined;
     let fetched;
-
-    // Fetch all ban audit log entries (100 at a time)
     do {
       fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, before });
       if (fetched.entries.size === 0) break;
-
+      let hitOld = false;
       for (const entry of fetched.entries.values()) {
+        if (afterTimestamp && entry.createdTimestamp <= afterTimestamp) { hitOld = true; break; }
         if (!entry.executor) continue;
-        const modId = entry.executor.id;
-        const modTag = entry.executor.username || entry.executor.username;
-
-        if (!stats[modId]) {
-          stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+        const modId   = entry.executor.id;
+        const modName = entry.executor.username || `${modId}`;
+        if (!banStats[guildId][modId]) {
+          banStats[guildId][modId] = { username: modName, actions: 0, bans: 0, ignores: 0 };
         }
-        stats[modId].username = modTag;
-        stats[modId].actions += 1;
-        stats[modId].bans += 1;
+        banStats[guildId][modId].username = modName;
+        banStats[guildId][modId].actions += 1;
+        banStats[guildId][modId].bans    += 1;
+        newEntries++;
       }
-
+      if (hitOld) break;
       before = fetched.entries.last()?.id;
     } while (fetched.entries.size === 100);
-
   } catch (e) {
     log(`Failed to load audit logs for ${guild.name}: ${e.message}`, "error");
   }
-  return stats;
+  banStatsLastSaved[guildId] = Date.now();
+  return newEntries;
 }
 
 process.setMaxListeners(20);
@@ -549,14 +599,21 @@ client.once("clientReady", async () => {
 
     log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
 
-    // Load ban history in background (non-blocking) so bot starts instantly
+    // Carica banStats dal volume Railway (sincrono, prima di tutto il resto)
+    loadBanStats();
+
+    // Merge SOLO le voci audit log avvenute mentre il bot era offline.
+    // Se non ci sono dati salvati (primo avvio), scarica tutta la storia.
     (async () => {
       for (const guild of [sourceGuild, targetGuild]) {
-        log(`Loading ban history from audit logs for ${guild.name}...`, "info");
-        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
-        const total = Object.values(banStats[guild.id]).reduce((sum, m) => sum + m.bans, 0);
-        log(`Loaded ${total} historical bans for ${guild.name}`, "success");
+        const lastSaved = banStatsLastSaved[guild.id] || 0;
+        const mode = lastSaved ? `catch-up da ${new Date(lastSaved).toISOString()}` : "storia completa (primo avvio)";
+        log(`[BanStats] ${guild.name}: ${mode}...`, "info");
+        const added = await loadBanStatsFromAuditLogs(guild, lastSaved);
+        const total = Object.values(banStats[guild.id] || {}).reduce((s, m) => s + m.bans, 0);
+        log(`[BanStats] ${guild.name}: +${added} aggiunti → ${total} totali`, "success");
       }
+      saveBanStats(); // salva sul volume
     })();
 
     log("Running initial member check...", "info");
@@ -864,21 +921,22 @@ client.on("guildBanAdd", async (ban) => {
     const entry = auditLogs.entries.find(e => e.target?.id === ban.user.id);
     if (!entry) return;
 
-    const modId = entry.executor.id;
-    const modTag = entry.executor.username || entry.executor.username;
+    const modId   = entry.executor.id;
+    const modName = entry.executor.username || `${entry.executor.id}`;
     const guildId = guild.id;
 
     if (!banStats[guildId]) banStats[guildId] = {};
     if (!banStats[guildId][modId]) {
-      banStats[guildId][modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+      banStats[guildId][modId] = { username: modName, actions: 0, bans: 0, ignores: 0 };
     }
-
-    banStats[guildId][modId].username = modTag;
+    banStats[guildId][modId].username = modName;
     banStats[guildId][modId].actions += 1;
-    banStats[guildId][modId].bans += 1;
-    log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
+    banStats[guildId][modId].bans    += 1;
 
-    log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
+    banStatsLastSaved[guildId] = Date.now();
+    saveBanStats(); // persisti sul volume Railway
+
+    log(`Ban tracked: ${modName} banned ${ban.user.username} in ${guild.name}`, "info");
   } catch (error) {
     log(`Failed to track ban: ${error.message}`, "error");
   }
@@ -905,8 +963,8 @@ client.on("messageCreate", async (message) => {
   // Use ",modstats refresh" to force a full re-sync from audit logs.
   const _isRefresh = message.content.trim().toLowerCase() === ",modstats refresh";
   if (_isRefresh) {
-    const _fresh = await loadBanStatsFromAuditLogs(message.guild);
-    banStats[message.guild.id] = _fresh;
+    await loadBanStatsFromAuditLogs(message.guild, 0); // storia completa
+    saveBanStats();
     await message.channel.send({ embeds: [{ color: PINK, description: "🔄 Stats refreshed from audit logs." }] }).catch(() => {});
   }
 
@@ -930,7 +988,8 @@ client.on("messageCreate", async (message) => {
     const slice = allEntries.slice(p * PER_PAGE, p * PER_PAGE + PER_PAGE);
     const lines = slice.map(([modId, data]) => {
       const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0";
-      return `<@${modId}>\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
+      const name   = data.username ? `@${data.username}` : `<@${modId}>`;
+      return `**${name}**\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
     });
     return {
       color: PINK,
