@@ -30,6 +30,8 @@ function deserialize(raw) {
 // Build config snapshot to save
 function buildConfigSnapshot() {
   return {
+    perksSystemConfig: { ...perksSystemConfig },
+    customMessages:    { ...customMessages },
     antiMinorsConfig,
     antinukeConfig,
     antiraidConfig,
@@ -157,6 +159,8 @@ async function loadAllConfigs() {
     if (data.automodExempt instanceof Map) { automodExempt.clear(); data.automodExempt.forEach((v,k) => automodExempt.set(k,v)); }
     if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
     if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
+    if (data.perksSystemConfig && typeof data.perksSystemConfig === 'object') Object.assign(perksSystemConfig, data.perksSystemConfig);
+    if (data.customMessages    && typeof data.customMessages === 'object')    Object.assign(customMessages, data.customMessages);
 
     console.log("[Config] ✅ All configs restored from Discord");
   } catch (e) {
@@ -336,26 +340,30 @@ const OWNER_ID = "1005237630113419315";
 const SOURCE_GUILD_ID = "1463635465222619218";
 const TARGET_GUILD_ID = "1425102156125442140";
 
-// Role IDs
-const DISCORD_BOOSTER_ROLE_ID = "1475164627808813158";
+// ===== PERKS SYSTEM CONFIG (editable via ,perks panel) =====
+const perksSystemConfig = {
+  sourceGuildId:      "1463635465222619218",
+  targetGuildId:      "1425102156125442140",
+  discordBoostRoleId: "1475164627808813158",
+  boostRoleId:        "1474900074185097358",
+  accessRoleId:       "1475167075789181122",
+  deniedRoleId:       "1426874194263805992",
+  pingChannelId:      "1475125441919455346",
+};
 
-// ===== BOOSTER PROTECTION (by role ID) =====
-const PROTECTED_ROLE_IDS = new Set([
-  "1475164627808813158", // Discord booster role
-  "1474900074185097358", // Custom booster server role
-]);
+// Backward-compat shorthands
+const DISCORD_BOOSTER_ROLE_ID = perksSystemConfig.discordBoostRoleId;
+const CUSTOM_BOOSTER_ROLE_ID  = perksSystemConfig.boostRoleId;
+const ACCESS_ROLE_ID          = perksSystemConfig.accessRoleId;
+const DENIED_ROLE_ID          = perksSystemConfig.deniedRoleId;
+const PERKS_CHANNEL_ID        = perksSystemConfig.pingChannelId;
 
 function isProtectedBooster(member) {
   if (!member) return false;
-  return member.roles.cache.some(r => PROTECTED_ROLE_IDS.has(r.id));
+  return member.roles.cache.has(perksSystemConfig.discordBoostRoleId)
+      || member.roles.cache.has(perksSystemConfig.boostRoleId)
+      || !!member.premiumSince;
 }
-
-const CUSTOM_BOOSTER_ROLE_ID = "1474900074185097358";
-const ACCESS_ROLE_ID = "1475167075789181122";
-const DENIED_ROLE_ID = "1426874194263805992";
-
-// Channel IDs
-const PERKS_CHANNEL_ID = "1475125441919455346";
 
 // Tracks which channels have been hidden via ,hidepaidperks (in-memory)
 const hiddenPaidPerksChannels = new Set();
@@ -419,15 +427,17 @@ async function fetchMemberWithRetry(guild, userId, maxRetries = 3) {
 
 // ===== BOOST DETECTION =====
 function isBoosting(member) {
-  return member.roles.cache.has(DISCORD_BOOSTER_ROLE_ID) || !!member.premiumSince;
+  return member.roles.cache.has(perksSystemConfig.discordBoostRoleId)
+      || member.roles.cache.has(perksSystemConfig.boostRoleId)
+      || !!member.premiumSince;
 }
 
 async function giveCustomBoosterRole(member) {
   try {
     // Don't re-add if manually removed by owner/admin
     if (manuallyRemovedBoosterRole.has(member.id)) return false;
-    if (!member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
-      await member.roles.add(CUSTOM_BOOSTER_ROLE_ID);
+    if (!member.roles.cache.has(perksSystemConfig.boostRoleId)) {
+      await member.roles.add(perksSystemConfig.boostRoleId);
       log(`Gave custom booster role to ${member.user.username}`, "success");
       return true;
     }
@@ -439,8 +449,8 @@ async function giveCustomBoosterRole(member) {
 
 async function removeCustomBoosterRole(member) {
   try {
-    if (member.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID)) {
-      await member.roles.remove(CUSTOM_BOOSTER_ROLE_ID);
+    if (member.roles.cache.has(perksSystemConfig.boostRoleId)) {
+      await member.roles.remove(perksSystemConfig.boostRoleId);
       log(`Removed custom booster role from ${member.user.username}`, "success");
       return true;
     }
@@ -465,8 +475,8 @@ async function sendBoostDM(user, boosted) {
 // ===== PING IN PERKS CHANNEL ON BOOST =====
 async function pingBoosterInPerksChannel(member) {
   try {
-    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
-    const channel = await sourceGuild.channels.fetch(PERKS_CHANNEL_ID).catch(() => null);
+    const sourceGuild = await client.guilds.fetch(perksSystemConfig.sourceGuildId);
+    const channel = await sourceGuild.channels.fetch(perksSystemConfig.pingChannelId).catch(() => null);
     if (!channel) {
       log(`Perks channel not found: ${PERKS_CHANNEL_ID}`, "error");
       return;
@@ -482,7 +492,7 @@ async function pingBoosterInPerksChannel(member) {
 
 async function updateTargetServerAccess(userId, shouldHaveAccess) {
   try {
-    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+    const targetGuild = await client.guilds.fetch(perksSystemConfig.targetGuildId);
     const targetMember = await fetchMemberWithRetry(targetGuild, userId);
 
     if (!targetMember) {
@@ -491,14 +501,14 @@ async function updateTargetServerAccess(userId, shouldHaveAccess) {
     }
 
     if (shouldHaveAccess) {
-      await targetMember.roles.add(ACCESS_ROLE_ID);
-      await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
+      await targetMember.roles.add(perksSystemConfig.accessRoleId);
+      await targetMember.roles.remove(perksSystemConfig.deniedRoleId).catch(() => {});
       recentBoosters.add(userId);
       log(`Granted access to ${targetMember.user.username}`, "success");
     } else {
       if (!recentBoosters.has(userId)) {
-        await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
-        await targetMember.roles.add(DENIED_ROLE_ID);
+        await targetMember.roles.remove(perksSystemConfig.accessRoleId).catch(() => {});
+        await targetMember.roles.add(perksSystemConfig.deniedRoleId);
         log(`Denied access to ${targetMember.user.username}`, "success");
       }
     }
@@ -1080,7 +1090,9 @@ const goodbyeConfig = new Map();
 const starboardConfig = new Map();
 const starboardSent = new Set();
 const sniped = new Map();
-const setupSessions = new Map(); // Config Panel sessions
+const setupSessions  = new Map(); // Config Panel sessions
+const helpSessions   = new Map(); // Help panel sessions (msgId -> session)
+const perksSessions  = new Map(); // Perks panel sessions (userId -> { msgId, channelId })
 const editSniped = new Map();
 const lastfmUsers = new Map();
 const afkUsers = new Map();
@@ -1985,48 +1997,61 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,videocount [#channel]
-  // Counts video/attachment messages in a specific channel or across the whole server
+  // Counts videos across the server — attachments + CDN links + embed videos
   if (command === "videocount" || command === "vc") {
     const targetChannel = message.mentions.channels.first() || null;
+    const VIDEO_PAT = /\.(mp4|mov|webm|mkv|avi|gif)($|\?)/i;
+    const CDN_RE    = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+    const EXT_RE    = /https?:\/\/\S+\.(?:mp4|mov|webm|mkv|avi|gif)(?:[?#]\S*)?/gi;
 
-    // Helper: count video/attachment messages in a single text channel
+    // Count unique videos in a channel via REST (catches attachments + links + embeds)
     async function countVideosInChannel(ch) {
-      // Only scan text-based channels
-      if (!ch.isTextBased || !ch.isTextBased()) return 0;
-      // Bot needs read permission
+      if (!ch.isTextBased?.()) return 0;
       const perms = ch.permissionsFor(message.guild.members.me);
-      if (!perms || !perms.has(PermissionFlagsBits.ReadMessageHistory)) return 0;
+      if (!perms?.has(PermissionFlagsBits.ReadMessageHistory)) return 0;
 
       let total = 0;
-      let before = undefined;
-      let hasMore = true;
+      const seen = new Set();
+      let before;
 
-      while (hasMore) {
-        const batch = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-        if (!batch || batch.size === 0) break;
-        for (const msg of batch.values()) {
-          if (msg.attachments.size > 0) {
-            for (const att of msg.attachments.values()) {
-              const ct = att.contentType || "";
-              const name = att.name?.toLowerCase() || "";
-              if (
-                ct.startsWith("video/") ||
-                name.endsWith(".mp4") || name.endsWith(".mov") ||
-                name.endsWith(".webm") || name.endsWith(".mkv") ||
-                name.endsWith(".avi") || name.endsWith(".gif")
-              ) total++;
+      while (true) {
+        const q    = before ? `?limit=100&before=${before}` : '?limit=100';
+        const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${q}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        }).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (!batch || batch.length === 0) break;
+
+        for (const msg of batch) {
+          // 1. Attachments
+          for (const att of (msg.attachments ?? [])) {
+            const fn  = att.filename ?? '';
+            const key = `att:${msg.id}:${fn}`;
+            if (VIDEO_PAT.test(fn) && !seen.has(key)) { seen.add(key); total++; }
+          }
+          // 2. Embed videos
+          for (const emb of (msg.embeds ?? [])) {
+            if (emb.video?.url) {
+              const key = `emb:${emb.video.url.split('?')[0]}`;
+              if (!seen.has(key)) { seen.add(key); total++; }
             }
           }
-          // Also count embeds/links with a video component
-          if (msg.embeds.length > 0) {
-            for (const emb of msg.embeds) {
-              if (emb.video) total++;
-            }
+          // 3. CDN + external links in content
+          const content = msg.content ?? '';
+          const links   = [...new Set([
+            ...(content.match(CDN_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')),
+            ...(content.match(EXT_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')),
+          ])];
+          for (const url of links) {
+            const clean = url.split('?')[0];
+            const key   = `link:${clean}`;
+            if (VIDEO_PAT.test(clean) && !seen.has(key)) { seen.add(key); total++; }
           }
         }
-        before = batch.last()?.id;
-        hasMore = batch.size === 100;
-        await new Promise(r => setTimeout(r, 300)); // rate-limit safety
+
+        const last = batch[batch.length - 1]?.id;
+        if (!last || last === before || batch.length < 100) break;
+        before = last;
+        await new Promise(r => setTimeout(r, 250));
       }
       return total;
     }
@@ -2034,63 +2059,56 @@ client.on("messageCreate", async (message) => {
     // -- SINGLE CHANNEL --
     if (targetChannel) {
       const waitMsg = await message.reply({
-        embeds: [{ color: PINK, description: `◈ Counting videos in <#${targetChannel.id}>... please wait.` }]
+        embeds: [{ color: PINK, description: `◈ Counting videos in <#${targetChannel.id}>...` }]
       }).catch(() => null);
-
       const count = await countVideosInChannel(targetChannel);
-
-      const resultEmbed = {
-        color: PINK,
-        title: `🎬 Video Count — #${targetChannel.name}`,
-        description: `Found **${count}** video${count !== 1 ? "s" : ""} in <#${targetChannel.id}>`,
-        footer: { text: "sensational • white edition" },
-        timestamp: new Date()
+      const embed = {
+        color: PINK, title: `🎬 Video Count — #${targetChannel.name}`,
+        description: `Found **${count}** video${count !== 1 ? 's' : ''} in <#${targetChannel.id}>`,
+        footer: { text: 'sensational • white edition' }, timestamp: new Date(),
       };
-      if (waitMsg) return waitMsg.edit({ embeds: [resultEmbed] }).catch(() => {});
-      return message.reply({ embeds: [resultEmbed] }).catch(() => {});
+      return waitMsg ? waitMsg.edit({ embeds: [embed] }) : message.reply({ embeds: [embed] });
     }
 
     // -- WHOLE SERVER --
     const waitMsg = await message.reply({
-      embeds: [{ color: PINK, description: `◈ Scanning **all channels** for videos... this may take a while.` }]
+      embeds: [{ color: PINK, description: `◈ Scanning **all channels** for videos — this may take a while...` }]
     }).catch(() => null);
 
-    const textChannels = message.guild.channels.cache.filter(ch => ch.isTextBased && ch.isTextBased());
-    const results = []; // { name, id, count }
-    let serverTotal = 0;
+    const textChannels = message.guild.channels.cache.filter(ch => ch.isTextBased?.());
+    const results      = [];
+    let serverTotal    = 0;
+    let scanned        = 0;
 
     for (const [, ch] of textChannels) {
       const count = await countVideosInChannel(ch);
       if (count > 0) results.push({ name: ch.name, id: ch.id, count });
       serverTotal += count;
+      scanned++;
+      // Live update every 10 channels
+      if (scanned % 10 === 0 && waitMsg) {
+        await waitMsg.edit({
+          embeds: [{ color: PINK, description: `◈ Scanning... **${scanned}/${textChannels.size}** channels checked — **${serverTotal}** videos found so far` }]
+        }).catch(() => {});
+      }
     }
 
-    // Sort by count descending
     results.sort((a, b) => b.count - a.count);
-
-    // Build fields (max 25 Discord fields)
     const fields = results.slice(0, 24).map(r => ({
-      name: `#${r.name}`,
-      value: `**${r.count}** video${r.count !== 1 ? "s" : ""}`,
-      inline: true
+      name: `# • ${r.name}`, value: `**${r.count}** videos`, inline: true,
     }));
-    if (results.length > 24) {
-      fields.push({ name: `+ ${results.length - 24} more channels`, value: "(not shown)", inline: true });
-    }
-    if (fields.length === 0) {
-      fields.push({ name: "No videos found", value: "No video attachments were detected in any channel.", inline: false });
-    }
+    if (results.length > 24) fields.push({ name: `+ ${results.length - 24} more`, value: '(not shown)', inline: true });
+    if (fields.length === 0) fields.push({ name: 'No videos found', value: 'No videos detected in any channel.', inline: false });
 
     const resultEmbed = {
       color: PINK,
-      title: `🎬 Video Count — ${message.guild.name}`,
-      description: `**Total: ${serverTotal}** video${serverTotal !== 1 ? "s" : ""} across **${textChannels.size}** channels`,
+      title: `🎬 Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
+      description: `**Total: ${serverTotal}** videos across **${textChannels.size}** channels`,
       fields,
-      footer: { text: "sensational • white edition" },
-      timestamp: new Date()
+      footer: { text: 'sensational • white edition' },
+      timestamp: new Date(),
     };
-    if (waitMsg) return waitMsg.edit({ embeds: [resultEmbed] }).catch(() => {});
-    return message.reply({ embeds: [resultEmbed] }).catch(() => {});
+    return waitMsg ? waitMsg.edit({ embeds: [resultEmbed] }) : message.reply({ embeds: [resultEmbed] });
   }
 
   // -- FUN COMMANDS ----------------------------------------─
@@ -2636,11 +2654,16 @@ client.on("messageCreate", async (message) => {
         emoji: "✦",
         description: "Clone, sort and manage perks servers",
         commands: [
-          [",cloneperks <sourceId> <targetId>", "Clone all roles, categoriess and channels from one server to another"],
-          [",clonecategoryperks <sourceId> <targetId> <catName>", "Clone a category and distribute its videos 2-by-2 into exclusive1/exclusive2"],
-          [",setuppaidperks <sourceId> <targetId> [exclusiveName]", "Setup paid perks server with cloned + exclusive channels"],
-          [",hidepaidperks <targetId> [count]", "Randomly hide N channels in a server (default 20)"],
-          [",sortchannels <serverId> <cat1> <cat2>", "Distribute ALL channels evenly into two categoriess (auto overflow at 50)"],
+          [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
+          [",separate", "Interactive panel to split server channels into 2–3 categories"],
+          [",videocount [#ch]", "Count videos in a channel or the whole server (attachments + links)"],
+          ["", ""],
+          [",clone", "Open the full clone/setup panel"],
+          [",cloneperks <srcId> <tgtId>", "Clone all roles, categories and channels"],
+          [",clonecategoryperks <srcId> <tgtId>", "Clone a category + distribute its videos per-channel"],
+          [",setuppaidperks <srcId> <tgtId>", "Full paid-perks setup with exclusive channels"],
+          [",hidepaidperks <tgtId> [n]", "Randomly hide N channels in a server (default 20)"],
+          [",sortchannels <id> Cat1|Cat2|Cat3", "Distribute channels into 2–3 categories with overflow"],
         ]
       },
       nsfw: {
@@ -2705,76 +2728,305 @@ client.on("messageCreate", async (message) => {
 
     const msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
 
-    // Single collector handles BOTH select menu and nav buttons
-    let currentCategory = null;
-    let currentPage = 0;
-    let currentPages = [];
-
-    function buildCatEmbed(cat, p) {
-      return {
-        color: PINK,
-        author: { name: `${cat.emoji} ${cat.label}`, icon_url: message.guild.iconURL() },
-        description: currentPages[p].map(([cmd, desc]) => `\`${cmd}\`\n${desc}`).join("\n\n"),
-        footer: { text: `Page ${p + 1}/${currentPages.length} • ${cat.commands.length} commands` }
-      };
-    }
-
-    function buildNavRow(p) {
-      return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
-        new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= currentPages.length - 1)
-      );
-    }
-
-    const collector = msg.createMessageComponentCollector({ filter: () => true });
-
-    collector.on("collect", async i => {
-      try {
-        if (i.user.id !== message.author.id) {
-          return i.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], flags: 64 });
-        }
-        // Handle select menu
-        if (i.isStringSelectMenu()) {
-          const cat = categoriess[i.values[0]];
-          if (!cat) return;
-          currentCategory = cat;
-          currentPage = 0;
-          currentPages = [];
-          const PER_PAGE = 10;
-          for (let p = 0; p < cat.commands.length; p += PER_PAGE) {
-            currentPages.push(cat.commands.slice(p, p + PER_PAGE));
-          }
-          await i.update({
-            embeds: [buildCatEmbed(cat, 0)],
-            components: currentPages.length > 1 ? [buildNavRow(0), selectMenu] : [selectMenu]
-          });
-          return;
-        }
-        // Handle buttons
-        if (i.isButton()) {
-          if (i.customId === "help_home") {
-            currentCategory = null;
-            currentPage = 0;
-            currentPages = [];
-            return await i.update({ embeds: [mainEmbed], components: [selectMenu] });
-          }
-          if (!currentCategory) return;
-          if (i.customId === "help_back" && currentPage > 0) currentPage--;
-          if (i.customId === "help_next" && currentPage < currentPages.length - 1) currentPage++;
-          await i.update({
-            embeds: [buildCatEmbed(currentCategory, currentPage)],
-            components: [buildNavRow(currentPage), selectMenu]
-          });
-        }
-      } catch (e) {
-        msg.edit({ components: [] }).catch(() => {});
-      }
+    // Store session in global map — handled by the global interactionCreate handler below
+    helpSessions.set(msg.id, {
+      mainEmbed,
+      selectMenu,
+      categories: categoriess,
+      authorId: message.author.id,
+      guildIconUrl: message.guild.iconURL(),
+      currentCategory: null,
+      currentPage: 0,
+      currentPages: [],
     });
+    // Auto-cleanup after 60 minutes
+    setTimeout(() => helpSessions.delete(msg.id), 60 * 60 * 1000);
     return;
   }
 });
 
+// ── Global help panel interaction handler ─────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.message) return;
+  const id = interaction.customId;
+  if (!id || (id !== "help_category" && !id.startsWith("help_"))) return;
+
+  const sess = helpSessions.get(interaction.message.id);
+  if (!sess) return interaction.reply({ content: "⚠ Session expired — type `,help` again.", flags: 64 });
+
+  if (interaction.user.id !== sess.authorId)
+    return interaction.reply({ embeds: [{ color: PINK, description: "✖ This menu belongs to someone else." }], flags: 64 });
+
+  try {
+    await interaction.deferUpdate();
+  } catch { return; }
+
+  function buildCatEmbed(cat, p) {
+    return {
+      color: PINK,
+      author: { name: `${cat.emoji} ${cat.label}`, icon_url: sess.guildIconUrl },
+      description: sess.currentPages[p].map(([cmd, desc]) => cmd ? `\`${cmd}\`\n${desc}` : (desc || '')).join("\n\n"),
+      footer: { text: `Page ${p + 1}/${sess.currentPages.length} • ${cat.commands.length} commands` },
+    };
+  }
+  function buildNavRow(p) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
+      new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= sess.currentPages.length - 1),
+    );
+  }
+
+  try {
+    if (interaction.isStringSelectMenu()) {
+      const cat = sess.categories[interaction.values[0]];
+      if (!cat) return;
+      sess.currentCategory = cat;
+      sess.currentPage     = 0;
+      sess.currentPages    = [];
+      const PER = 10;
+      for (let p = 0; p < cat.commands.length; p += PER) sess.currentPages.push(cat.commands.slice(p, p + PER));
+      await interaction.editReply({
+        embeds: [buildCatEmbed(cat, 0)],
+        components: sess.currentPages.length > 1 ? [buildNavRow(0), sess.selectMenu] : [sess.selectMenu],
+      });
+      return;
+    }
+    if (interaction.isButton()) {
+      if (id === "help_home") {
+        sess.currentCategory = null; sess.currentPage = 0; sess.currentPages = [];
+        await interaction.editReply({ embeds: [sess.mainEmbed], components: [sess.selectMenu] });
+        return;
+      }
+      if (!sess.currentCategory) return;
+      if (id === "help_back" && sess.currentPage > 0) sess.currentPage--;
+      if (id === "help_next" && sess.currentPage < sess.currentPages.length - 1) sess.currentPage++;
+      await interaction.editReply({
+        embeds: [buildCatEmbed(sess.currentCategory, sess.currentPage)],
+        components: [buildNavRow(sess.currentPage), sess.selectMenu],
+      });
+    }
+  } catch (e) {
+    log(`[help] interaction error: ${e.message}`, "error");
+  }
+});
+
+
+// ===================================================
+// ===== ,perks COMMAND — PERKS SYSTEM PANEL =========
+// ===================================================
+
+function buildPerksEmbed() {
+  const cfg = perksSystemConfig;
+  const cm  = customMessages;
+  const R   = "\u001b[0m";
+  const CY  = "\u001b[0;36m";
+  const GR  = "\u001b[1;32m";
+  const WH  = "\u001b[1;37m";
+  const DM  = "\u001b[2;35m";
+  const YL  = "\u001b[0;33m";
+
+  const row = (label, val) => `${DM}║${R}  ${CY}${label.padEnd(13)}${R}  ${GR}${String(val).slice(0,22).padEnd(22)}${R}  ${DM}║${R}`;
+  const div = `${DM}╠════════════════════════════════════╣${R}`;
+  const top = `${DM}╔════════════════════════════════════╗${R}`;
+  const bot = `${DM}╚════════════════════════════════════╝${R}`;
+  const sec = (t) => `${DM}║${R}  ${WH}${t.padEnd(34)}${R}  ${DM}║${R}`;
+
+  const lines = [
+    top,
+    sec("SERVERS"),
+    div,
+    row("source",     cfg.sourceGuildId   || "not set"),
+    row("target/vault",cfg.targetGuildId  || "not set"),
+    div,
+    sec("ROLES"),
+    div,
+    row("discord boost", cfg.discordBoostRoleId || "not set"),
+    row("custom boost",  cfg.boostRoleId        || "not set"),
+    row("access role",   cfg.accessRoleId       || "not set"),
+    row("denied role",   cfg.deniedRoleId       || "not set"),
+    div,
+    sec("CHANNEL"),
+    div,
+    row("ping channel",  cfg.pingChannelId      || "not set"),
+    div,
+    sec("MESSAGES"),
+    div,
+    `${DM}║${R}  ${CY}boost msg  ${R}  ${YL}${cm.boost.slice(0,30).replace(/\n/g,' ')}…${R}  ${DM}║${R}`,
+    `${DM}║${R}  ${CY}unboost msg${R}  ${YL}${cm.unboost.slice(0,30).replace(/\n/g,' ')}…${R}  ${DM}║${R}`,
+    `${DM}║${R}  ${CY}ping msg   ${R}  ${YL}${cm.ping.slice(0,30).replace(/\n/g,' ')}${R}${"".padEnd(Math.max(0,30-cm.ping.length))}  ${DM}║${R}`,
+    bot,
+  ].join("\n");
+
+  return {
+    color: PINK,
+    title: "◈ Perks System Panel",
+    description: `### ◈  Boost Protection & Messages\n\n\`\`\`ansi\n${lines}\n\`\`\`\n*Use the buttons below to edit each section.*`,
+    footer: { text: "◈ sensational • white edition • owner only" },
+    timestamp: new Date(),
+  };
+}
+
+function buildPerksRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("perks_servers").setLabel("🌐 Servers").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_roles"  ).setLabel("🎭 Roles").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_channel").setLabel("📣 Ping Channel").setStyle(ButtonStyle.Primary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("💬 Boost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_unboost_msg").setLabel("💔 Unboost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_ping_msg"   ).setLabel("📣 Ping Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("✖ Close").setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args    = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "perks") return;
+  if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+
+  const sent = await message.reply({ embeds: [buildPerksEmbed()], components: buildPerksRows() });
+  perksSessions.set(message.author.id, { msgId: sent.id, channelId: message.channel.id });
+});
+
+// ── Perks panel interaction handler ──────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+  const id = interaction.customId;
+  if (!id || !id.startsWith("perks_")) return;
+  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: "✖ Owner only.", flags: 64 });
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  async function refreshPanel(i) {
+    const sess = perksSessions.get(OWNER_ID);
+    if (!sess) return;
+    try {
+      const ch  = client.channels.cache.get(sess.channelId) ?? await client.channels.fetch(sess.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(sess.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPerksEmbed()], components: buildPerksRows() }).catch(() => {});
+    } catch (_) {}
+  }
+
+  // ── Close ──
+  if (id === "perks_close") {
+    perksSessions.delete(OWNER_ID);
+    return interaction.update({ embeds: [{ color: PINK, description: "✖ Perks panel closed." }], components: [] });
+  }
+
+  // ── Modal: Servers ──
+  if (id === "perks_servers") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("◈ Server IDs");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("source_id").setLabel("Source Server ID (where boosts happen)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.sourceGuildId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("target_id").setLabel("Target / Vault Server ID").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.targetGuildId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Roles ──
+  if (id === "perks_roles") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("◈ Role IDs");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("discord_boost").setLabel("Discord Boost Role ID (auto-given by Discord)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.discordBoostRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("custom_boost").setLabel("Custom Boost Role ID (bot gives this)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.boostRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("access_role").setLabel("Access Role ID (grants vault access)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.accessRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("denied_role").setLabel("Denied Role ID (revokes vault access)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.deniedRoleId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Ping Channel ──
+  if (id === "perks_channel") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("◈ Ping Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_channel").setLabel("Channel ID for silent boost ping").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.pingChannelId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Boost message ──
+  if (id === "perks_boost_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("◈ Boost DM Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("boost_msg").setLabel("Message sent to user when they boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.boost).setMaxLength(1800)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Unboost message ──
+  if (id === "perks_unboost_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("◈ Unboost DM Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("unboost_msg").setLabel("Message sent when user removes boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.unboost).setMaxLength(1800)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Ping message ──
+  if (id === "perks_ping_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("◈ Ping Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_msg").setLabel("Message posted in ping channel. Use {user}").setStyle(TextInputStyle.Short).setRequired(true).setValue(customMessages.ping)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal submits ──
+  if (!interaction.isModalSubmit()) return;
+
+  if (id === "perks_modal_servers") {
+    perksSystemConfig.sourceGuildId = interaction.fields.getTextInputValue("source_id").trim();
+    perksSystemConfig.targetGuildId = interaction.fields.getTextInputValue("target_id").trim();
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Server IDs updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_roles") {
+    perksSystemConfig.discordBoostRoleId = interaction.fields.getTextInputValue("discord_boost").trim();
+    perksSystemConfig.boostRoleId        = interaction.fields.getTextInputValue("custom_boost").trim();
+    perksSystemConfig.accessRoleId       = interaction.fields.getTextInputValue("access_role").trim();
+    perksSystemConfig.deniedRoleId       = interaction.fields.getTextInputValue("denied_role").trim();
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Role IDs updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_channel") {
+    perksSystemConfig.pingChannelId = interaction.fields.getTextInputValue("ping_channel").trim();
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Ping channel updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_boost_msg") {
+    customMessages.boost = interaction.fields.getTextInputValue("boost_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Boost message updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_unboost_msg") {
+    customMessages.unboost = interaction.fields.getTextInputValue("unboost_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Unboost message updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_ping_msg") {
+    customMessages.ping = interaction.fields.getTextInputValue("ping_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "✅ Ping message updated.", flags: 64 });
+  }
+});
 
 // -- Config Panel command --
 client.on("messageCreate", async (message) => {
@@ -10450,28 +10702,73 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return { url: att.url, size: att.size ?? 0 };
   }
 
-  // ── Scan a channel for video attachments, store refs (no CDN URL caching) ───
-  // Returns: Array<{ messageId, channelId, filename, size }>
+  // ── Scan a channel for ALL video/media refs (attachments + CDN links + embed videos) ─
+  // Returns: Array<{ type:'attachment'|'link', messageId, channelId, filename, size, directUrl? }>
   async function scanChannelVideos(channelId) {
     const items = [];
-    const seen = new Set();
+    const seen  = new Set();
+
+    // Patterns
+    const VIDEO_PAT  = /\.(mp4|mov|webm|mkv|avi|gif)($|\?)/i;
+    // Discord CDN link anywhere in message content
+    const CDN_URL_RE = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+    // Any direct video link in message content (non-Discord)
+    const EXT_URL_RE = /https?:\/\/\S+\.(?:mp4|mov|webm|mkv|avi|gif)(?:[?#]\S*)?/gi;
+
     let before;
     while (true) {
-      const q = before ? `?limit=100&before=${before}` : '?limit=100';
+      const q     = before ? `?limit=100&before=${before}` : '?limit=100';
       const batch = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages${q}`, {
         headers: { Authorization: `Bot ${process.env.TOKEN}` }
       }).then(r => r.ok ? r.json() : null).catch(() => null);
       if (!batch || batch.length === 0) break;
+
       for (const msg of batch) {
+        // 1. Standard attachments (re-fetch URL at download time to avoid expiry)
         for (const att of (msg.attachments ?? [])) {
-          const fn = att.filename ?? '';
-          const key = `${msg.id}:${fn}`;
-          if (VIDEO_RE.test(fn) && !seen.has(key)) {
+          const fn  = att.filename ?? '';
+          const key = `att:${msg.id}:${fn}`;
+          if (VIDEO_PAT.test(fn) && !seen.has(key)) {
             seen.add(key);
-            items.push({ messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+            items.push({ type: 'attachment', messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+          }
+        }
+
+        // 2. Embed video/image URLs
+        for (const emb of (msg.embeds ?? [])) {
+          for (const urlField of [emb.video?.url, emb.image?.url, emb.thumbnail?.url]) {
+            if (!urlField) continue;
+            const clean = urlField.split('?')[0];
+            const key   = `emb:${clean}`;
+            if (VIDEO_PAT.test(clean) && !seen.has(key)) {
+              seen.add(key);
+              const fn = clean.split('/').pop() || 'video.mp4';
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: urlField });
+            }
+          }
+        }
+
+        // 3. Discord CDN links in message content (may be videos posted as links)
+        const content   = msg.content ?? '';
+        const cdnLinks  = [...new Set((content.match(CDN_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        const extLinks  = [...new Set((content.match(EXT_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        for (const url of [...cdnLinks, ...extLinks]) {
+          const clean = url.split('?')[0];
+          const key   = `link:${clean}`;
+          if (VIDEO_PAT.test(clean) && !seen.has(key)) {
+            seen.add(key);
+            const fn  = clean.split('/').pop() || 'video.mp4';
+            // Discord CDN links need re-fetch at download time; external links are direct
+            const isCDN = /cdn\.discordapp\.com|media\.discordapp\.net/i.test(url);
+            if (isCDN) {
+              items.push({ type: 'attachment_link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
+            } else {
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
+            }
           }
         }
       }
+
       const last = batch[batch.length - 1]?.id;
       if (!last || last === before || batch.length < 100) break;
       before = last;
@@ -10480,27 +10777,54 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     return items;
   }
 
-  // ── Scan a channel for ALL media (video + images), store refs ───────────────
+  // ── Scan a channel for ALL media (video + images) — same logic ───────────────
   async function scanChannelMedia(channelId) {
     const items = [];
-    const seen = new Set();
+    const seen  = new Set();
+    const MEDIA_PAT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
+    const CDN_URL_RE = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+
     let before;
     while (true) {
-      const q = before ? `?limit=100&before=${before}` : '?limit=100';
+      const q     = before ? `?limit=100&before=${before}` : '?limit=100';
       const batch = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages${q}`, {
         headers: { Authorization: `Bot ${process.env.TOKEN}` }
       }).then(r => r.ok ? r.json() : null).catch(() => null);
       if (!batch || batch.length === 0) break;
+
       for (const msg of batch) {
         for (const att of (msg.attachments ?? [])) {
           const fn = att.filename ?? '';
-          const key = `${msg.id}:${fn}`;
-          if (MEDIA_RE.test(fn) && !seen.has(key)) {
+          const key = `att:${msg.id}:${fn}`;
+          if (MEDIA_PAT.test(fn) && !seen.has(key)) {
             seen.add(key);
-            items.push({ messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+            items.push({ type: 'attachment', messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+          }
+        }
+        for (const emb of (msg.embeds ?? [])) {
+          for (const urlField of [emb.video?.url, emb.image?.url]) {
+            if (!urlField) continue;
+            const clean = urlField.split('?')[0];
+            const key = `emb:${clean}`;
+            if (MEDIA_PAT.test(clean) && !seen.has(key)) {
+              seen.add(key);
+              const fn = clean.split('/').pop() || 'file';
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: urlField });
+            }
+          }
+        }
+        const cdnLinks = [...new Set((( msg.content ?? '').match(CDN_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        for (const url of cdnLinks) {
+          const clean = url.split('?')[0];
+          const key = `cdn:${clean}`;
+          if (MEDIA_PAT.test(clean) && !seen.has(key)) {
+            seen.add(key);
+            const fn = clean.split('/').pop() || 'file';
+            items.push({ type: 'attachment_link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
           }
         }
       }
+
       const last = batch[batch.length - 1]?.id;
       if (!last || last === before || batch.length < 100) break;
       before = last;
@@ -10523,18 +10847,53 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }
   }
 
-  // ── Download a single file using a FRESH URL re-fetched right before download ─
+  // ── Download a file ref — re-fetches message for fresh URL (attachments) or uses directUrl (links) ─
+  // Returns: AttachmentBuilder, OR throws { fallbackUrl } if the file is too big (send link instead)
   async function downloadFresh(ref, vidIndex) {
     const { AttachmentBuilder } = require('discord.js');
-    if (ref.size > MAX_FILE_BYTES) throw new Error(`file too large (${Math.round(ref.size/1024/1024)}MB > 24MB)`);
-    const { url } = await getFreshUrl(ref.channelId, ref.messageId, ref.filename);
+
+    let url;
+
+    if (ref.type === 'attachment') {
+      // Standard attachment — re-fetch message to get fresh CDN URL
+      if (ref.size > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: null, tooBig: true });
+      const fresh = await getFreshUrl(ref.channelId, ref.messageId, ref.filename);
+      url = fresh.url;
+    } else if (ref.type === 'attachment_link') {
+      // Discord CDN URL from message content — re-fetch message to find fresh URL in content
+      try {
+        const msg        = await discordREST(`/channels/${ref.channelId}/messages/${ref.messageId}`);
+        const CDN_RE     = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+        const cdnMatches = (msg.content ?? '').match(CDN_RE) ?? [];
+        const freshCDN   = cdnMatches.find(u => u.includes(ref.filename.split('.')[0])) ?? cdnMatches[0];
+        if (!freshCDN) throw Object.assign(new Error('no fresh CDN URL'), { fallbackUrl: ref.directUrl });
+        url = freshCDN;
+      } catch (e) {
+        if (e.fallbackUrl !== undefined) throw e;
+        throw Object.assign(new Error('attachment_link re-fetch failed'), { fallbackUrl: ref.directUrl });
+      }
+    } else {
+      // External link — use directUrl as-is
+      url = ref.directUrl;
+      if (!url) throw new Error(`no directUrl for ref ${ref.filename}`);
+    }
+
+    // Check Content-Length before downloading the whole thing
+    let headSize = 0;
+    try {
+      const head = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
+      headSize   = parseInt(head.headers.get('content-length') ?? '0') || 0;
+    } catch { /* ignore HEAD failures */ }
+    if (headSize > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!res.ok) throw new Error(`HTTP ${res.status} downloading ${ref.filename}`);
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fallbackUrl: url });
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_FILE_BYTES) throw new Error(`buffer too large after download`);
+    if (buf.length > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+
     const extMatch = ref.filename.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
-    const origExt = extMatch ? extMatch[0].toLowerCase() : '.mp4';
-    const name = makeVideoName(vidIndex, origExt);
+    const origExt  = extMatch ? extMatch[0].toLowerCase() : '.mp4';
+    const name     = makeVideoName(vidIndex, origExt);
     return new AttachmentBuilder(buf, { name });
   }
 
@@ -10677,43 +11036,63 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   }
 
   // ── Upload a list of media refs into a target channel ───────────────────────
-  // Each ref: { messageId, channelId, filename, size }
-  // Returns { uploaded, failed }
+  // If a file is too large: sends the direct URL as a message instead (fallback)
+  // Returns { uploaded, failed, linked }
   async function uploadRefs(refs, targetChannel, startVidIndex = 0, batchSize = 1) {
-    let uploaded = 0, failed = 0, vidIndex = startVidIndex;
+    let uploaded = 0, failed = 0, linked = 0, vidIndex = startVidIndex;
     for (let i = 0; i < refs.length; i += batchSize) {
       const batch = refs.slice(i, i + batchSize);
       const attachments = [];
+      const fallbackUrls = [];
+
       for (const ref of batch) {
         try {
           const att = await downloadFresh(ref, vidIndex++);
           attachments.push(att);
         } catch (e) {
-          log(`[setup] download ${ref.filename}: ${e.message}`, 'error');
-          failed++;
+          if (e.tooBig && e.fallbackUrl) {
+            // Too large — send URL directly instead of uploading
+            fallbackUrls.push(e.fallbackUrl);
+            log(`[setup] too large, will link: ${ref.filename}`, 'info');
+          } else {
+            log(`[setup] download ${ref.filename}: ${e.message}`, 'error');
+            failed++;
+          }
           vidIndex++;
         }
       }
-      if (attachments.length === 0) continue;
 
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await targetChannel.send({ files: attachments });
-          uploaded += attachments.length;
-          break;
-        } catch (e) {
-          if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
-            await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
-          } else {
-            failed += attachments.length;
-            log(`[setup] upload to #${targetChannel.name}: ${e.message}`, 'error');
+      // Upload attachments
+      if (attachments.length > 0) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await targetChannel.send({ files: attachments });
+            uploaded += attachments.length;
             break;
+          } catch (e) {
+            if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
+              await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+            } else {
+              failed += attachments.length;
+              log(`[setup] upload to #${targetChannel.name}: ${e.message}`, 'error');
+              break;
+            }
           }
         }
       }
+
+      // Send fallback URLs
+      for (const url of fallbackUrls) {
+        try {
+          await targetChannel.send({ content: url });
+          linked++;
+          await new Promise(r => setTimeout(r, 500));
+        } catch { failed++; }
+      }
+
       await new Promise(r => setTimeout(r, 800));
     }
-    return { uploaded, failed };
+    return { uploaded, failed, linked };
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -10832,7 +11211,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await updateStatus(`Found **${refs.length}** files. Uploading to **#${dstCh.name}**...`);
 
-    let uploaded = 0, failed = 0, vidIndex = 0;
+    let uploaded = 0, failed = 0, linked = 0, vidIndex = 0;
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i];
       try {
@@ -10849,13 +11228,18 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           }
         }
       } catch (e) {
-        failed++;
-        log(`[setup] ch-clone ${ref.filename}: ${e.message}`, 'error');
+        if (e.tooBig && e.fallbackUrl) {
+          try { await dstCh.send({ content: e.fallbackUrl }); linked++; }
+          catch { failed++; }
+        } else {
+          failed++;
+          log(`[setup] ch-clone ${ref.filename}: ${e.message}`, 'error');
+        }
       }
 
       if ((i + 1) % 5 === 0 || i === refs.length - 1) {
         const pct = Math.round(((i + 1) / refs.length) * 100);
-        await updateStatus(`Uploading... ✅ **${uploaded}** sent  ❌ **${failed}** failed  (${pct}%)`);
+        await updateStatus(`Uploading... ✅ **${uploaded}** sent  🔗 **${linked}** linked  ❌ **${failed}** failed  (${pct}%)`);
       }
       await new Promise(r => setTimeout(r, 700));
     }
@@ -10864,12 +11248,13 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       embeds: [{
         color: PINK, title: '◈ Channel Clone Complete',
         fields: [
-          { name: 'Source',    value: `#${srcChName} (\`${srcChId}\`)`, inline: true },
+          { name: 'Source',    value: `#${srcChName} (\`${srcChId}\`)`,   inline: true },
           { name: 'Target',    value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
           { name: '\u200b',    value: '\u200b',                            inline: true },
-          { name: 'Scanned',   value: `${refs.length}`,                    inline: true },
-          { name: 'Uploaded',  value: `${uploaded}`,                       inline: true },
-          { name: 'Failed',    value: `${failed}`,                         inline: true },
+          { name: 'Scanned',   value: `${refs.length}`,   inline: true },
+          { name: 'Uploaded',  value: `${uploaded}`,      inline: true },
+          { name: 'Linked',    value: `${linked}`,        inline: true },
+          { name: 'Failed',    value: `${failed}`,        inline: true },
         ],
         footer: { text: `pattern: ${s.videoPattern} (${s.videoRenameMode})` },
         timestamp: new Date(),
@@ -10955,17 +11340,17 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
           if (refs.length > 0) {
             await updateStatus(`📤 Uploading **${refs.length}** videos → **#${newCh.name}**...`);
-            const { uploaded } = await uploadRefs(refs, newCh, globalVidIndex, 2);
+            const { uploaded, linked: linkedCount } = await uploadRefs(refs, newCh, globalVidIndex, 2);
             globalVidIndex    += refs.length;
-            sentPerChannel.set(newCh.name, uploaded);
-            totalVideosSent   += uploaded;
+            sentPerChannel.set(newCh.name, { uploaded, linked: linkedCount });
+            totalVideosSent   += uploaded + linkedCount;
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, 'error'); }
     }
 
     const channelSummary = [...sentPerChannel.entries()]
-      .map(([name, count]) => `#${name}: ${count} videos`)
+      .map(([name, counts]) => `#${name}: ${counts.uploaded} uploaded${counts.linked ? ` + ${counts.linked} linked` : ''}`)
       .join('\n') || 'no videos found';
 
     await statusMsg?.edit({
@@ -11028,37 +11413,46 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     let excl2 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl2Name.toLowerCase() && [0,5].includes(c.type))
       ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: '[setup panel]' }).catch(() => null);
 
-    let sent1 = 0, sent2 = 0, vidIndex = 0;
+    let sent1 = 0, sent2 = 0, linked1 = 0, linked2 = 0, vidIndex = 0;
     for (let i = 0; i < allVideoRefs.length; i += 2) {
-      const group = allVideoRefs.slice(i, i + 2);
-      const target = Math.floor(i / 2) % 2 === 0 ? excl1 : excl2;
+      const group  = allVideoRefs.slice(i, i + 2);
+      const isSlot1 = Math.floor(i / 2) % 2 === 0;
+      const target  = isSlot1 ? excl1 : excl2;
       if (!target) { vidIndex += group.length; continue; }
-      const attachments = [];
+      const attachments  = [];
+      const fallbackUrls = [];
       for (const ref of group) {
         try {
           const att = await downloadFresh(ref, vidIndex++);
           attachments.push(att);
-        } catch (e) { log(`[setup] paidperks video ${ref.filename}: ${e.message}`, 'error'); vidIndex++; }
-      }
-      if (!attachments.length) continue;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await target.send({ files: attachments });
-          if (Math.floor(i / 2) % 2 === 0) sent1 += attachments.length;
-          else sent2 += attachments.length;
-          break;
         } catch (e) {
-          if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
-            await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
-          } else {
-            log(`[setup] paidperks send: ${e.message}`, 'error');
+          if (e.tooBig && e.fallbackUrl) { fallbackUrls.push(e.fallbackUrl); }
+          else { log(`[setup] paidperks video ${ref.filename}: ${e.message}`, 'error'); }
+          vidIndex++;
+        }
+      }
+      if (attachments.length > 0) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await target.send({ files: attachments });
+            if (isSlot1) sent1 += attachments.length; else sent2 += attachments.length;
             break;
+          } catch (e) {
+            if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
+              await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+            } else { log(`[setup] paidperks send: ${e.message}`, 'error'); break; }
           }
         }
       }
+      for (const url of fallbackUrls) {
+        try {
+          await target.send({ content: url });
+          if (isSlot1) linked1++; else linked2++;
+        } catch { /* skip */ }
+      }
       await new Promise(r => setTimeout(r, 900));
       if ((i / 2 + 1) % 10 === 0) {
-        await updateStatus(`Distributing... ✅ **${sent1 + sent2}** videos sent so far`);
+        await updateStatus(`Distributing... ✅ **${sent1 + sent2}** uploaded  🔗 **${linked1 + linked2}** linked`);
       }
     }
 
@@ -11067,12 +11461,12 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         color: PINK, title: '◈ Paid Perks Setup Complete',
         description: `**${targetGuild.name}** ready as a premium server.`,
         fields: [
-          { name: 'Roles',            value: `${roleMap.size}`,     inline: true },
-          { name: 'Categories',       value: `${categoryMap.size}`, inline: true },
-          { name: 'Channels',         value: `${channelCount}`,     inline: true },
-          { name: `#${excl1Name}`,    value: `${sent1} videos`,     inline: true },
-          { name: `#${excl2Name}`,    value: `${sent2} videos`,     inline: true },
-          { name: 'Video pattern',    value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+          { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
+          { name: 'Categories',    value: `${categoryMap.size}`, inline: true },
+          { name: 'Channels',      value: `${channelCount}`,     inline: true },
+          { name: `#${excl1Name}`, value: `${sent1} uploaded${linked1 ? ` + ${linked1} linked` : ''}`, inline: true },
+          { name: `#${excl2Name}`, value: `${sent2} uploaded${linked2 ? ` + ${linked2} linked` : ''}`, inline: true },
+          { name: 'Video pattern', value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
         ],
         footer: { text: 'use ,setup → Hide Channels to hide channels after setup' },
         timestamp: new Date(),
