@@ -336,7 +336,9 @@ const client = new Client({
 client.setMaxListeners(50);
 
 // ===== CONFIGURATION =====
-const OWNER_ID = "1005237630113419315";
+const OWNER_ID  = "1005237630113419315";          // primary owner
+const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828"]); // all owners
+function isOwner(id) { return OWNER_IDS.has(id); }
 const SOURCE_GUILD_ID = "1463635465222619218";
 const TARGET_GUILD_ID = "1425102156125442140";
 
@@ -743,7 +745,7 @@ They have been **automatically banned**.`, footer: { text: newMember.guild.name 
 
 // ===== ADMIN COMMANDS =====
 client.on("messageCreate", async (message) => {
-  if (message.author.id !== OWNER_ID) return;
+  if (!isOwner(message.author.id)) return;
   if (!message.content.startsWith("!")) return;
 
   const args = message.content.slice(1).split(" ");
@@ -1698,7 +1700,7 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "No reason provided";
 
     // Block banning boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) {
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) {
       return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
 
@@ -1727,7 +1729,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason provided";
     target.send({ embeds: [{ color: PINK, description: `👢 You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
     const kickSuccess = await target.kick(reason).catch(() => null);
@@ -1742,7 +1744,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 10;
     const reason = args.slice(3).join(" ") || "No reason provided";
     const muteResult = await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
@@ -2311,8 +2313,6 @@ client.on("messageCreate", async (message) => {
 
   // ,help
   if (command === "help") {
-    const { StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
-
     const categoriess = {
       moderation: {
         label: "Moderation",
@@ -2698,7 +2698,7 @@ client.on("messageCreate", async (message) => {
         .setPlaceholder("Choose a category...")
         .addOptions(
           Object.entries(categoriess)
-            .filter(([key]) => key !== 'nsfw' || message.author.id === OWNER_ID)
+            .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id))
             .map(([key, cat]) =>
               new SMOB()
                 .setLabel(cat.label)
@@ -2889,7 +2889,7 @@ client.on("messageCreate", async (message) => {
   const args    = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
   if (command !== "perks") return;
-  if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+  if (!isOwner(message.author.id)) return err(message, "Owner only.");
 
   const sent = await message.reply({ embeds: [buildPerksEmbed()], components: buildPerksRows() });
   perksSessions.set(message.author.id, { msgId: sent.id, channelId: message.channel.id });
@@ -2900,12 +2900,12 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton() && !interaction.isModalSubmit()) return;
   const id = interaction.customId;
   if (!id || !id.startsWith("perks_")) return;
-  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: "✖ Owner only.", flags: 64 });
+  if (!isOwner(interaction.user.id)) return interaction.reply({ content: "✖ Owner only.", flags: 64 });
 
   const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 
   async function refreshPanel(i) {
-    const sess = perksSessions.get(OWNER_ID);
+    const sess = perksSessions.get(interaction.user.id);
     if (!sess) return;
     try {
       const ch  = client.channels.cache.get(sess.channelId) ?? await client.channels.fetch(sess.channelId).catch(() => null);
@@ -2916,7 +2916,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Close ──
   if (id === "perks_close") {
-    perksSessions.delete(OWNER_ID);
+    perksSessions.delete(interaction.user.id);
     return interaction.update({ embeds: [{ color: PINK, description: "✖ Perks panel closed." }], components: [] });
   }
 
@@ -3039,8 +3039,8 @@ client.on("messageCreate", async (message) => {
 
   log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
-  if (message.author.id !== OWNER_ID) {
-    log(`[clone] BLOCKED — not owner (got ${message.author.id}, expected ${OWNER_ID})`, "error");
+  if (!isOwner(message.author.id)) {
+    log(`[clone] BLOCKED — not owner (got ${message.author.id})`, "error");
     return;
   }
 
@@ -3087,7 +3087,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
@@ -3105,7 +3105,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Softban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
@@ -3121,7 +3121,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "Hardban";
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
@@ -3137,7 +3137,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const reason = args.slice(2).join(" ") || "No reason";
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
@@ -3185,7 +3185,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const roles = target.roles.cache.filter(r => r.id !== message.guild.id && r.position < message.guild.members.me.roles.highest.position);
     let stripped = 0;
     for (const role of roles.values()) { await target.roles.remove(role).catch(() => {}); stripped++; }
@@ -4895,7 +4895,7 @@ client.on("messageCreate", async (message) => {
     const toKick = [...allMembers.filter(m => {
       if (m.user.bot) return false;
       if (m.id === message.author.id) return false;
-      if (m.id === OWNER_ID) return false;
+      if (isOwner(m.id)) return false;
       if (m.roles.highest.position >= message.guild.members.me.roles.highest.position) return false;
       // If they have EVEN ONE of the required roles -> safe
       return roleIds.every(rid => !m.roles.cache.has(rid));
@@ -5109,7 +5109,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
-    if (isProtectedBooster(target) && message.author.id !== OWNER_ID) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
     if (!match) return err(message, "missing required argument: **time**\nusage: `,timeout @user 10m [reason]` — formats: 30s, 5m, 2h, 1d");
@@ -8528,21 +8528,21 @@ client.on("messageCreate", async (message) => {
 
   // ,leave -- make bot leave server (owner only)
   if (command === "leave") {
-    if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
     await message.reply("👋 Leaving server...");
     await message.guild.leave();
   }
 
   // ,guilds -- list all guilds bot is in (owner only)
   if (command === "guilds") {
-    if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
     const list = client.guilds.cache.map(g => `**${g.name}** (${g.memberCount})`).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
   // ,eval <code> -- owner only
   if (command === "eval") {
-    if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
     const code = args.slice(1).join(" ");
     try {
       let result = eval(code);
@@ -8559,7 +8559,7 @@ client.on("messageCreate", async (message) => {
 
   // ,status <online|idle|dnd|invisible> -- set bot status
   if (command === "status") {
-    if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
     const status = args[1];
     if (!["online","idle","dnd","invisible"].includes(status)) return err(message, "missing required argument");
 
@@ -8569,7 +8569,7 @@ client.on("messageCreate", async (message) => {
 
   // ,activity <type> <text> -- set bot activity
   if (command === "activity") {
-    if (message.author.id !== OWNER_ID) return err(message, "Owner only.");
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
     const types = {
       playing: ActivityType.Playing,
       streaming: ActivityType.Streaming,
@@ -9868,7 +9868,7 @@ client.on("interactionCreate", async (interaction) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
-  if (message.author.id !== OWNER_ID) return; // only owner
+  if (!isOwner(message.author.id)) return; // only owner
 
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
@@ -10189,7 +10189,7 @@ function buildPanelComponents(s) {
 client.on("interactionCreate", async (interaction) => {
   try {
   // Only owner can use the setup panel
-  if (interaction.user.id !== OWNER_ID) return;
+  if (!isOwner(interaction.user.id)) return;
 
   // Only handle setup panel interactions
   // Accept any setup-panel interaction (prefix check is safer than a static list)
