@@ -6,9 +6,9 @@ const path = require("path");
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
 // ===================================================
 // Saves config to a Discord channel so it survives Railway restarts
-const CONFIG_CHANNEL_ID = "1482107392463474921";
-const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";
-let _configMessageId = null; // cached message ID
+// [DB] const CONFIG_CHANNEL_ID = "1482107392463474921";  // migrated to Railway PostgreSQL
+// [DB] const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";  // migrated to Railway PostgreSQL
+// [DB] let _configMessageId = null; // cached message ID  // migrated to Railway PostgreSQL
 
 // Serializer -- handles Map and Set
 function serialize(data) {
@@ -27,149 +27,438 @@ function deserialize(raw) {
   });
 }
 
-// Build config snapshot to save
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██████  ██████      ██████  ███████ ██████  ███████ ██ ███████ ████████
+// ██   ██ ██   ██     ██   ██ ██      ██   ██ ██      ██ ██         ██
+// ██   ██ ██████      ██████  █████   ██████  ███████ ██ ███████    ██
+// ██   ██ ██   ██     ██      ██      ██   ██      ██ ██      ██    ██
+// ██████  ██████      ██      ███████ ██   ██ ███████ ██ ███████    ██
+// RAILWAY POSTGRESQL — single source of truth for all bot data
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const pg = require('pg');
+let _db = null; // pg.Pool instance
+
+async function initDB() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[DB] ⚠ DATABASE_URL not set — running without persistence');
+    return false;
+  }
+  try {
+    _db = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30000,
+    });
+    // Health-check
+    await _db.query('SELECT 1');
+    // Create table
+    await _db.query(`
+      CREATE TABLE IF NOT EXISTS bot_kv (
+        key        TEXT        PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log('[DB] ✅ Railway PostgreSQL connected & table ready');
+    return true;
+  } catch (e) {
+    console.error('[DB] ❌ Connection failed:', e.message);
+    _db = null;
+    return false;
+  }
+}
+
+async function dbGet(key) {
+  if (!_db) return null;
+  try {
+    const r = await _db.query('SELECT value FROM bot_kv WHERE key=$1', [key]);
+    return r.rows[0] ? deserialize(r.rows[0].value) : null;
+  } catch (e) {
+    console.error(`[DB] get(${key}): ${e.message}`);
+    return null;
+  }
+}
+
+async function dbSet(key, value) {
+  if (!_db) return;
+  try {
+    await _db.query(
+      `INSERT INTO bot_kv(key,value,updated_at) VALUES($1,$2,NOW())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+      [key, serialize(value)]
+    );
+  } catch (e) {
+    console.error(`[DB] set(${key}): ${e.message}`);
+  }
+}
+
+// Debounce: rapid consecutive writes are batched into a single DB write
+const _saveQueue = new Map(); // key => { timer, dataFn }
+function scheduleSave(key, dataFn, ms = 3000) {
+  if (_saveQueue.has(key)) clearTimeout(_saveQueue.get(key).timer);
+  const timer = setTimeout(async () => {
+    _saveQueue.delete(key);
+    try { await dbSet(key, dataFn()); }
+    catch (e) { console.error(`[DB] scheduleSave(${key}): ${e.message}`); }
+  }, ms);
+  _saveQueue.set(key, { timer, dataFn });
+}
+
+// Flush ALL pending saves immediately — called on SIGTERM/SIGINT
+async function flushAllSaves() {
+  const pending = [..._saveQueue.entries()];
+  _saveQueue.clear();
+  for (const [key, { timer, dataFn }] of pending) {
+    clearTimeout(timer);
+    try { await dbSet(key, dataFn()); }
+    catch (e) { console.error(`[DB] flush(${key}): ${e.message}`); }
+  }
+}
+
+// Graceful shutdown — never lose data when Railway recycles the container
+process.on('SIGTERM', async () => {
+  console.log('[Bot] SIGTERM — flushing all pending saves...');
+  await flushAllSaves();
+  if (_db) await _db.end().catch(() => {});
+  process.exit(0);
+});
+process.on('SIGINT', async () => {
+  console.log('[Bot] SIGINT — flushing all pending saves...');
+  await flushAllSaves();
+  if (_db) await _db.end().catch(() => {});
+  process.exit(0);
+});
+
+// ── DB bucket keys ────────────────────────────────────────────────────────────
+const DB = {
+  GUILD_CFG:  'guild_configs',  // all per-guild config Maps
+  WARNS:      'warns',          // warnings per user per guild
+  XP:         'xp',            // XP / leveling data
+  GIVEAWAYS:  'giveaways',     // active giveaways
+  STICKY:     'sticky',        // sticky messages
+  REMINDERS:  'reminders',     // user reminders
+  BIRTHDAYS:  'birthdays',     // birthday data
+  MODSTATS:   'modstats',      // ban/kick/mute stats per mod
+  BOOSTER:    'booster_state', // booster protection state
+  MASSDM:     'massdm',        // active massDM job
+  BOT_CFG:    'bot_config',    // global bot config (perks, messages)
+  CASES:      'cases',         // mod cases
+  ECONOMY:    'economy',       // economy balances
+  AFK:        'afk',           // AFK users
+  POLLS:      'polls',         // poll data
+  TODOS:      'todos',         // todo lists
+  TAGS:       'tags',          // server tags
+  HIGHLIGHTS: 'highlights',    // word highlights
+  TEMPBANS:   'temp_bans',     // temp bans
+  STATS:      'server_stats',  // server join/leave/ban stats
+  MUTE_HIST:  'mute_history',  // mute history per user
+  CH_PERMS:   'channel_perms', // saved channel permission snapshots
+};
+
+// ── Build the full guild config snapshot ─────────────────────────────────────
 function buildConfigSnapshot() {
   return {
     perksSystemConfig: { ...perksSystemConfig },
     customMessages:    { ...customMessages },
-    antiMinorsConfig,
-    antinukeConfig,
-    antiraidConfig,
-    autoroles,
-    welcomeConfig,
-    goodbyeConfig,
-    pingOnJoinConfig,
-    embedColors,
-    ticketConfig,
-    filterConfig,
-    modlogChannel,
-    levelingEnabled,
-    vanityLock,
-    muteRole,
-    birthdayChannel,
-    logEvents,
-    reactionRoles,
-    customCommands,
-    disabledCommands,
-    aliases,
-    reactionTriggers,
-    counters,
-    automodExempt,
-    warnThresholds,
-    userTimezones,
+    antiMinorsConfig, antinukeConfig, antiraidConfig,
+    autoroles, welcomeConfig, goodbyeConfig, pingOnJoinConfig,
+    embedColors, ticketConfig, filterConfig, modlogChannel,
+    levelingEnabled, vanityLock, muteRole, birthdayChannel,
+    logEvents, reactionRoles, customCommands, disabledCommands,
+    aliases, reactionTriggers, counters, automodExempt,
+    warnThresholds, userTimezones, confessions, appealConfig,
+    medicConfig, fakePerms, pingRoles, starboardConfig,
+    bumpReminder, joinToCreate, boosterRoles, ignoreList,
+    blacklistWords, autoResponders,
   };
 }
 
-// Save all configs to Discord channel
-async function saveAllConfigs() {
-  try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
+// ── Convenience save triggers (call these wherever data changes) ──────────────
+function saveAllConfigs()  { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot); }
+function saveWarns()       { scheduleSave(DB.WARNS,      () => warns,          1500); }
+function saveXP()          { scheduleSave(DB.XP,         () => xpData,         8000); }
+function saveGiveaways()   { scheduleSave(DB.GIVEAWAYS,  () => giveaways); }
+function saveSticky()      { scheduleSave(DB.STICKY,     () => stickyMessages); }
+function saveReminders()   { scheduleSave(DB.REMINDERS,  () => remindersData); }
+function saveBirthdays()   { scheduleSave(DB.BIRTHDAYS,  () => birthdayData); }
+function saveModStats()    { scheduleSave(DB.MODSTATS,   () => banStats,       2000); }
+function saveBooster()     { scheduleSave(DB.BOOSTER,    () => ({ manuallyRemoved: manuallyRemovedBoosterRole, hidden: hiddenPaidPerksChannels, recent: recentBoosters })); }
+function saveMassDM()      { scheduleSave(DB.MASSDM,     () => activeMassDM); }
+function saveBotCfg()      { scheduleSave(DB.BOT_CFG,    () => ({ perksSystemConfig, customMessages })); }
+function saveCases()       { scheduleSave(DB.CASES,      () => ({ cases, caseCounter })); }
+function saveEconomy()     { scheduleSave(DB.ECONOMY,    () => economy,        5000); }
+function saveAFK()         { scheduleSave(DB.AFK,        () => afkUsers); }
+function savePolls()       { scheduleSave(DB.POLLS,      () => pollData); }
+function saveTodos()       { scheduleSave(DB.TODOS,      () => todoLists); }
+function saveTags()        { scheduleSave(DB.TAGS,       () => tagData); }
+function saveHighlights()  { scheduleSave(DB.HIGHLIGHTS, () => highlights); }
+function saveTempBans()    { scheduleSave(DB.TEMPBANS,   () => tempBans); }
+function saveStats()       { scheduleSave(DB.STATS,      () => serverStats); }
+function saveMuteHist()    { scheduleSave(DB.MUTE_HIST,  () => muteHistory); }
+function saveChPerms()     { scheduleSave(DB.CH_PERMS,   () => channelPerms); }
 
-    const content = `\`\`\`json\n${CONFIG_MESSAGE_TAG}\n${serialize(buildConfigSnapshot())}\n\`\`\``;
+// ── Load ALL data from DB on startup ─────────────────────────────────────────
+async function loadAllData() {
+  console.log('[DB] Loading all data from Railway PostgreSQL...');
 
-    if (_configMessageId) {
-      // Edit existing message
-      const msg = await ch.messages.fetch(_configMessageId).catch(() => null);
-      if (msg) {
-        await msg.edit(content).catch(() => {});
-        return;
-      }
-    }
+  const keys    = Object.values(DB);
+  const results = await Promise.all(keys.map(k => dbGet(k)));
+  const d       = Object.fromEntries(keys.map((k, i) => [k, results[i]]));
 
-    // No existing message -- find it or create new one
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (messages) {
-      const existing = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-      if (existing) {
-        _configMessageId = existing.id;
-        await existing.edit(content).catch(() => {});
-        return;
-      }
-    }
-
-    // Create new message
-    const sent = await ch.send(content).catch(() => null);
-    if (sent) _configMessageId = sent.id;
-  } catch (e) {
-    console.error("[Config] Failed to save:", e.message);
+  // Helper: restore a Map from saved data
+  function rm(saved, target, transform) {
+    if (!saved || !(saved instanceof Map)) return;
+    target.clear();
+    saved.forEach((v, k) => target.set(k, transform ? transform(v) : v));
   }
+
+  // Helper: ensure certain fields are proper Sets (not plain arrays after deserialize)
+  function fixSetFields(obj, ...fields) {
+    if (!obj || typeof obj !== 'object') return obj;
+    for (const f of fields) {
+      if (obj[f] !== undefined && !(obj[f] instanceof Set))
+        obj[f] = new Set(Array.isArray(obj[f]) ? obj[f] : []);
+    }
+    return obj;
+  }
+
+  // ── Guild configs ──────────────────────────────────────────────────────────
+  const cfg = d[DB.GUILD_CFG];
+  if (cfg) {
+    if (cfg.antiMinorsConfig instanceof Map)  { antiMinorsConfig.clear();  cfg.antiMinorsConfig.forEach((v,k) => antiMinorsConfig.set(k, fixSetFields(v,'channels','requireAttach','whitelist'))); }
+    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => antinukeConfig.set(k, v)); }
+    if (cfg.antiraidConfig instanceof Map)    { antiraidConfig.clear();    cfg.antiraidConfig.forEach((v,k)   => antiraidConfig.set(k, v)); }
+    if (cfg.autoroles instanceof Map)         { autoroles.clear();         cfg.autoroles.forEach((v,k)        => autoroles.set(k, v)); }
+    if (cfg.welcomeConfig instanceof Map)     { welcomeConfig.clear();     cfg.welcomeConfig.forEach((v,k)    => welcomeConfig.set(k, v)); }
+    if (cfg.goodbyeConfig instanceof Map)     { goodbyeConfig.clear();     cfg.goodbyeConfig.forEach((v,k)    => goodbyeConfig.set(k, v)); }
+    if (cfg.pingOnJoinConfig instanceof Map)  { pingOnJoinConfig.clear();  cfg.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k, v)); }
+    if (cfg.embedColors instanceof Map)       { embedColors.clear();       cfg.embedColors.forEach((v,k)      => embedColors.set(k, v)); }
+    if (cfg.ticketConfig instanceof Map)      { ticketConfig.clear();      cfg.ticketConfig.forEach((v,k)     => ticketConfig.set(k, v)); }
+    if (cfg.filterConfig instanceof Map)      { filterConfig.clear();      cfg.filterConfig.forEach((v,k)     => filterConfig.set(k, fixSetFields(v,'channels','whitelist'))); }
+    if (cfg.modlogChannel instanceof Map)     { modlogChannel.clear();     cfg.modlogChannel.forEach((v,k)    => modlogChannel.set(k, v)); }
+    if (cfg.levelingEnabled instanceof Map)   { levelingEnabled.clear();   cfg.levelingEnabled.forEach((v,k)  => levelingEnabled.set(k, v)); }
+    if (cfg.vanityLock instanceof Map)        { vanityLock.clear();        cfg.vanityLock.forEach((v,k)       => vanityLock.set(k, v)); }
+    if (cfg.muteRole instanceof Map)          { muteRole.clear();          cfg.muteRole.forEach((v,k)         => muteRole.set(k, v)); }
+    if (cfg.birthdayChannel instanceof Map)   { birthdayChannel.clear();   cfg.birthdayChannel.forEach((v,k)  => birthdayChannel.set(k, v)); }
+    if (cfg.logEvents instanceof Map)         { logEvents.clear();         cfg.logEvents.forEach((v,k)        => logEvents.set(k, v)); }
+    if (cfg.reactionRoles instanceof Map)     { reactionRoles.clear();     cfg.reactionRoles.forEach((v,k)    => reactionRoles.set(k, v)); }
+    if (cfg.customCommands instanceof Map)    { customCommands.clear();    cfg.customCommands.forEach((v,k)   => customCommands.set(k, v)); }
+    if (cfg.disabledCommands instanceof Map)  { disabledCommands.clear();  cfg.disabledCommands.forEach((v,k) => disabledCommands.set(k, v)); }
+    if (cfg.aliases instanceof Map)           { aliases.clear();           cfg.aliases.forEach((v,k)          => aliases.set(k, v)); }
+    if (cfg.reactionTriggers instanceof Map)  { reactionTriggers.clear();  cfg.reactionTriggers.forEach((v,k) => reactionTriggers.set(k, v)); }
+    if (cfg.counters instanceof Map)          { counters.clear();          cfg.counters.forEach((v,k)         => counters.set(k, v)); }
+    if (cfg.automodExempt instanceof Map)     { automodExempt.clear();     cfg.automodExempt.forEach((v,k)    => automodExempt.set(k, fixSetFields(v,'roles','channels'))); }
+    if (cfg.warnThresholds instanceof Map)    { warnThresholds.clear();    cfg.warnThresholds.forEach((v,k)   => warnThresholds.set(k, v)); }
+    if (cfg.userTimezones instanceof Map)     { userTimezones.clear();     cfg.userTimezones.forEach((v,k)    => userTimezones.set(k, v)); }
+    if (cfg.confessions instanceof Map)       { confessions.clear();       cfg.confessions.forEach((v,k)      => confessions.set(k, v)); }
+    if (cfg.appealConfig instanceof Map)      { appealConfig.clear();      cfg.appealConfig.forEach((v,k)     => appealConfig.set(k, v)); }
+    if (cfg.medicConfig instanceof Map)       { medicConfig.clear();       cfg.medicConfig.forEach((v,k)      => medicConfig.set(k, v)); }
+    if (cfg.fakePerms instanceof Map)         { fakePerms.clear();         cfg.fakePerms.forEach((v,k)        => fakePerms.set(k, v)); }
+    if (cfg.pingRoles instanceof Map)         { pingRoles.clear();         cfg.pingRoles.forEach((v,k)        => pingRoles.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.starboardConfig instanceof Map)   { starboardConfig.clear();   cfg.starboardConfig.forEach((v,k)  => starboardConfig.set(k, v)); }
+    if (cfg.bumpReminder instanceof Map)      { bumpReminder.clear();      cfg.bumpReminder.forEach((v,k)     => bumpReminder.set(k, v)); }
+    if (cfg.joinToCreate instanceof Map)      { joinToCreate.clear();      cfg.joinToCreate.forEach((v,k)     => joinToCreate.set(k, v)); }
+    if (cfg.boosterRoles instanceof Map)      { boosterRoles.clear();      cfg.boosterRoles.forEach((v,k)     => boosterRoles.set(k, v)); }
+    if (cfg.ignoreList instanceof Map)        { ignoreList.clear();        cfg.ignoreList.forEach((v,k)       => ignoreList.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.blacklistWords instanceof Map)    { blacklistWords.clear();    cfg.blacklistWords.forEach((v,k)   => blacklistWords.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.autoResponders instanceof Map)    { autoResponders.clear();    cfg.autoResponders.forEach((v,k)   => autoResponders.set(k, v)); }
+    if (cfg.perksSystemConfig && typeof cfg.perksSystemConfig === 'object') Object.assign(perksSystemConfig, cfg.perksSystemConfig);
+    if (cfg.customMessages    && typeof cfg.customMessages    === 'object') Object.assign(customMessages, cfg.customMessages);
+    console.log('[DB] ✅ guild_configs restored');
+  }
+
+  // ── Warnings ───────────────────────────────────────────────────────────────
+  if (d[DB.WARNS] instanceof Map) {
+    warns.clear();
+    d[DB.WARNS].forEach((v, k) => warns.set(k, v));
+    console.log(`[DB] ✅ warns restored (${warns.size} guilds)`);
+  }
+
+  // ── XP / Leveling ──────────────────────────────────────────────────────────
+  if (d[DB.XP] instanceof Map) {
+    xpData.clear();
+    d[DB.XP].forEach((v, k) => xpData.set(k, v));
+    console.log(`[DB] ✅ xp restored (${xpData.size} guilds)`);
+  }
+
+  // ── Giveaways ──────────────────────────────────────────────────────────────
+  if (d[DB.GIVEAWAYS] instanceof Map) {
+    giveaways.clear();
+    d[DB.GIVEAWAYS].forEach((v, k) => giveaways.set(k, v));
+    console.log(`[DB] ✅ giveaways restored (${giveaways.size} active)`);
+  }
+
+  // ── Sticky messages ────────────────────────────────────────────────────────
+  if (d[DB.STICKY] instanceof Map) {
+    stickyMessages.clear();
+    d[DB.STICKY].forEach((v, k) => stickyMessages.set(k, v));
+    console.log(`[DB] ✅ sticky restored (${stickyMessages.size})`);
+  }
+
+  // ── Reminders ──────────────────────────────────────────────────────────────
+  if (d[DB.REMINDERS] instanceof Map) {
+    remindersData.clear();
+    d[DB.REMINDERS].forEach((v, k) => remindersData.set(k, v));
+    console.log(`[DB] ✅ reminders restored (${remindersData.size} users)`);
+  }
+
+  // ── Birthdays ──────────────────────────────────────────────────────────────
+  if (d[DB.BIRTHDAYS] instanceof Map) {
+    birthdayData.clear();
+    d[DB.BIRTHDAYS].forEach((v, k) => birthdayData.set(k, v));
+    console.log(`[DB] ✅ birthdays restored (${birthdayData.size})`);
+  }
+
+  // ── Mod stats ──────────────────────────────────────────────────────────────
+  if (d[DB.MODSTATS] && typeof d[DB.MODSTATS] === 'object') {
+    Object.assign(banStats, d[DB.MODSTATS]);
+    console.log('[DB] ✅ modstats restored');
+  }
+
+  // ── Booster state ──────────────────────────────────────────────────────────
+  if (d[DB.BOOSTER]) {
+    const bs = d[DB.BOOSTER];
+    if (bs.manuallyRemoved instanceof Set) {
+      manuallyRemovedBoosterRole.clear();
+      bs.manuallyRemoved.forEach(id => manuallyRemovedBoosterRole.add(id));
+    }
+    if (bs.hidden instanceof Set) {
+      hiddenPaidPerksChannels.clear();
+      bs.hidden.forEach(id => hiddenPaidPerksChannels.add(id));
+    }
+    if (bs.recent instanceof Set) {
+      recentBoosters.clear();
+      bs.recent.forEach(id => recentBoosters.add(id));
+    }
+    console.log('[DB] ✅ booster_state restored');
+  }
+
+  // ── Active massDM job ──────────────────────────────────────────────────────
+  if (d[DB.MASSDM] && typeof d[DB.MASSDM] === 'object') {
+    activeMassDM = d[DB.MASSDM];
+    console.log('[DB] ✅ massdm state restored — will resume');
+  }
+
+  // ── Global bot config ──────────────────────────────────────────────────────
+  if (d[DB.BOT_CFG]) {
+    if (d[DB.BOT_CFG].perksSystemConfig) Object.assign(perksSystemConfig, d[DB.BOT_CFG].perksSystemConfig);
+    if (d[DB.BOT_CFG].customMessages)    Object.assign(customMessages,    d[DB.BOT_CFG].customMessages);
+    console.log('[DB] ✅ bot_config restored');
+  }
+
+  // ── Mod cases ──────────────────────────────────────────────────────────────
+  if (d[DB.CASES]) {
+    if (d[DB.CASES].cases instanceof Map)       { cases.clear();       d[DB.CASES].cases.forEach((v,k)       => cases.set(k, v)); }
+    if (d[DB.CASES].caseCounter instanceof Map) { caseCounter.clear(); d[DB.CASES].caseCounter.forEach((v,k) => caseCounter.set(k, v)); }
+    console.log('[DB] ✅ cases restored');
+  }
+
+  // ── Economy ────────────────────────────────────────────────────────────────
+  if (d[DB.ECONOMY] instanceof Map) {
+    economy.clear();
+    d[DB.ECONOMY].forEach((v, k) => economy.set(k, v));
+    console.log(`[DB] ✅ economy restored (${economy.size} users)`);
+  }
+
+  // ── AFK ────────────────────────────────────────────────────────────────────
+  if (d[DB.AFK] instanceof Map) {
+    afkUsers.clear();
+    d[DB.AFK].forEach((v, k) => afkUsers.set(k, v));
+    console.log(`[DB] ✅ afk restored (${afkUsers.size})`);
+  }
+
+  // ── Polls ──────────────────────────────────────────────────────────────────
+  if (d[DB.POLLS] instanceof Map) {
+    pollData.clear();
+    d[DB.POLLS].forEach((v, k) => {
+      if (v?.votes && !(v.votes instanceof Map)) v.votes = new Map(Object.entries(v.votes));
+      pollData.set(k, v);
+    });
+    console.log(`[DB] ✅ polls restored (${pollData.size})`);
+  }
+
+  // ── Todos ──────────────────────────────────────────────────────────────────
+  if (d[DB.TODOS] instanceof Map) {
+    todoLists.clear();
+    d[DB.TODOS].forEach((v, k) => todoLists.set(k, v));
+    console.log(`[DB] ✅ todos restored (${todoLists.size})`);
+  }
+
+  // ── Tags ───────────────────────────────────────────────────────────────────
+  if (d[DB.TAGS] instanceof Map) {
+    tagData.clear();
+    d[DB.TAGS].forEach((v, k) => tagData.set(k, v));
+    console.log(`[DB] ✅ tags restored (${tagData.size})`);
+  }
+
+  // ── Highlights ─────────────────────────────────────────────────────────────
+  if (d[DB.HIGHLIGHTS] instanceof Map) {
+    highlights.clear();
+    d[DB.HIGHLIGHTS].forEach((v, k) => highlights.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : [])));
+    console.log(`[DB] ✅ highlights restored (${highlights.size})`);
+  }
+
+  // ── Temp bans ──────────────────────────────────────────────────────────────
+  if (d[DB.TEMPBANS] instanceof Map) {
+    tempBans.clear();
+    d[DB.TEMPBANS].forEach((v, k) => tempBans.set(k, v));
+    console.log(`[DB] ✅ temp_bans restored (${tempBans.size})`);
+  }
+
+  // ── Server stats ───────────────────────────────────────────────────────────
+  if (d[DB.STATS] instanceof Map) {
+    serverStats.clear();
+    d[DB.STATS].forEach((v, k) => serverStats.set(k, v));
+    console.log(`[DB] ✅ server_stats restored (${serverStats.size} guilds)`);
+  }
+
+  // ── Mute history ───────────────────────────────────────────────────────────
+  if (d[DB.MUTE_HIST] instanceof Map) {
+    muteHistory.clear();
+    d[DB.MUTE_HIST].forEach((v, k) => muteHistory.set(k, v));
+    console.log(`[DB] ✅ mute_history restored (${muteHistory.size})`);
+  }
+
+  // ── Channel perms ──────────────────────────────────────────────────────────
+  if (d[DB.CH_PERMS] instanceof Map) {
+    channelPerms.clear();
+    d[DB.CH_PERMS].forEach((v, k) => channelPerms.set(k, v));
+    console.log(`[DB] ✅ channel_perms restored (${channelPerms.size})`);
+  }
+
+  console.log('[DB] ✅ All data loaded from Railway PostgreSQL');
 }
 
-// Load configs from Discord channel on startup
-async function loadAllConfigs() {
-  try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) { console.log("[Config] Config channel not found, starting fresh"); return; }
+// ── Auto-save every 60 seconds (safety net — catches any missed save triggers) ─
+setInterval(async () => {
+  // Only save if not already queued (don't duplicate work)
+  if (!_saveQueue.has(DB.GUILD_CFG))  saveAllConfigs();
+  if (!_saveQueue.has(DB.WARNS))      saveWarns();
+  if (!_saveQueue.has(DB.XP))         saveXP();
+  if (!_saveQueue.has(DB.GIVEAWAYS))  saveGiveaways();
+  if (!_saveQueue.has(DB.STICKY))     saveSticky();
+  if (!_saveQueue.has(DB.REMINDERS))  saveReminders();
+  if (!_saveQueue.has(DB.BIRTHDAYS))  saveBirthdays();
+  if (!_saveQueue.has(DB.MODSTATS))   saveModStats();
+  if (!_saveQueue.has(DB.BOOSTER))    saveBooster();
+  if (!_saveQueue.has(DB.MASSDM))     saveMassDM();
+  if (!_saveQueue.has(DB.BOT_CFG))    saveBotCfg();
+  if (!_saveQueue.has(DB.CASES))      saveCases();
+  if (!_saveQueue.has(DB.ECONOMY))    saveEconomy();
+  if (!_saveQueue.has(DB.AFK))        saveAFK();
+  if (!_saveQueue.has(DB.POLLS))      savePolls();
+  if (!_saveQueue.has(DB.TODOS))      saveTodos();
+  if (!_saveQueue.has(DB.TAGS))       saveTags();
+  if (!_saveQueue.has(DB.HIGHLIGHTS)) saveHighlights();
+  if (!_saveQueue.has(DB.TEMPBANS))   saveTempBans();
+  if (!_saveQueue.has(DB.STATS))      saveStats();
+  if (!_saveQueue.has(DB.MUTE_HIST))  saveMuteHist();
+  if (!_saveQueue.has(DB.CH_PERMS))   saveChPerms();
+}, 60 * 1000);
 
-    const messages = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (!messages) return;
 
-    const configMsg = messages.find(m => m.author.id === client.user.id && m.content.includes(CONFIG_MESSAGE_TAG));
-    if (!configMsg) { console.log("[Config] No saved config found, starting fresh"); return; }
-
-    _configMessageId = configMsg.id;
-
-    // Extract JSON from codeblock
-    const match = configMsg.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
-    if (!match) return;
-
-    const data = deserialize(match[1]);
-
-    // Restore each config -- ensure Sets/Maps are valid
-    function restoreMap(saved, defaultVal) {
-      if (!saved) return defaultVal;
-      if (saved instanceof Map) return saved;
-      return defaultVal;
-    }
-
-    function ensureSetInMap(map) {
-      for (const [key, val] of map.entries()) {
-        if (val && typeof val === 'object') {
-          if (val.channels && !(val.channels instanceof Set)) val.channels = new Set(Array.isArray(val.channels) ? val.channels : []);
-          if (val.requireAttach && !(val.requireAttach instanceof Set)) val.requireAttach = new Set(Array.isArray(val.requireAttach) ? val.requireAttach : []);
-          if (val.whitelist && !(val.whitelist instanceof Set)) val.whitelist = new Set(Array.isArray(val.whitelist) ? val.whitelist : []);
-        }
-      }
-      return map;
-    }
-
-    if (data.antiMinorsConfig instanceof Map) { antiMinorsConfig.clear(); ensureSetInMap(data.antiMinorsConfig).forEach((v,k) => antiMinorsConfig.set(k,v)); }
-    if (data.antinukeConfig instanceof Map) { antinukeConfig.clear(); ensureSetInMap(data.antinukeConfig).forEach((v,k) => antinukeConfig.set(k,v)); }
-    if (data.antiraidConfig instanceof Map) { antiraidConfig.clear(); data.antiraidConfig.forEach((v,k) => antiraidConfig.set(k,v)); }
-    if (data.autoroles instanceof Map) { autoroles.clear(); data.autoroles.forEach((v,k) => autoroles.set(k,v)); }
-    if (data.welcomeConfig instanceof Map) { welcomeConfig.clear(); data.welcomeConfig.forEach((v,k) => welcomeConfig.set(k,v)); }
-    if (data.goodbyeConfig instanceof Map) { goodbyeConfig.clear(); data.goodbyeConfig.forEach((v,k) => goodbyeConfig.set(k,v)); }
-    if (data.pingOnJoinConfig instanceof Map) { pingOnJoinConfig.clear(); data.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k,v)); }
-    if (data.embedColors instanceof Map) { embedColors.clear(); data.embedColors.forEach((v,k) => embedColors.set(k,v)); }
-    if (data.ticketConfig instanceof Map) { ticketConfig.clear(); data.ticketConfig.forEach((v,k) => ticketConfig.set(k,v)); }
-    if (data.filterConfig instanceof Map) { filterConfig.clear(); data.filterConfig.forEach((v,k) => filterConfig.set(k,v)); }
-    if (data.modlogChannel instanceof Map) { modlogChannel.clear(); data.modlogChannel.forEach((v,k) => modlogChannel.set(k,v)); }
-    if (data.levelingEnabled instanceof Map) { levelingEnabled.clear(); data.levelingEnabled.forEach((v,k) => levelingEnabled.set(k,v)); }
-    if (data.vanityLock instanceof Map) { vanityLock.clear(); data.vanityLock.forEach((v,k) => vanityLock.set(k,v)); }
-    if (data.muteRole instanceof Map) { muteRole.clear(); data.muteRole.forEach((v,k) => muteRole.set(k,v)); }
-    if (data.birthdayChannel instanceof Map) { birthdayChannel.clear(); data.birthdayChannel.forEach((v,k) => birthdayChannel.set(k,v)); }
-    if (data.logEvents instanceof Map) { logEvents.clear(); data.logEvents.forEach((v,k) => logEvents.set(k,v)); }
-    if (data.reactionRoles instanceof Map) { reactionRoles.clear(); data.reactionRoles.forEach((v,k) => reactionRoles.set(k,v)); }
-    if (data.customCommands instanceof Map) { customCommands.clear(); data.customCommands.forEach((v,k) => customCommands.set(k,v)); }
-    if (data.disabledCommands instanceof Map) { disabledCommands.clear(); data.disabledCommands.forEach((v,k) => disabledCommands.set(k,v)); }
-    if (data.aliases instanceof Map) { aliases.clear(); data.aliases.forEach((v,k) => aliases.set(k,v)); }
-    if (data.reactionTriggers instanceof Map) { reactionTriggers.clear(); data.reactionTriggers.forEach((v,k) => reactionTriggers.set(k,v)); }
-    if (data.counters instanceof Map) { counters.clear(); data.counters.forEach((v,k) => counters.set(k,v)); }
-    if (data.automodExempt instanceof Map) { automodExempt.clear(); data.automodExempt.forEach((v,k) => automodExempt.set(k,v)); }
-    if (data.warnThresholds instanceof Map) { warnThresholds.clear(); data.warnThresholds.forEach((v,k) => warnThresholds.set(k,v)); }
-    if (data.userTimezones instanceof Map) { userTimezones.clear(); data.userTimezones.forEach((v,k) => userTimezones.set(k,v)); }
-    if (data.perksSystemConfig && typeof data.perksSystemConfig === 'object') Object.assign(perksSystemConfig, data.perksSystemConfig);
-    if (data.customMessages    && typeof data.customMessages === 'object')    Object.assign(customMessages, data.customMessages);
-
-    console.log("[Config] ✅ All configs restored from Discord");
-  } catch (e) {
-    console.error("[Config] Failed to load:", e.message);
-  }
-}
-
-// Auto-save every 2 minutes as backup
-setInterval(() => saveAllConfigs(), 2 * 60 * 1000);
 
 
 // ===================================================
@@ -596,30 +885,35 @@ async function checkAllTargetMembers() {
 client.once("clientReady", async () => {
   log(`Logged in as ${client.user.username}`, "success");
 
-  // Load all configs from Discord backup channel
-  await loadAllConfigs();
+  // 1. Connect to Railway PostgreSQL and load all persisted data
+  await initDB();
+  await loadAllData();
 
-  // Re-register any open tickets from before restart
+  // 2. Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
 
-  // Resume mass DM if it was in progress before restart
+  // 3. Resume mass DM if it was in progress before restart
   setTimeout(() => resumeMassDMIfNeeded(), 5000);
 
   try {
-    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
-    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+    const sourceGuild = await client.guilds.fetch(perksSystemConfig.sourceGuildId);
+    const targetGuild = await client.guilds.fetch(perksSystemConfig.targetGuildId);
 
     log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
 
-    // Load ban history in background (non-blocking) so bot starts instantly
-    (async () => {
-      for (const guild of [sourceGuild, targetGuild]) {
-        log(`Loading ban history from audit logs for ${guild.name}...`, "info");
-        banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
-        const total = Object.values(banStats[guild.id]).reduce((sum, m) => sum + m.bans, 0);
-        log(`Loaded ${total} historical bans for ${guild.name}`, "success");
-      }
-    })();
+    // Load ban history from audit logs ONLY if modstats was empty in DB
+    // (avoids overwriting real DB data with incomplete audit log snapshots)
+    if (!banStats[sourceGuild.id] && !banStats[targetGuild.id]) {
+      (async () => {
+        for (const guild of [sourceGuild, targetGuild]) {
+          log(`Loading ban history from audit logs for ${guild.name}...`, "info");
+          banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
+          const total = Object.values(banStats[guild.id]).reduce((s, m) => s + m.bans, 0);
+          log(`Loaded ${total} historical bans for ${guild.name}`, "success");
+        }
+        saveModStats();
+      })();
+    }
 
     log("Running initial member check...", "info");
     await checkAllTargetMembers();
@@ -630,7 +924,6 @@ client.once("clientReady", async () => {
 
   startVanityMonitor();
 
-  // Set Twitch streaming status (purple dot)
   client.user.setPresence({
     status: "online",
     activities: [{
@@ -639,10 +932,6 @@ client.once("clientReady", async () => {
       url: "https://www.twitch.tv/sensational"
     }]
   });
-
-  // Auto-save all configs every 60 seconds
-  // Also save immediately on startup in case of new defaults
-  setTimeout(saveAllConfigs, 5000);
 });
 
 // ===== MEMBER JOINS TARGET SERVER =====
@@ -686,11 +975,13 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const hasCustomRole = newMember.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID);
   if (hadCustomRole && !hasCustomRole) {
     manuallyRemovedBoosterRole.add(newMember.id);
+  saveBooster();
     log(`Custom booster role manually removed from ${newMember.user.username} — will not re-add`, "info");
   }
   // If re-added manually, clear the flag
   if (!hadCustomRole && hasCustomRole) {
     manuallyRemovedBoosterRole.delete(newMember.id);
+  saveBooster();
   }
 
   // Detect role self-assignment with Administrator perms -> ban
@@ -938,6 +1229,7 @@ client.on("guildBanAdd", async (ban) => {
     banStats[guildId][modId].username = modTag;
     banStats[guildId][modId].actions += 1;
     banStats[guildId][modId].bans += 1;
+    saveModStats();
     log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
   } catch (error) {
     log(`Failed to track ban: ${error.message}`, "error");
@@ -1142,6 +1434,7 @@ client.on("messageCreate", async (message) => {
     message.channel.send({ embeds: [{ color: PINK, description: `◈ ${message.author} reached level **${data.level}**! 🎉` }] }).catch(() => {});
   }
   xpData.set(key, data);
+    saveXP();
 });
 
 // ===== WELCOME / GOODBYE / AUTOROLE =====
@@ -1220,6 +1513,7 @@ setInterval(() => {
     });
     if (remaining.length === 0) remindersData.delete(userId);
     else remindersData.set(userId, remaining);
+    saveReminders();
   }
 }, 10000);
 
@@ -1230,6 +1524,7 @@ setInterval(async () => {
     if (gw.ended || gw.endTime > now) continue;
     gw.ended = true;
     giveaways.set(msgId, gw);
+  saveGiveaways();
     try {
       const guild = await client.guilds.fetch(gw.guildId);
       const channel = await guild.channels.fetch(gw.channelId);
@@ -3226,6 +3521,7 @@ client.on("messageCreate", async (message) => {
     if (index < 0 || index >= list.length) return err(message, "Invalid warning number.");
     list.splice(index, 1);
     warns.set(key, list);
+    saveWarns();
     return ok(message, `Deleted warning **#${index + 1}** for **${target.username}**`);
   }
 
@@ -3242,6 +3538,7 @@ client.on("messageCreate", async (message) => {
     const list = warns.get(key) || [];
     list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
     warns.set(key, list);
+    saveWarns();
     ok(message, `warned **${target.username}** (${list.length} warns) | ${reason}`);
     target.send({ embeds: [{ color: PINK, title: "⚠️ Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
     return;
@@ -3307,6 +3604,7 @@ client.on("messageCreate", async (message) => {
     if (isNaN(level)) return err(message, "Invalid level.");
     const key = `${message.guild.id}-${target.id}`;
     xpData.set(key, { xp: 0, level });
+    saveXP();
     return ok(message, `Set **${target.user.username}**'s level to **${level}**`);
   }
 
@@ -3339,6 +3637,7 @@ client.on("messageCreate", async (message) => {
     }
     const current = economy.get(message.author.id) || 0;
     economy.set(message.author.id, current + 500);
+    saveEconomy();
     economy.set(key, now);
     return ok(message, `You claimed your daily **500 coins**! Balance: **${current + 500}**`);
   }
@@ -3410,6 +3709,7 @@ client.on("messageCreate", async (message) => {
     const list = remindersData.get(message.author.id) || [];
     list.push({ time: Date.now() + ms, text, channelId: message.channel.id });
     remindersData.set(message.author.id, list);
+    saveReminders();
     return info(message, `⏰ I'll remind you in **${timeStr}**: ${text}`);
   }
 
@@ -3439,6 +3739,7 @@ client.on("messageCreate", async (message) => {
     const msg = await message.channel.send({ embeds: [embed] });
     await msg.react("🎉");
     giveaways.set(msg.id, { prize, endTime, entries: [], channelId: message.channel.id, guildId: message.guild.id, ended: false });
+    saveGiveaways();
     message.delete().catch(() => {});
   }
 
@@ -3702,6 +4003,7 @@ client.on("messageCreate", async (message) => {
   if (command === "afk") {
     const reason = args.slice(1).join(" ") || "AFK";
     afkUsers.set(`${message.guild.id}-${message.author.id}`, reason);
+    saveAFK();
     return info(message, `you're now **afk** with the status: **${reason}**`);
   }
 
@@ -3833,6 +4135,7 @@ async function clearMassDMProgress() {
     if (existing) await existing.delete().catch(() => {});
   } catch {}
   activeMassDM = null;
+  saveMassDM();
 }
 
 async function resumeMassDMIfNeeded() {
@@ -6062,6 +6365,7 @@ function nextCase(guildId) {
 function addCase(guildId, type, userId, modId, reason) {
   const id = nextCase(guildId);
   cases.set(`${guildId}-${id}`, { id, type, userId, modId, reason, date: new Date().toISOString() });
+  saveCases();
   return id;
 }
 
@@ -6125,6 +6429,7 @@ client.on("messageCreate", async (message) => {
   const newMsg = await message.channel.send(sticky.content).catch(() => null);
   if (newMsg) sticky.msgId = newMsg.id;
   stickyMessages.set(message.channel.id, sticky);
+    saveSticky();
 });
 
 // -- AUTO RESPONDERS ----------------------------------
@@ -6175,6 +6480,7 @@ setInterval(async () => {
     if (bd.day === day && bd.month === month && bd.announcedYear !== now.getFullYear()) {
       bd.announcedYear = now.getFullYear();
       birthdayData.set(userId, bd);
+    saveBirthdays();
       // Announce in all guilds where this user is
       for (const [guildId, channelId] of birthdayChannel.entries()) {
         const guild = client.guilds.cache.get(guildId);
@@ -6290,6 +6596,7 @@ client.on("messageCreate", async (message) => {
     if (!c) return err(message, `Case #${id} not found.`);
     c.reason = reason;
     cases.set(`${guildId}-${id}`, c);
+  saveCases();
     return ok(message, `Case #${id} reason updated.`);
   }
 
@@ -6429,12 +6736,14 @@ client.on("messageCreate", async (message) => {
       const list = autoResponders.get(guildId) || [];
       list.push({ trigger, response, exact });
       autoResponders.set(guildId, list);
+    saveAllConfigs();
       return ok(message, `auto responder added: \`${trigger}\` → \`${response}\``);
     }
     if (sub === "remove") {
       const trigger = args.slice(2).join(" ");
       const list = (autoResponders.get(guildId) || []).filter(r => r.trigger !== trigger);
       autoResponders.set(guildId, list);
+    saveAllConfigs();
       return ok(message, `auto responder \`${trigger}\` removed.`);
     }
     if (sub === "list") {
@@ -6491,6 +6800,7 @@ client.on("messageCreate", async (message) => {
     const sub = args[1]?.toLowerCase();
     if (sub === "off" || sub === "remove") {
       stickyMessages.delete(message.channel.id);
+    saveSticky();
       return ok(message, "Sticky message removed.");
     }
     const content = args.slice(1).join(" ");
@@ -6498,6 +6808,7 @@ client.on("messageCreate", async (message) => {
 
     const msg = await message.channel.send(content);
     stickyMessages.set(message.channel.id, { content, msgId: msg.id });
+    saveSticky();
     message.delete().catch(() => {});
   }
 
@@ -6667,6 +6978,7 @@ client.on("messageCreate", async (message) => {
       if (isNaN(day) || isNaN(month) || day < 1 || day > 31 || month < 1 || month > 12) return err(message, "missing required argument");
 
       birthdayData.set(message.author.id, { day, month });
+    saveBirthdays();
       saveAllConfigs();return ok(message, `Birthday set to **${day}/${month}** 🎂`);
     }
     if (sub === "remove") {
@@ -7433,6 +7745,7 @@ client.on("messageCreate", async (message) => {
     const msg = await message.channel.send({ embeds: [{ color: PINK, title: `📊 ${question}`, description: desc, footer: { text: "React to vote!" } }] });
     for (let i = 0; i < options.length; i++) await msg.react(emojis[i]);
     pollData.set(msg.id, { question, options, votes: new Map() });
+    savePolls();
     message.delete().catch(() => {});
   }
 
@@ -7469,12 +7782,14 @@ client.on("messageCreate", async (message) => {
       if (!name || !content) return err(message, "missing required argument");
 
       tagData.set(`${guildId}-${name}`, { content, author: message.author.username });
+    saveTags();
       return ok(message, `Tag **${name}** created.`);
     }
     if (sub === "delete" || sub === "remove") {
       if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
       const name = args[2]?.toLowerCase();
       tagData.delete(`${guildId}-${name}`);
+    saveTags();
       return ok(message, `Tag **${name}** deleted.`);
     }
     if (sub === "list") {
@@ -7515,6 +7830,7 @@ client.on("messageCreate", async (message) => {
 
       list.push({ text, done: false });
       todoLists.set(message.author.id, list);
+    saveTodos();
       return ok(message, `Added to your todo list.`);
     }
     if (sub === "done") {
@@ -7522,6 +7838,7 @@ client.on("messageCreate", async (message) => {
       if (isNaN(index) || !list[index]) return err(message, "Invalid number.");
       list[index].done = true;
       todoLists.set(message.author.id, list);
+    saveTodos();
       return ok(message, `Marked as done.`);
     }
     if (sub === "remove" || sub === "delete") {
@@ -7529,6 +7846,7 @@ client.on("messageCreate", async (message) => {
       if (isNaN(index) || !list[index]) return err(message, "Invalid number.");
       list.splice(index, 1);
       todoLists.set(message.author.id, list);
+    saveTodos();
       return ok(message, `Removed from todo list.`);
     }
     if (sub === "clear") { todoLists.delete(message.author.id); return ok(message, "Todo list cleared."); }
@@ -7551,6 +7869,7 @@ client.on("messageCreate", async (message) => {
       const set = highlights.get(message.author.id) || new Set();
       set.add(word);
       highlights.set(message.author.id, set);
+    saveHighlights();
       return ok(message, `You'll be notified when **${word}** is mentioned.`);
     }
     if (sub === "remove") {
@@ -9699,6 +10018,7 @@ client.on("interactionCreate", async (interaction) => {
         banStats[guildId][modId].username = mod.username;
         banStats[guildId][modId].actions += 1;
         banStats[guildId][modId].bans += 1;
+    saveModStats();
 
         // Add case to mod cases
         addCase(guildId, "ban", userId, modId, "[Anti-Minors] underage");
@@ -11495,6 +11815,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       try {
         await ch.permissionOverwrites.edit(targetGuild.roles.everyone, { ViewChannel: false }, { reason: '[setup panel hidepaidperks]' });
         hiddenPaidPerksChannels.add(ch.id);
+        saveBooster();
         nameList.push(`#${ch.name}`);
         hidden++;
         await new Promise(r => setTimeout(r, 300));
