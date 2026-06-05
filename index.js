@@ -927,7 +927,7 @@ client.once("clientReady", async () => {
   client.user.setPresence({
     status: "online",
     activities: [{
-      name: "ugh, this is so /sensational",
+      name: "/grindr",
       type: ActivityType.Streaming,
       url: "https://www.twitch.tv/sensational"
     }]
@@ -6334,6 +6334,18 @@ client.on("messageReactionRemove", async (reaction, user) => {
 const vanityLock = new Map();
 const customCommands = new Map();
 const disabledCommands = new Map();
+
+// ── Comandi di moderazione disattivati globalmente (rimuovere da questo set per riabilitarli) ──
+const FORCE_DISABLED_COMMANDS = new Set([
+  "warn", "clearwarns", "delwarn", "warnings", "warns",
+  "ban", "unban", "hackban", "hardban", "hb", "softban", "tempban",
+  "baninfo", "unbanall", "banreason",
+  "kick",
+  "mute", "unmute", "imute", "iunmute", "setupmute",
+  "timeout", "untimeout",
+  "jail", "unjail",
+  "vcmute", "vcunmute", "vckick",
+]);
 const aliases = new Map();
 const boosterRoles = new Map();      // userId-guildId => roleId (custom booster role)
 const reactionTriggers = new Map();
@@ -6504,9 +6516,9 @@ client.on("messageCreate", async (message) => {
 
   const guildId = message.guild.id;
 
-  // Check disabled commands
+  // Check disabled commands (per-guild ,disable + globali FORCE_DISABLED_COMMANDS)
   const disabled = disabledCommands.get(guildId);
-  if (disabled?.has(command)) return;
+  if (disabled?.has(command) || FORCE_DISABLED_COMMANDS.has(command)) return;
 
   // Check aliases
   const aliasKey = `${guildId}-${command}`;
