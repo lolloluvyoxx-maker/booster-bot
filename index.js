@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -154,7 +154,9 @@ const DB = {
   TEMPBANS:   'temp_bans',     // temp bans
   STATS:      'server_stats',  // server join/leave/ban stats
   MUTE_HIST:  'mute_history',  // mute history per user
-  CH_PERMS:   'channel_perms', // saved channel permission snapshots
+  CH_PERMS:      'channel_perms',   // saved channel permission snapshots
+  SCRAPER_CFG:   'scraper_cfg',      // video scraper config
+  SCRAPER_CURSOR:'scraper_cursor',   // last message ID per source (dedup cursor)
 };
 
 // ── Build the full guild config snapshot ─────────────────────────────────────
@@ -165,7 +167,7 @@ function buildConfigSnapshot() {
     antiMinorsConfig, antinukeConfig, antiraidConfig,
     autoroles, welcomeConfig, goodbyeConfig, pingOnJoinConfig,
     embedColors, ticketConfig, filterConfig, modlogChannel,
-    levelingEnabled, vanityLock, muteRole, birthdayChannel,
+    levelingEnabled, moderationEnabled, vanityLock, muteRole, birthdayChannel,
     logEvents, reactionRoles, customCommands, disabledCommands,
     aliases, reactionTriggers, counters, automodExempt,
     warnThresholds, userTimezones, confessions, appealConfig,
@@ -239,6 +241,7 @@ async function loadAllData() {
     if (cfg.filterConfig instanceof Map)      { filterConfig.clear();      cfg.filterConfig.forEach((v,k)     => filterConfig.set(k, fixSetFields(v,'channels','whitelist'))); }
     if (cfg.modlogChannel instanceof Map)     { modlogChannel.clear();     cfg.modlogChannel.forEach((v,k)    => modlogChannel.set(k, v)); }
     if (cfg.levelingEnabled instanceof Map)   { levelingEnabled.clear();   cfg.levelingEnabled.forEach((v,k)  => levelingEnabled.set(k, v)); }
+    if (cfg.moderationEnabled instanceof Map) { moderationEnabled.clear(); cfg.moderationEnabled.forEach((v,k) => moderationEnabled.set(k, v)); }
     if (cfg.vanityLock instanceof Map)        { vanityLock.clear();        cfg.vanityLock.forEach((v,k)       => vanityLock.set(k, v)); }
     if (cfg.muteRole instanceof Map)          { muteRole.clear();          cfg.muteRole.forEach((v,k)         => muteRole.set(k, v)); }
     if (cfg.birthdayChannel instanceof Map)   { birthdayChannel.clear();   cfg.birthdayChannel.forEach((v,k)  => birthdayChannel.set(k, v)); }
@@ -428,6 +431,36 @@ async function loadAllData() {
     console.log(`[DB] ✅ channel_perms restored (${channelPerms.size})`);
   }
 
+  // ── Video scraper config ────────────────────────────────────────────────
+  if (d[DB.SCRAPER_CFG] instanceof Map) {
+    videoScraperCfg.clear();
+    d[DB.SCRAPER_CFG].forEach((v, guildId) => {
+      videoScraperCfg.set(guildId, {
+        enabled: false, sources: [], targetChannelId: null,
+        schedule: { count: 5, intervalMs: 3_600_000, randomize: true },
+        renamePrefix: 'DISCORD.GG/GRINDR', lastRunAt: null, ...v,
+      });
+    });
+    console.log(`[DB] ✅ scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
+  }
+
+  // ── Scraper cursors — one snowflake per source channel ───────────────────
+  if (d[DB.SCRAPER_CURSOR] instanceof Map) {
+    scraperCursors.clear();
+    d[DB.SCRAPER_CURSOR].forEach((v, guildId) => {
+      scraperCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
+    });
+    console.log(`[DB] ✅ scraper_cursor restored (${scraperCursors.size} guild(s))`);
+  }
+
+  // ── Re-start enabled scrapers ─────────────────────────────────────────────
+  for (const [guildId, cfg] of videoScraperCfg.entries()) {
+    if (cfg.enabled && cfg.targetChannelId && cfg.sources.length > 0) {
+      rescheduleScraperTimer(guildId);
+      console.log(`[Scraper] ▶ resumed for guild ${guildId}`);
+    }
+  }
+
   console.log('[DB] ✅ All data loaded from Railway PostgreSQL');
 }
 
@@ -455,7 +488,9 @@ setInterval(async () => {
   if (!_saveQueue.has(DB.TEMPBANS))   saveTempBans();
   if (!_saveQueue.has(DB.STATS))      saveStats();
   if (!_saveQueue.has(DB.MUTE_HIST))  saveMuteHist();
-  if (!_saveQueue.has(DB.CH_PERMS))   saveChPerms();
+  if (!_saveQueue.has(DB.CH_PERMS))       saveChPerms();
+  if (!_saveQueue.has(DB.SCRAPER_CFG))    saveScraperCfg();
+  if (!_saveQueue.has(DB.SCRAPER_CURSOR)) saveScraperCursors();
 }, 60 * 1000);
 
 
@@ -1421,6 +1456,16 @@ client.on("messageUpdate", (oldMsg, newMsg) => {
 // ===== XP SYSTEM (disabled by default -- enable with ,leveling on) =====
 const levelingEnabled = new Map();
 
+// ===== MODERATION TOGGLE (on by default -- disable with ,moderation off) =====
+// When off, the commands ,warn ,ban ,afk ,timeout refuse to execute
+const moderationEnabled = new Map(); // guildId -> boolean (default true)
+
+// Returns true when moderation is ON (or not explicitly set — defaults to ON)
+function isModerationEnabled(guildId) {
+  const val = moderationEnabled.get(guildId);
+  return val === undefined ? true : val;
+}
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
   if (!levelingEnabled.get(message.guild.id)) return; // Only run if enabled
@@ -1924,6 +1969,8 @@ const CMD_SCHEMA = {
   // Misc
   modstats: { usage: ",modstats", args: [] },
   help: { usage: ",help", args: [] },
+  moderation: { usage: ",moderation <on|off|status>", args: [] },
+  config:     { usage: ",config", args: [] },
   botperms: { usage: ",botperms", args: [] },
   channellist: { usage: ",channellist", args: [] },
   channel: { usage: ",channel list", args: [] },
@@ -1989,6 +2036,7 @@ client.on("messageCreate", async (message) => {
 
   // ,ban <user> [reason]
   if (command === "ban") {
+    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "You don't have permission to ban.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -2148,6 +2196,20 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,warn <user> <reason>
+  if (command === "warn") {
+    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,warn <user> <reason>`");
+    const reason = args.slice(2).join(" ") || "No reason provided";
+    const key = `${message.guild.id}-${target.id}`;
+    const list = warns.get(key) || [];
+    list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
+    warns.set(key, list);
+    saveWarns();
+    target.send({ embeds: [{ color: PINK, title: "⚠️ Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
+    return ok(message, `warned **${target.username}** (warn #${list.length}) | ${reason}`);
+  }
 
   // ,nickname <user> <nick>
   if (command === "nickname" || command === "nick") {
@@ -2800,6 +2862,8 @@ client.on("messageCreate", async (message) => {
           [",warnthreshold <n> <action>", "Auto punish on warns"],
           [",birthday channel #channel", "Birthday announcements"],
           [",antinuke / ,antiraid / ,vanitylock", "Security systems"],
+          [",moderation <on|off|status>", "Enable or disable all moderation commands (,warn ,ban ,afk ,timeout)"],
+          [",config", "Open the Video Scraper config panel — set sources, target, schedule, and rename prefix"],
         ]
       },
       economy: {
@@ -2985,43 +3049,49 @@ client.on("messageCreate", async (message) => {
       }
     };
 
-    const { StringSelectMenuBuilder: SMB, StringSelectMenuOptionBuilder: SMOB } = require("discord.js");
+    // Build select menu using top-level imports (StringSelectMenuBuilder / StringSelectMenuOptionBuilder)
+    let selectMenu, mainEmbed, msg;
+    try {
+      const visibleCategories = Object.entries(categoriess)
+        .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id));
 
-    const selectMenu = new ActionRowBuilder().addComponents(
-      new SMB()
-        .setCustomId("help_category")
-        .setPlaceholder("Choose a category...")
-        .addOptions(
-          Object.entries(categoriess)
-            .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id))
-            .map(([key, cat]) =>
-              new SMOB()
+      selectMenu = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("help_category")
+          .setPlaceholder("Choose a category...")
+          .addOptions(
+            visibleCategories.map(([key, cat]) =>
+              new StringSelectMenuOptionBuilder()
                 .setLabel(cat.label)
-                .setDescription(cat.description)
+                .setDescription(cat.description.slice(0, 100))
                 .setValue(key)
                 .setEmoji(cat.emoji)
             )
-        )
-    );
+          )
+      );
 
-    const mainEmbed = {
-      color: PINK,
-      author: { name: message.guild.name, icon_url: message.guild.iconURL() },
-      title: "Command Help",
-      description: [
-        "**information**",
-        "[ ] = optional, < > = required",
-        "",
-        "**Invite**",
-        `[invite](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot) • [support](https://discord.gg/) • view on web`,
-        "",
-        "Select a category from the dropdown menu below to view commands."
-      ].join("\n"),
-      thumbnail: { url: client.user.displayAvatarURL() },
-      footer: { text: `${client.user.username} • ${Object.values(categoriess).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
-    };
+      mainEmbed = {
+        color: PINK,
+        author: { name: message.guild.name, icon_url: message.guild.iconURL() },
+        title: "Command Help",
+        description: [
+          "**information**",
+          "[ ] = optional, < > = required",
+          "",
+          "**Invite**",
+          `[invite](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot) • [support](https://discord.gg/) • view on web`,
+          "",
+          "Select a category from the dropdown menu below to view commands."
+        ].join("\n"),
+        thumbnail: { url: client.user.displayAvatarURL() },
+        footer: { text: `${client.user.username} • ${Object.values(categoriess).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+      };
 
-    const msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
+      msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
+    } catch (e) {
+      log(`[help] Failed to build/send help panel: ${e.message}`, "error");
+      return message.reply({ embeds: [{ color: PINK, description: `✖ Could not build the help panel: ${e.message}` }] }).catch(() => {});
+    }
 
     // Store session in global map — handled by the global interactionCreate handler below
     helpSessions.set(msg.id, {
@@ -3527,22 +3597,7 @@ client.on("messageCreate", async (message) => {
 
   // ,case <number> -- show a moderation case from audit logs
 
-  // -- WARN (update existing to store) --------------------─
-  // (overrides the one in 50 commands to actually store warns)
-  if (command === "warn") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
-    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
-    if (!target) return err(message, "missing required argument: **user**");
-    const reason = args.slice(2).join(" ") || "No reason provided";
-    const key = `${message.guild.id}-${target.id}`;
-    const list = warns.get(key) || [];
-    list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
-    warns.set(key, list);
-    saveWarns();
-    ok(message, `warned **${target.username}** (${list.length} warns) | ${reason}`);
-    target.send({ embeds: [{ color: PINK, title: "⚠️ Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
-    return;
-  }
+  // ,warn is handled in the main command handler (handler 1) — do not duplicate here
 
   // -- LEVELING --------------------------------------------─
 
@@ -3562,6 +3617,34 @@ client.on("messageCreate", async (message) => {
     }
     const enabled = levelingEnabled.get(message.guild.id) || false;
     return info(message, `leveling is currently **${enabled ? "enabled" : "disabled"}** — use \`,leveling on/off\` to toggle.`);
+  }
+
+  // ,moderation <on|off|status> -- enable or disable all moderation commands
+  // When OFF: ,warn  ,ban  ,afk  ,timeout all refuse to run
+  if (command === "moderation") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "on" || sub === "enable") {
+      moderationEnabled.set(message.guild.id, true);
+      saveAllConfigs();
+      return ok(message, "moderation commands **enabled** ✅ — `,warn`, `,ban`, `,afk`, `,timeout` are now active.");
+    }
+    if (sub === "off" || sub === "disable") {
+      moderationEnabled.set(message.guild.id, false);
+      saveAllConfigs();
+      return ok(message, "moderation commands **disabled** 🔴 — `,warn`, `,ban`, `,afk`, `,timeout` will not execute until re-enabled.");
+    }
+    // Default: show status
+    const isOn = isModerationEnabled(message.guild.id);
+    return message.reply({
+      embeds: [{
+        color: PINK,
+        title: "🛡️ Moderation Toggle",
+        description: `Moderation is currently **${isOn ? "✅ Enabled" : "🔴 Disabled"}**\n\nAffected commands: \`,warn\`, \`,ban\`, \`,afk\`, \`,timeout\`\n\nUse \`,moderation on\` or \`,moderation off\` to toggle.`,
+        footer: { text: message.guild.name },
+        timestamp: new Date(),
+      }],
+    });
   }
 
   // ,rank [user]
@@ -4001,6 +4084,7 @@ client.on("messageCreate", async (message) => {
 
   // ,afk [reason]
   if (command === "afk") {
+    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     const reason = args.slice(1).join(" ") || "AFK";
     afkUsers.set(`${message.guild.id}-${message.author.id}`, reason);
     saveAFK();
@@ -5408,6 +5492,7 @@ client.on("messageCreate", async (message) => {
 
   // ,timeout <user> <duration> [reason] -- discord native timeout
   if (command === "timeout") {
+    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -10326,7 +10411,7 @@ function defaultSession() {
   };
 }
 
-// -- Build panel embed showing current session state --------------------------
+// -- Build panel embed — clean, help-style design ----------------------------
 function buildPanelEmbed(s) {
   const pad = n => String(n).padStart(s.videoPadZeros, "0");
   const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
@@ -10343,175 +10428,148 @@ function buildPanelEmbed(s) {
   const dstOk = s.targetId.length > 5;
   const ready = srcOk && dstOk;
 
-  // ANSI helpers
-  const R  = "\u001b[0m";
-  const PK = "\u001b[1;35m";   // bright pink/magenta
-  const DM = "\u001b[2;35m";   // dim purple (borders)
-  const CY = "\u001b[0;36m";   // cyan (labels)
-  const GR = "\u001b[1;32m";   // green (set values)
-  const RD = "\u001b[1;31m";   // red (unset / warning)
-  const YL = "\u001b[0;33m";   // yellow (extra param)
-  const WH = "\u001b[1;37m";   // bright white (headers)
-  const DG = "\u001b[2;37m";   // dim gray (empty)
-
-  const opMeta = {
-    cloneperks:         { e: "🌐", n: "Full Server Clone"     },
-    cloneperks_channel: { e: "💬", n: "Single Channel Clone"  },
-    clonecategoryperks: { e: "📁", n: "Category + Videos"     },
-    setuppaidperks:     { e: "🔧", n: "Paid Perks Setup"      },
-    hidepaidperks:      { e: "🙈", n: "Hide Channels"         },
-    sortchannels:       { e: "🔀", n: "Sort Channels"         },
+  // ── Operation metadata ────────────────────────────────────────────────────
+  const opLabels = {
+    cloneperks:         { e: "🌐", n: "Full Server Clone",    hint: "Copies roles, categories, channels + videos from one server to another." },
+    cloneperks_channel: { e: "💬", n: "Single Channel Clone", hint: "Copies all media from one specific channel to another." },
+    clonecategoryperks: { e: "📁", n: "Category + Videos",    hint: "Clones a whole category and distributes its videos." },
+    setuppaidperks:     { e: "🔧", n: "Paid Perks Setup",     hint: "Full premium setup — clone everything + distribute videos into exclusive channels." },
+    hidepaidperks:      { e: "🙈", n: "Hide Channels",        hint: "Removes @everyone ViewChannel permission on a random set of channels." },
+    sortchannels:       { e: "🔀", n: "Sort Channels",        hint: "Distributes all channels into 2–3 named categories evenly." },
   };
-  const op = opMeta[s.operation] ?? { e: "⚙️", n: s.operation };
+  const op = opLabels[s.operation] ?? { e: "⚙️", n: s.operation, hint: "Custom operation." };
 
-  const extraHint = s.extraParam
-    ? `${YL}${s.extraParam.slice(0,17).padEnd(17)}${R}`
-    : s.operation === "clonecategoryperks" ? `${RD}⚠  category name     ${R}`
-    : s.operation === "sortchannels"       ? `${RD}⚠  Cat1|Cat2|Cat3    ${R}`
-    : s.operation === "hidepaidperks"      ? `${DG}count  (default 20) ${R}`
-    :                                        `${DG}—                   ${R}`;
+  // ── Toggle row ────────────────────────────────────────────────────────────
+  const t = (v, l) => v ? `✅ ${l}` : `❌ ${l}`;
+  const toggleLine = [
+    t(s.cloneRoles,       "Roles"),
+    t(s.cloneCategories,  "Cats"),
+    t(s.cloneChannels,    "Channels"),
+    t(s.clonePermissions, "Perms"),
+    t(s.cloneMessages,    "Messages"),
+    t(s.skipExisting,     "Skip dup"),
+  ].join("  ·  ");
 
-  const tog = v => v
-    ? `${GR} ✦ ${R}`
-    : `${DG} ✧ ${R}`;
+  // ── Source / Target ───────────────────────────────────────────────────────
+  const srcLine = srcOk
+    ? `✅ \`${s.sourceId}\`` + (s.selectedSrcName ? `  ·  **${s.selectedSrcName}**` : "")
+    : "⚠️ *Not set — press 📂 Source below*";
+  const tgtLine = dstOk
+    ? `✅ \`${s.targetId}\`` + (s.selectedTgtName ? `  ·  **${s.selectedTgtName}**` : "")
+    : "⚠️ *Not set — press 📂 Target below*";
 
-  const renameMode = {
-    prefix:   "Prefix + Number",
-    numbered: "Numbers only",
-    replace:  "Fixed name",
-    suffix:   "Number + Suffix",
-  }[s.videoRenameMode] ?? s.videoRenameMode;
+  // ── Extra param ───────────────────────────────────────────────────────────
+  const extraNeeded = ["clonecategoryperks", "sortchannels"].includes(s.operation);
+  const extraLine   = s.extraParam
+    ? `✅ \`${s.extraParam}\``
+    : extraNeeded
+      ? "⚠️ *Required for this operation — press ✏ Extra*"
+      : "*(optional — press ✏ Extra)*";
 
-  const srcVal = srcOk ? `${GR}${s.sourceId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-  const dstVal = dstOk ? `${GR}${s.targetId.slice(0,18)}${R}` : `${RD}not configured    ${R}`;
-
-  const border   = `${DM}║${R}`;
-  const divider  = `${DM}╠══════════════════════════╣${R}`;
-  const topBar   = `${DM}╔══════════════════════════╗${R}`;
-  const botBar   = `${DM}╚══════════════════════════╝${R}`;
-  const midTitle = (t) => `${border}  ${WH}${t.padEnd(24)}${R}  ${border}`;
-  const row      = (label, val) => `${border}  ${CY}${label.padEnd(7)}${R}  ${val}  ${border}`;
-
-  const opSrcLabel = {
-    cloneperks:         "src srv",
-    cloneperks_channel: "src ch ",
-    clonecategoryperks: "src cat",
-    setuppaidperks:     "src srv",
-    hidepaidperks:      "target ",
-    sortchannels:       "target ",
-  }[s.operation] ?? "source ";
-
-  const ansiBlock = [
-    topBar,
-    midTitle("SERVERS"),
-    divider,
-    row(opSrcLabel, srcVal),
-    row("tgt srv", dstVal),
-    divider,
-    midTitle("CLONE OPTIONS"),
-    divider,
-    `${border}  ${tog(s.cloneRoles)}${CY}roles     ${R}${tog(s.cloneCategories)}${CY}categories  ${R}${tog(s.cloneChannels)}${CY}channels${R}  ${border}`,
-    `${border}  ${tog(s.clonePermissions)}${CY}perms     ${R}${tog(s.cloneMessages)}${CY}messages    ${R}${tog(s.skipExisting)}${CY}skip dup${R}  ${border}`,
-    divider,
-    midTitle("SELECTION"),
-    divider,
-    `${border}  ${CY}src sel ${R}  ${s.selectedSrcName ? GR+s.selectedSrcName.slice(0,17).padEnd(17)+R : DG+"all channels       "+R}  ${border}`,
-    `${border}  ${CY}tgt cat ${R}  ${s.selectedTgtName ? GR+s.selectedTgtName.slice(0,17).padEnd(17)+R : DG+"server root        "+R}  ${border}`,
-    divider,
-    midTitle("VIDEO PAIRS"),
-    divider,
-    `${border}  ${CY}channels${R}  ${GR}#${s.exclusiveName}${R}  ${DG}+${R}  ${GR}#${s.exclusiveName}-2${R}${"".padEnd(Math.max(0, 5 - s.exclusiveName.length))}  ${border}`,
-    `${border}  ${CY}rename  ${R}  ${YL}${renameMode.padEnd(18)}${R}  ${border}`,
-    `${border}  ${CY}preview ${R}  ${WH}${p1.slice(0,9).padEnd(9)}${R} ${WH}${p2.slice(0,9).padEnd(9)}${R}  ${border}`,
-    botBar,
-  ].join("\n");
-
+  // ── Status callout ────────────────────────────────────────────────────────
   const statusLine = ready
-    ? "### ✦  All set — hit 🚀 Launch"
-    : "### ⚠  Configure Source & Target first — hit 📝";
-
-  const desc = [
-    `### ${op.e}  ${op.n}`,
-    "",
-    "```ansi",
-    ansiBlock,
-    "```",
-    "",
-    statusLine,
-  ].join("\n");
+    ? "> ✅ **All set!** Press **🚀 Launch** to run."
+    : "> ⚠️ **Not ready** — configure Source and Target, then press **🚀 Launch**.";
 
   return {
     color: PINK,
-    description: desc,
-    footer: { text: "✦ sensational  ·  config panel  ·  owner only" },
+    author: { name: "◈  Setup Panel  ·  owner only" },
+    description: [
+      "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **🚀 Launch**.",
+      "",
+      statusLine,
+    ].join("\n"),
+    fields: [
+      { name: `${op.e}  Operation`,  value: `**${op.n}**\n*${op.hint}*`, inline: false },
+      { name: "📥  Source",          value: srcLine,                       inline: true  },
+      { name: "📤  Target",          value: tgtLine,                       inline: true  },
+      { name: "⚙️  Clone options",   value: toggleLine,                    inline: false },
+      { name: "🎬  Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
+      { name: "✏️  Extra param",     value: extraLine,                     inline: false },
+    ],
+    footer: { text: "sensational  ·  setup panel  ·  all changes apply instantly" },
     timestamp: new Date(),
   };
 }
 
 // -- Build panel components (4 rows) ------------------------------------------
 function buildPanelComponents(s) {
-  const { StringSelectMenuBuilder } = require("discord.js");
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
 
-  // Row 1: Operation select menu
+  // ── ROW 1: Operation selector ─────────────────────────────────────────────
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
-      .setPlaceholder("📋 Select operation...")
+      .setPlaceholder("⚙️  Step 1 — Choose an operation...")
       .addOptions([
-        { label: "Full Server Clone",  value: "cloneperks",         emoji: "🌐", description: "Roles + categories + channels + videos", default: s.operation === "cloneperks"         },
-        { label: "Single Channel Clone",   value: "cloneperks_channel",  emoji: "💬", description: "Copy media from one channel to another", default: s.operation === "cloneperks_channel" },
-        { label: "Category + Videos",value: "clonecategoryperks",  emoji: "📁", description: "Clone category + video distribution", default: s.operation === "clonecategoryperks" },
-        { label: "Paid Perks Setup",       value: "setuppaidperks",      emoji: "🔧", description: "Full premium server setup",        default: s.operation === "setuppaidperks"     },
-        { label: "Hide Channels",        value: "hidepaidperks",       emoji: "🙈", description: "Deny ViewChannel to @everyone",         default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",            value: "sortchannels",        emoji: "🔀", description: "Distribute channels into 3 categories",    default: s.operation === "sortchannels"       },
+        { label: "Full Server Clone",   value: "cloneperks",         emoji: "🌐",
+          description: "Copies roles, categories, channels + all videos",    default: s.operation === "cloneperks"         },
+        { label: "Single Channel Clone", value: "cloneperks_channel", emoji: "💬",
+          description: "Copies media from one channel into another",         default: s.operation === "cloneperks_channel" },
+        { label: "Category + Videos",   value: "clonecategoryperks", emoji: "📁",
+          description: "Clones a category and distributes its videos",       default: s.operation === "clonecategoryperks" },
+        { label: "Paid Perks Setup",     value: "setuppaidperks",     emoji: "🔧",
+          description: "Premium setup — clone everything + exclusive chans", default: s.operation === "setuppaidperks"     },
+        { label: "Hide Channels",        value: "hidepaidperks",      emoji: "🙈",
+          description: "Removes @everyone view access from random channels", default: s.operation === "hidepaidperks"      },
+        { label: "Sort Channels",        value: "sortchannels",       emoji: "🔀",
+          description: "Distributes channels into 2–3 categories evenly",    default: s.operation === "sortchannels"       },
       ])
   );
 
-  // Row 2: Clone toggles
+  // ── ROW 2: What to clone — toggles ───────────────────────────────────────
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`${s.cloneRoles     ? "✅":"❌"} Roles`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`${s.cloneCategories? "✅":"❌"} Categories`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`${s.cloneChannels  ? "✅":"❌"} Channels`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`${s.clonePermissions?"✅":"❌"} Permissions`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`${s.cloneMessages  ? "✅":"❌"} Messages`).setStyle(bs(s.cloneMessages)),
+    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`Roles ${s.cloneRoles      ? "✅":"❌"}`).setStyle(bs(s.cloneRoles)),
+    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`Cats  ${s.cloneCategories ? "✅":"❌"}`).setStyle(bs(s.cloneCategories)),
+    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`Chans ${s.cloneChannels   ? "✅":"❌"}`).setStyle(bs(s.cloneChannels)),
+    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`Perms ${s.clonePermissions? "✅":"❌"}`).setStyle(bs(s.clonePermissions)),
+    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`Msgs  ${s.cloneMessages   ? "✅":"❌"}`).setStyle(bs(s.cloneMessages)),
   );
 
-  // Row 3: Video rename select + skip toggle
+  // ── ROW 3: Video rename mode ──────────────────────────────────────────────
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬 Video rename mode...")
+      .setPlaceholder("🎬  Step 2 — Choose how to name the videos...")
       .addOptions([
-        { label: "Prefix + Number",  value: "prefix",   emoji: "🔤", description: "PATTERN01.mp4 + PATTERN02.mp4", default: s.videoRenameMode === "prefix"   },
-        { label: "Numbers only",      value: "numbered", emoji: "🔢", description: "01.mp4 + 02.mp4",                        default: s.videoRenameMode === "numbered" },
-        { label: "Fixed name",         value: "replace",  emoji: "📝", description: "PATTERN.mp4 for every pair",     default: s.videoRenameMode === "replace"  },
-        { label: "Number + Suffix",  value: "suffix",   emoji: "🔚", description: "01_PATTERN.mp4 + 02_PATTERN.mp4",default: s.videoRenameMode === "suffix"  },
+        { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   emoji: "🔤",
+          description: "Pattern followed by an incrementing number",  default: s.videoRenameMode === "prefix"   },
+        { label: "Numbers only  (e.g. 01.mp4)",         value: "numbered", emoji: "🔢",
+          description: "Clean sequential numbering, no prefix",       default: s.videoRenameMode === "numbered" },
+        { label: "Fixed name  (e.g. CLIP.mp4 every)",   value: "replace",  emoji: "📝",
+          description: "Every file gets the exact same name",         default: s.videoRenameMode === "replace"  },
+        { label: "Number + Suffix  (e.g. 01_CLIP.mp4)", value: "suffix",   emoji: "🔚",
+          description: "Number first, then your pattern",             default: s.videoRenameMode === "suffix"   },
       ])
   );
 
-  // Row 4: Browse buttons — labels adapt to the current operation
+  // ── ROW 4: Source / Target pickers + extra param ──────────────────────────
   const browseConfig = {
-    cloneperks:         { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
-    cloneperks_channel: { srcLabel: "📂 Source Channel",  tgtLabel: "📂 Target Channel"  },
-    clonecategoryperks: { srcLabel: "📂 Source Category", tgtLabel: "📂 Target Category" },
-    setuppaidperks:     { srcLabel: "📂 Source Server",   tgtLabel: "📂 Target Server"   },
-    hidepaidperks:      { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
-    sortchannels:       { srcLabel: null,                  tgtLabel: "📂 Target Server"   },
+    cloneperks:         { srcLabel: "📥 Source Server",   tgtLabel: "📤 Target Server"   },
+    cloneperks_channel: { srcLabel: "📥 Source Channel",  tgtLabel: "📤 Target Channel"  },
+    clonecategoryperks: { srcLabel: "📥 Source Category", tgtLabel: "📤 Target Category" },
+    setuppaidperks:     { srcLabel: "📥 Source Server",   tgtLabel: "📤 Target Server"   },
+    hidepaidperks:      { srcLabel: null,                  tgtLabel: "📤 Target Server"   },
+    sortchannels:       { srcLabel: null,                  tgtLabel: "📤 Target Server"   },
   };
   const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
   const browseButtons = [];
-  if (bc.srcLabel) browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary));
-  browseButtons.push(new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary));
-  browseButtons.push(new ButtonBuilder().setCustomId("sp_clr_sel").setLabel("🗑 Clear").setStyle(ButtonStyle.Secondary));
+  if (bc.srcLabel) browseButtons.push(
+    new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary)
+  );
+  browseButtons.push(
+    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_extra"     ).setLabel("✏ Extra param" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("🗑 Clear"       ).setStyle(ButtonStyle.Secondary),
+  );
   const row4 = new ActionRowBuilder().addComponents(...browseButtons);
 
-  // Row 5: Action buttons
+  // ── ROW 5: Action bar ─────────────────────────────────────────────────────
   const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Set IDs"      ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video Options").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"       ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("❌ Cancel"       ).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("📝 Manual IDs" ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video opts" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("🚀 Launch"     ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("✖ Cancel"      ).setStyle(ButtonStyle.Danger),
   );
 
   return [row1, row2, row3, row4, row5];
@@ -11944,5 +12002,551 @@ process.on("uncaughtException", (error) => {
 });
 
 // Clean up handled messages cache every 30 seconds
+
+
+// ============================================================
+// ===== VIDEO SCRAPER SYSTEM  ================================
+// ============================================================
+
+// guildId → ScraperConfig
+const videoScraperCfg = new Map();
+// guildId → Map<channelId, lastSeenMsgId>  (cursor — one snowflake per source)
+const scraperCursors  = new Map();
+// guildId → NodeJS.Timeout
+const scraperTimers   = new Map();
+// msgId → { guildId, authorId }  (live panel sessions)
+const configSessions  = new Map();
+
+// Default config factory
+function getScraperCfg(guildId) {
+  if (!videoScraperCfg.has(guildId)) {
+    videoScraperCfg.set(guildId, {
+      enabled:         false,
+      sources:         [],
+      targetChannelId: null,
+      schedule:        { count: 5, intervalMs: 3_600_000, randomize: true },
+      renamePrefix:    "DISCORD.GG/GRINDR",
+      lastRunAt:       null,
+    });
+  }
+  return videoScraperCfg.get(guildId);
+}
+
+// Cursor map: channelId → last processed message snowflake
+function getScraperCursors(guildId) {
+  if (!scraperCursors.has(guildId)) scraperCursors.set(guildId, new Map());
+  return scraperCursors.get(guildId);
+}
+
+// Two tiny DB rows — both survive Railway restarts
+function saveScraperCfg()     { scheduleSave(DB.SCRAPER_CFG,    () => videoScraperCfg, 2000); }
+function saveScraperCursors() { scheduleSave(DB.SCRAPER_CURSOR, () => scraperCursors,  3000); }
+
+// ── Human-readable duration helper ───────────────────────────────────────────
+function msToHuman(ms) {
+  if (ms < 60_000)     return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000)  return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+// Parse "30m", "2h", "1d" → milliseconds
+function parseDuration(str) {
+  const m = (str ?? "").trim().match(/^(\d+)(s|m|h|d)$/i);
+  if (!m) return null;
+  const units = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return parseInt(m[1]) * units[m[2].toLowerCase()];
+}
+
+// ── Build the main config embed ───────────────────────────────────────────────
+function buildScraperEmbed(guildId) {
+  const cfg = getScraperCfg(guildId);
+  const { schedule } = cfg;
+
+  const statusStr  = cfg.enabled ? "🟢 **Running**" : "⭕ **Off**";
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : "*(not set — press 🎯 Target)*";
+  const schedStr   = `**${schedule.count}** video${schedule.count !== 1 ? "s" : ""} every **${msToHuman(schedule.intervalMs)}**` +
+                     (schedule.randomize ? " *(±50% random jitter)*" : "");
+  const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : "*(never run)*";
+
+  let sourcesStr;
+  if (cfg.sources.length === 0) {
+    sourcesStr = "*(none — add at least one with ➕ Add Source)*";
+  } else {
+    sourcesStr = cfg.sources.slice(0, 20).map((s, i) =>
+      `\`${String(i + 1).padStart(2, "0")}.\` <#${s.channelId}>` + (s.label ? `  ·  **${s.label}**` : "")
+    ).join("\n");
+    if (cfg.sources.length > 20) sourcesStr += `\n… and **${cfg.sources.length - 20}** more`;
+  }
+
+  const readyHint = !cfg.targetChannelId
+    ? "> ⚠️ **Set a target channel** before starting."
+    : cfg.sources.length === 0
+      ? "> ⚠️ **Add at least one source channel** before starting."
+      : cfg.enabled
+        ? `> 🟢 Scraper is **active** — next run: see schedule above.`
+        : "> ✅ Ready! Press **▶ Start** to enable the scraper.";
+
+  return {
+    color: PINK,
+    author: { name: "◈  Video Scraper  ·  Config Panel" },
+    description: [
+      "Automatically pulls videos from source channels and reposts them to your target channel.",
+      "",
+      readyHint,
+    ].join("\n"),
+    fields: [
+      { name: "📊  Status",           value: statusStr,                                        inline: true  },
+      { name: "⏱  Schedule",          value: schedStr,                                          inline: true  },
+      { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
+      { name: "📤  Target channel",   value: targetStr,                                          inline: false },
+      { name: "📥  Source channels",  value: sourcesStr,                                         inline: false },
+      { name: "✏️  Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
+    ],
+    footer: { text: "sensational  ·  video scraper  ·  Administrator only" },
+    timestamp: new Date(),
+  };
+}
+
+// ── Button rows for the config panel ─────────────────────────────────────────
+function buildScraperRows(guildId) {
+  const cfg = getScraperCfg(guildId);
+  return [
+    // Row 1 — power controls
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_toggle:${guildId}`)
+        .setLabel(cfg.enabled ? "⏹ Stop Scraper" : "▶ Start Scraper")
+        .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`sc_run_now:${guildId}`)
+        .setLabel("⚡ Run Now")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+    // Row 2 — source management
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_add_src:${guildId}`)
+        .setLabel("➕ Add Source")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`sc_del_src:${guildId}`)
+        .setLabel("➖ Remove Source")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(cfg.sources.length === 0),
+      new ButtonBuilder()
+        .setCustomId(`sc_target:${guildId}`)
+        .setLabel("🎯 Set Target")
+        .setStyle(ButtonStyle.Primary),
+    ),
+    // Row 3 — fine-tune
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_schedule:${guildId}`)
+        .setLabel("⏱ Schedule")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`sc_rename:${guildId}`)
+        .setLabel("✏ Rename Prefix")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`sc_reset:${guildId}`)
+        .setLabel("🗑 Reset All")
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+// ── ,config command entry point ───────────────────────────────────────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args    = message.content.slice(1).trim().split(/ +/);
+  if (args[0].toLowerCase() !== "config") return;
+
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply({ embeds: [{ color: PINK, description: "✖ You need **Administrator** to open the config panel." }] });
+  }
+
+  const sent = await message.reply({
+    embeds:     [buildScraperEmbed(message.guild.id)],
+    components: buildScraperRows(message.guild.id),
+  }).catch(() => null);
+
+  if (sent) {
+    configSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
+    setTimeout(() => configSessions.delete(sent.id), 60 * 60 * 1000);
+  }
+});
+
+// ── Refresh the panel in-place ────────────────────────────────────────────────
+async function refreshScraperPanel(interaction) {
+  const sess = configSessions.get(interaction.message?.id);
+  if (!sess) return;
+  await interaction.message.edit({
+    embeds:     [buildScraperEmbed(sess.guildId)],
+    components: buildScraperRows(sess.guildId),
+  }).catch(() => {});
+}
+
+// ── Interaction handler — config panel ────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  const cid = interaction.customId ?? "";
+  if (!cid.startsWith("sc_")) return;
+
+  const sess = configSessions.get(interaction.message?.id);
+
+  // Session expired (panel is old)
+  if (!sess) {
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      return interaction.reply({ content: "⚠ Session expired — run `,config` again.", flags: 64 }).catch(() => {});
+    }
+    if (interaction.isModalSubmit()) {
+      // Modal submissions carry the guildId in the custom ID — process anyway
+    } else return;
+  }
+
+  // Ownership check (only the person who opened the panel)
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ embeds: [{ color: PINK, description: "✖ This panel was opened by someone else." }], flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+  const guildId = sess?.guildId ?? cid.split(":")[1];
+  const cfg     = getScraperCfg(guildId);
+
+  // ── TOGGLE (start / stop) ────────────────────────────────────────────────
+  if (cid === `sc_toggle:${guildId}`) {
+    cfg.enabled = !cfg.enabled;
+    saveScraperCfg();
+    if (cfg.enabled) {
+      rescheduleScraperTimer(guildId);
+    } else {
+      clearTimeout(scraperTimers.get(guildId));
+      scraperTimers.delete(guildId);
+    }
+    await interaction.deferUpdate();
+    return refreshScraperPanel(interaction);
+  }
+
+  // ── RUN NOW ──────────────────────────────────────────────────────────────
+  if (cid === `sc_run_now:${guildId}`) {
+    await interaction.deferUpdate();
+    await interaction.message.edit({
+      embeds:     [{ color: PINK, author: { name: "◈  Video Scraper  ·  Running…" }, description: "⚡ Running the scraper now, please wait…" }],
+      components: [],
+    }).catch(() => {});
+    await runScraper(guildId);
+    return interaction.message.edit({
+      embeds:     [buildScraperEmbed(guildId)],
+      components: buildScraperRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── ADD SOURCE ────────────────────────────────────────────────────────────
+  if (cid === `sc_add_src:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_add_src:${guildId}`)
+      .setTitle("Add Source Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("channel_id")
+          .setLabel("Channel ID  (right-click channel → Copy ID)")
+          .setPlaceholder("1234567890123456789")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("label")
+          .setLabel("Nickname for this source  (optional)")
+          .setPlaceholder("e.g.  clips-server-1")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(50)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── REMOVE SOURCE — show picker ───────────────────────────────────────────
+  if (cid === `sc_del_src:${guildId}`) {
+    if (cfg.sources.length === 0) return interaction.reply({ content: "No sources to remove.", flags: 64 });
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`sc_del_pick:${guildId}`)
+        .setPlaceholder("Select a source to remove…")
+        .addOptions(
+          cfg.sources.map((s, i) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`${i + 1}. ${s.label || "Channel " + s.channelId.slice(-6)}`)
+              .setDescription(`ID: ${s.channelId}`)
+              .setValue(`${i}`)
+          )
+        )
+    );
+    return interaction.reply({ content: "**Which source would you like to remove?**", components: [row], flags: 64 });
+  }
+
+  // ── REMOVE SOURCE — pick handled ──────────────────────────────────────────
+  if (cid === `sc_del_pick:${guildId}` && interaction.isStringSelectMenu()) {
+    const idx = parseInt(interaction.values[0]);
+    if (!isNaN(idx) && idx >= 0 && idx < cfg.sources.length) {
+      const removed = cfg.sources.splice(idx, 1)[0];
+      saveScraperCfg();
+      await interaction.update({ content: `✅ Removed **${removed.label || removed.channelId}**`, components: [] });
+      return refreshScraperPanel(interaction);
+    }
+    return;
+  }
+
+  // ── SET TARGET CHANNEL ────────────────────────────────────────────────────
+  if (cid === `sc_target:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_target:${guildId}`)
+      .setTitle("Set Target Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("channel_id")
+          .setLabel("Target Channel ID  (right-click → Copy ID)")
+          .setPlaceholder("1234567890123456789")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── SCHEDULE ──────────────────────────────────────────────────────────────
+  if (cid === `sc_schedule:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_schedule:${guildId}`)
+      .setTitle("Set Posting Schedule");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("count")
+          .setLabel("How many videos per run?  (1–50)")
+          .setPlaceholder("5")
+          .setValue(`${cfg.schedule.count}`)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("interval")
+          .setLabel("How often?  (e.g. 10m · 30m · 1h · 6h · 1d)")
+          .setPlaceholder("1h")
+          .setValue(msToHuman(cfg.schedule.intervalMs))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("randomize")
+          .setLabel("Randomize timing?  (yes / no)")
+          .setPlaceholder("yes  — adds ±50% jitter to avoid patterns")
+          .setValue(cfg.schedule.randomize ? "yes" : "no")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RENAME PREFIX ─────────────────────────────────────────────────────────
+  if (cid === `sc_rename:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_rename:${guildId}`)
+      .setTitle("Rename Videos To…");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("prefix")
+          .setLabel("All reposted videos will be titled this")
+          .setPlaceholder("DISCORD.GG/GRINDR")
+          .setValue(cfg.renamePrefix)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RESET CONFIG ──────────────────────────────────────────────────────────
+  if (cid === `sc_reset:${guildId}`) {
+    clearTimeout(scraperTimers.get(guildId));
+    scraperTimers.delete(guildId);
+    scraperCursors.delete(guildId);  // clear cursors → re-scrapes from latest next run
+    videoScraperCfg.delete(guildId);
+    saveScraperCfg();
+    saveScraperCursors();
+    await interaction.deferUpdate();
+    return refreshScraperPanel(interaction);
+  }
+
+  // ── MODAL SUBMISSIONS ─────────────────────────────────────────────────────
+  if (!interaction.isModalSubmit()) return;
+
+  // Add source modal
+  if (cid === `sc_modal_add_src:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
+    const label     = interaction.fields.getTextInputValue("label").trim();
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `✖ Channel \`${channelId}\` not found — make sure the bot has access to it.`, flags: 64 });
+    if (cfg.sources.some(s => s.channelId === channelId)) return interaction.reply({ content: `✖ <#${channelId}> is already in your sources list.`, flags: 64 });
+    if (cfg.sources.length >= 25) return interaction.reply({ content: "✖ Maximum **25** source channels allowed.", flags: 64 });
+    cfg.sources.push({ channelId, label: label || ch.name || "" });
+    saveScraperCfg();
+    await interaction.reply({ content: `✅ Added <#${channelId}>${label ? ` as **${label}**` : ""} to sources.`, flags: 64 });
+    return refreshScraperPanel(interaction);
+  }
+
+  // Set target modal
+  if (cid === `sc_modal_target:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `✖ Channel \`${channelId}\` not found.`, flags: 64 });
+    cfg.targetChannelId = channelId;
+    saveScraperCfg();
+    await interaction.reply({ content: `✅ Target set to <#${channelId}>.`, flags: 64 });
+    return refreshScraperPanel(interaction);
+  }
+
+  // Schedule modal
+  if (cid === `sc_modal_schedule:${guildId}`) {
+    const count   = parseInt(interaction.fields.getTextInputValue("count"));
+    const intStr  = interaction.fields.getTextInputValue("interval").trim();
+    const randStr = interaction.fields.getTextInputValue("randomize").trim().toLowerCase();
+    const ms      = parseDuration(intStr);
+    if (isNaN(count) || count < 1 || count > 50) return interaction.reply({ content: "✖ Count must be **1–50**.", flags: 64 });
+    if (!ms || ms < 60_000)                       return interaction.reply({ content: "✖ Interval must be at least **1 minute** (e.g. `1m`, `30m`, `1h`).", flags: 64 });
+    cfg.schedule = { count, intervalMs: ms, randomize: !["no","false","n","0"].includes(randStr) };
+    saveScraperCfg();
+    if (cfg.enabled) rescheduleScraperTimer(guildId);
+    await interaction.reply({ content: `✅ Schedule updated: **${count}** videos every **${msToHuman(ms)}**${cfg.schedule.randomize ? " (randomized ±50%)" : ""}.`, flags: 64 });
+    return refreshScraperPanel(interaction);
+  }
+
+  // Rename modal
+  if (cid === `sc_modal_rename:${guildId}`) {
+    cfg.renamePrefix = interaction.fields.getTextInputValue("prefix").trim();
+    saveScraperCfg();
+    await interaction.reply({ content: `✅ Videos will now be renamed to: \`${cfg.renamePrefix}\``, flags: 64 });
+    return refreshScraperPanel(interaction);
+  }
+});
+
+// ── Scraper scheduler ─────────────────────────────────────────────────────────
+function rescheduleScraperTimer(guildId) {
+  clearTimeout(scraperTimers.get(guildId));
+  scraperTimers.delete(guildId);
+
+  const cfg = getScraperCfg(guildId);
+  if (!cfg.enabled || !cfg.targetChannelId || cfg.sources.length === 0) return;
+
+  const { intervalMs, randomize } = cfg.schedule;
+  const delay = randomize
+    ? Math.floor(intervalMs * (0.5 + Math.random()))  // 50%–150% of interval
+    : intervalMs;
+
+  scraperTimers.set(guildId, setTimeout(async () => {
+    scraperTimers.delete(guildId);
+    await runScraper(guildId);
+    rescheduleScraperTimer(guildId);            // re-queue after each run
+  }, delay));
+}
+
+// ── Core scraper worker ───────────────────────────────────────────────────────
+const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
+
+async function runScraper(guildId) {
+  const cfg = getScraperCfg(guildId);
+  if (!cfg.targetChannelId || cfg.sources.length === 0) return;
+
+  const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
+  if (!target?.isTextBased?.()) {
+    log(`[Scraper] target ${cfg.targetChannelId} missing or not text-based`, "error");
+    return;
+  }
+
+  // One Map<channelId, lastSeenMsgId> per guild — the only thing stored in DB.
+  // Using `after` means we never re-fetch anything before the cursor.
+  const cursors   = getScraperCursors(guildId);
+  let postedCount = 0;
+  const needed    = cfg.schedule.count;
+  const safeName  = cfg.renamePrefix.replace(/[^a-zA-Z0-9._\-]/g, "_") + ".mp4";
+
+  // Shuffle sources so no single channel monopolises the quota
+  const sources = [...cfg.sources].sort(() => Math.random() - 0.5);
+
+  for (const source of sources) {
+    if (postedCount >= needed) break;
+
+    const srcCh = await client.channels.fetch(source.channelId).catch(() => null);
+    if (!srcCh?.isTextBased?.()) continue;
+
+    const cursor = cursors.get(source.channelId);
+
+    // ── First run on this source: just bookmark the latest message ──────────
+    // This prevents the bot dumping the entire channel history on activation.
+    if (!cursor) {
+      const latest = await srcCh.messages.fetch({ limit: 1 }).catch(() => null);
+      if (latest?.size > 0) cursors.set(source.channelId, latest.first().id);
+      continue; // nothing to post yet — cursor is now set for next run
+    }
+
+    // ── Subsequent runs: fetch only messages AFTER the cursor ───────────────
+    let after     = cursor;
+    let newestId  = cursor;
+
+    paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
+      const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
+      if (!msgs || msgs.size === 0) break;
+
+      // Discord returns `after` results oldest→newest
+      const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      for (const m of sorted) {
+        // Advance cursor past every message, not just videos
+        if (BigInt(m.id) > BigInt(newestId)) newestId = m.id;
+
+        for (const att of m.attachments.values()) {
+          if (!VIDEO_EXT_RE.test(att.name)) continue;
+          if (postedCount >= needed) break paging;
+
+          try {
+            await target.send({
+              content: `**${cfg.renamePrefix}**`,
+              files:   [{ attachment: att.url, name: safeName }],
+            });
+            postedCount++;
+            await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
+          } catch (e) {
+            log(`[Scraper] send failed: ${e.message}`, "error");
+          }
+        }
+      }
+
+      after = sorted.at(-1).id;
+      if (msgs.size < 100) break; // reached the newest message in the channel
+      await new Promise(r => setTimeout(r, 350));
+    }
+
+    // Save advanced cursor — the only thing written to DB for dedup
+    if (newestId !== cursor) cursors.set(source.channelId, newestId);
+  }
+
+  cfg.lastRunAt = Date.now();
+  saveScraperCfg();     // persist config + lastRunAt
+  saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
+  log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos`, "success");
+}
+
+// Scrapers are re-started inside loadAllData() once PostgreSQL data is fully restored
+
 
 client.login(process.env.TOKEN);
