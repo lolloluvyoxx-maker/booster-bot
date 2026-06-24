@@ -1466,6 +1466,27 @@ function isModerationEnabled(guildId) {
   return val === undefined ? true : val;
 }
 
+// Full set of commands blocked when ,moderation off
+const MOD_COMMANDS = new Set([
+  "ban","unban","kick","mute","unmute","timeout","untimeout",
+  "tempban","softban","hardban","hackban","massban","masskick",
+  "warn","clearwarns","delwarn","warnings","warnlist",
+  "jail","unjail","strip","purge","clear",
+  "lock","unlock","hide","unhide","lockall","unlockall",
+  "lockdown","unlockdown","slowmode","slowmodeall","nuke",
+  "nick","resetnick","dehoist","decancer",
+  "role","temprole","massrole","massnick","afk",
+]);
+
+// Single-line gate — call at the top of every handler that routes mod commands
+function modGate(message) {
+  if (!isModerationEnabled(message.guild.id)) {
+    err(message, "moderation is currently **disabled** — use `,moderation on` to re-enable.");
+    return true;   // blocked
+  }
+  return false;  // allowed
+}
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
   if (!levelingEnabled.get(message.guild.id)) return; // Only run if enabled
@@ -2025,18 +2046,21 @@ client.on("messageCreate", async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args[0].toLowerCase();
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
-  // Arg check
+  // Arg check — skip for moderation-gated commands so they can show
+  // the 'moderation disabled' error even when called without arguments
+  // Arg check — mod-gated commands bypass this so modGate() fires first
   const _s = CMD_SCHEMA[command];
-  if (_s && _s.args.length > 0 && args.length === 1) {
+  if (_s && _s.args.length > 0 && args.length === 1 && !MOD_COMMANDS.has(command)) {
     return err(message, `missing required argument: **${_s.args[0]}**\nusage: \`${_s.usage}\``);
   }
 
+  // Centralized moderation gate — blocks ALL mod commands when ,moderation off
+  if (MOD_COMMANDS.has(command) && modGate(message)) return;
 
   // -- MODERATION ------------------------------------------
 
   // ,ban <user> [reason]
   if (command === "ban") {
-    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "You don't have permission to ban.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -2197,7 +2221,6 @@ client.on("messageCreate", async (message) => {
 
   // ,warn <user> <reason>
   if (command === "warn") {
-    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**\nusage: `,warn <user> <reason>`");
@@ -3010,7 +3033,7 @@ client.on("messageCreate", async (message) => {
       },
       perks: {
         label: "Perks Tools",
-        emoji: "✦",
+        emoji: "⭐",
         description: "Clone, sort and manage perks servers",
         commands: [
           [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
@@ -3443,6 +3466,8 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
+  // Centralized moderation gate
+  if (MOD_COMMANDS.has(command) && modGate(message)) return;
 
   // -- ADVANCED MODERATION --------------------------------─
 
@@ -4084,7 +4109,6 @@ client.on("messageCreate", async (message) => {
 
   // ,afk [reason]
   if (command === "afk") {
-    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     const reason = args.slice(1).join(" ") || "AFK";
     afkUsers.set(`${message.guild.id}-${message.author.id}`, reason);
     saveAFK();
@@ -5102,6 +5126,8 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
+  // Centralized moderation gate
+  if (MOD_COMMANDS.has(command) && modGate(message)) return;
 
   // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
   if (command === "antinuke") {
@@ -5492,7 +5518,6 @@ client.on("messageCreate", async (message) => {
 
   // ,timeout <user> <duration> [reason] -- discord native timeout
   if (command === "timeout") {
-    if (!isModerationEnabled(message.guild.id)) return err(message, "moderation is currently **disabled** in this server — use `,moderation on` to re-enable.");
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**");
@@ -5707,6 +5732,8 @@ client.on("messageCreate", async (message) => {
   const command = args[0].toLowerCase();
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
+  // Centralized moderation gate
+  if (MOD_COMMANDS.has(command) && modGate(message)) return;
 
   // -- PURGE FILTERS ----------------------------------─
 
@@ -6604,6 +6631,9 @@ client.on("messageCreate", async (message) => {
   // Check disabled commands (per-guild ,disable + globali FORCE_DISABLED_COMMANDS)
   const disabled = disabledCommands.get(guildId);
   if (disabled?.has(command) || FORCE_DISABLED_COMMANDS.has(command)) return;
+
+  // Centralized moderation gate
+  if (MOD_COMMANDS.has(command) && modGate(message)) return;
 
   // Check aliases
   const aliasKey = `${guildId}-${command}`;
@@ -12491,17 +12521,12 @@ async function runScraper(guildId) {
 
     const cursor = cursors.get(source.channelId);
 
-    // ── First run on this source: just bookmark the latest message ──────────
-    // This prevents the bot dumping the entire channel history on activation.
-    if (!cursor) {
-      const latest = await srcCh.messages.fetch({ limit: 1 }).catch(() => null);
-      if (latest?.size > 0) cursors.set(source.channelId, latest.first().id);
-      continue; // nothing to post yet — cursor is now set for next run
-    }
-
-    // ── Subsequent runs: fetch only messages AFTER the cursor ───────────────
-    let after     = cursor;
-    let newestId  = cursor;
+    // ── Start position ───────────────────────────────────────────────────────
+    // No cursor → first run → start from the oldest message in the channel
+    // so all existing videos get posted immediately.
+    // Cursor set → continue exactly from where the last run stopped.
+    let after    = cursor ?? "0"; // "0" = before the first-ever Discord message
+    let newestId = cursor ?? "0";
 
     paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
       const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
