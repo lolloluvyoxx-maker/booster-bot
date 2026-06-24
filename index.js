@@ -444,7 +444,7 @@ async function loadAllData() {
       videoScraperCfg.set(guildId, {
         enabled: false, sources: [], targetChannelId: null,
         schedule: { count: 5, intervalMs: 3_600_000, randomize: true },
-        renamePrefix: 'DISCORD.GG/GRINDR', lastRunAt: null, ...v,
+        renamePrefix: 'DISCORD.GG/GRINDR', lastRunAt: null, lastRunResult: null, ...v,
       });
     });
     console.log(`[DB] ✅ scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
@@ -1288,6 +1288,9 @@ client.on("messageCreate", async (message) => {
   if (!message.guild) return;
   if (!message.member) return;
 
+  // Respect the per-guild custom block list set via ,moderation add
+  if (modGate(message, "modstats")) return;
+
   // Send typing indicator while loading
   await message.channel.sendTyping().catch(() => {});
   // Load fresh from audit logs
@@ -1490,14 +1493,14 @@ const MOD_COMMANDS = new Set([
   "role","temprole","massrole","massnick","afk",
 ]);
 
-function modGate(message) {
-  if (!isModerationEnabled(message.guild.id)) return true; // fully disabled
-  // Even when moderation is on, custom per-guild commands are still blocked
-  const custom = moderationCustom.get(message.guild.id);
-  if (custom?.size) {
-    const cmd = message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
-    if (custom.has(cmd)) return true;
-  }
+function modGate(message, command) {
+  const guildId = message.guild.id;
+  const cmd = command ?? message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
+  // Custom block list — always silently blocks, regardless of on/off or MOD_COMMANDS membership
+  const custom = moderationCustom.get(guildId);
+  if (custom?.has(cmd)) return true;
+  // Built-in MOD_COMMANDS are only blocked when moderation is fully disabled
+  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) return true;
   return false;
 }
 
@@ -2069,7 +2072,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Centralized moderation gate — blocks ALL mod commands when ,moderation off
-  if (MOD_COMMANDS.has(command) && modGate(message)) return;
+  if (modGate(message, command)) return;
 
   // -- MODERATION ------------------------------------------
 
@@ -3481,7 +3484,7 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   // Centralized moderation gate
-  if (MOD_COMMANDS.has(command) && modGate(message)) return;
+  if (modGate(message, command)) return;
 
   // -- ADVANCED MODERATION --------------------------------─
 
@@ -5198,7 +5201,7 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   // Centralized moderation gate
-  if (MOD_COMMANDS.has(command) && modGate(message)) return;
+  if (modGate(message, command)) return;
 
   // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
   if (command === "antinuke") {
@@ -5804,7 +5807,7 @@ client.on("messageCreate", async (message) => {
   if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
 
   // Centralized moderation gate
-  if (MOD_COMMANDS.has(command) && modGate(message)) return;
+  if (modGate(message, command)) return;
 
   // -- PURGE FILTERS ----------------------------------─
 
@@ -6704,7 +6707,7 @@ client.on("messageCreate", async (message) => {
   if (disabled?.has(command) || FORCE_DISABLED_COMMANDS.has(command)) return;
 
   // Centralized moderation gate
-  if (MOD_COMMANDS.has(command) && modGate(message)) return;
+  if (modGate(message, command)) return;
 
   // Check aliases
   const aliasKey = `${guildId}-${command}`;
@@ -12130,6 +12133,7 @@ function getScraperCfg(guildId) {
       schedule:        { count: 5, intervalMs: 3_600_000, randomize: true },
       renamePrefix:    "DISCORD.GG/GRINDR",
       lastRunAt:       null,
+      lastRunResult:   null,
     });
   }
   return videoScraperCfg.get(guildId);
@@ -12372,9 +12376,24 @@ client.on("interactionCreate", async (interaction) => {
       embeds:     [{ color: PINK, author: { name: "◈  Video Scraper  ·  Running…" }, description: "⚡ Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
-    await runScraper(guildId);
+    const result = await runScraper(guildId);
+    // Build a short result line to append to the refreshed embed
+    let resultNote = "";
+    if (result) {
+      if (result.error) {
+        resultNote = `\n\n⚠️ **Run failed:** ${result.error}`;
+      } else if (result.posted === 0 && result.skippedSources > 0) {
+        resultNote = `\n\n⚠️ **0 videos posted** — ${result.skippedSources} source channel(s) were inaccessible. Make sure the bot is in each source server and has View Channel permission.`;
+      } else if (result.posted === 0) {
+        resultNote = `\n\n⚠️ **0 videos posted** — no new video attachments found in source channels (or they've all been posted already).`;
+      } else {
+        resultNote = `\n\n✅ **Posted ${result.posted}/${result.needed} video(s)**${result.skippedSources ? ` · ⚠️ ${result.skippedSources} source(s) skipped (inaccessible)` : ""}`;
+      }
+    }
+    const baseEmbed = buildScraperEmbed(guildId);
+    if (resultNote) baseEmbed.description = (baseEmbed.description ?? "") + resultNote;
     return interaction.message.edit({
-      embeds:     [buildScraperEmbed(guildId)],
+      embeds:     [baseEmbed],
       components: buildScraperRows(guildId),
     }).catch(() => {});
   }
@@ -12587,22 +12606,32 @@ function rescheduleScraperTimer(guildId) {
 }
 
 // ── Core scraper worker ───────────────────────────────────────────────────────
-const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
+const VIDEO_EXT_RE     = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
+// Matches bare video URLs in message text (e.g. links posted by bots or users)
+const CONTENT_VIDEO_RE = /https?:\/\/[^\s<>"]+?\.(mp4|mov|webm|mkv|avi|gif)(\?[^\s<>"]*)?/gi;
 
 async function runScraper(guildId) {
   const cfg = getScraperCfg(guildId);
-  if (!cfg.targetChannelId || cfg.sources.length === 0) return;
+  if (!cfg.targetChannelId || cfg.sources.length === 0) return { posted: 0, needed: 0, skippedSources: 0 };
 
   const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
   if (!target?.isTextBased?.()) {
     log(`[Scraper] target ${cfg.targetChannelId} missing or not text-based`, "error");
-    return;
+    return { posted: 0, needed: 0, skippedSources: 0, error: "Target channel inaccessible" };
+  }
+
+  // Check bot has send + attach permissions in target
+  const myPerms = target.permissionsFor(target.guild?.members?.me);
+  if (myPerms && !myPerms.has(PermissionFlagsBits.SendMessages)) {
+    log(`[Scraper] bot missing SEND_MESSAGES in target ${cfg.targetChannelId}`, "error");
+    return { posted: 0, needed: 0, skippedSources: 0, error: "Missing Send Messages permission in target" };
   }
 
   // One Map<channelId, lastSeenMsgId> per guild — the only thing stored in DB.
   // Using `after` means we never re-fetch anything before the cursor.
   const cursors   = getScraperCursors(guildId);
   let postedCount = 0;
+  let skippedSources = 0;
   const needed    = cfg.schedule.count;
   const safeName  = cfg.renamePrefix.replace(/[^a-zA-Z0-9._\-]/g, "_") + ".mp4";
 
@@ -12613,7 +12642,11 @@ async function runScraper(guildId) {
     if (postedCount >= needed) break;
 
     const srcCh = await client.channels.fetch(source.channelId).catch(() => null);
-    if (!srcCh?.isTextBased?.()) continue;
+    if (!srcCh?.isTextBased?.()) {
+      log(`[Scraper] source ${source.channelId} (${source.label || "unlabelled"}) inaccessible — bot may not be in that server or lacks View Channel permission`, "error");
+      skippedSources++;
+      continue;
+    }
 
     const cursor = cursors.get(source.channelId);
 
@@ -12621,8 +12654,8 @@ async function runScraper(guildId) {
     // No cursor → first run → start from the oldest message in the channel
     // so all existing videos get posted immediately.
     // Cursor set → continue exactly from where the last run stopped.
-    let after    = cursor ?? "1"; // "1" = before any real Discord snowflake
-    let newestId = cursor ?? "1";
+    let after    = cursor ?? "0"; // "0" = before any real Discord snowflake
+    let newestId = cursor ?? "0";
 
     paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
       const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
@@ -12634,34 +12667,61 @@ async function runScraper(guildId) {
       for (const m of sorted) {
         // Advance cursor past every message, not just videos
         if (BigInt(m.id) > BigInt(newestId)) newestId = m.id;
+        if (postedCount >= needed) break;
 
+        // ── Collect every video source from this message ──────────────────
+        // videoItems: Array<{ url: string, size: number }>
+        // size = Infinity for links/embeds (unknown → always use URL fallback path)
+        const videoItems = [];
+
+        // 1. File attachments — works for both user and bot messages
         for (const att of m.attachments.values()) {
-          if (!VIDEO_EXT_RE.test(att.name)) continue;
+          if (VIDEO_EXT_RE.test(att.name ?? "")) {
+            videoItems.push({ url: att.url, size: att.size });
+          }
+        }
+
+        // 2. Direct video URLs embedded in message content (bots often post raw links)
+        const contentMatches = [...(m.content?.matchAll(CONTENT_VIDEO_RE) ?? [])];
+        for (const match of contentMatches) {
+          videoItems.push({ url: match[0], size: Infinity });
+        }
+
+        // 3. Discord embeds that carry a video (e.g. Tenor GIFs, video embeds)
+        for (const embed of m.embeds ?? []) {
+          const vidUrl = embed.video?.url
+            ?? (embed.url && VIDEO_EXT_RE.test(embed.url.split("?")[0]) ? embed.url : null);
+          if (vidUrl) videoItems.push({ url: vidUrl, size: Infinity });
+        }
+
+        // ── Post each video found in this message ─────────────────────────
+        for (const { url, size } of videoItems) {
           if (postedCount >= needed) break paging;
 
-          // Try re-upload (renames the file). If Discord rejects it
-          // (most likely >8MB limit), fall back to posting the CDN URL
-          // directly — Discord embeds it inline as a video player.
+          // Try re-upload (renames the file). Falls back to CDN URL if too large
+          // or if the upload fails for any reason.
           const DISCORD_MAX = 8 * 1024 * 1024; // 8 MB
           let sent2 = false;
 
-          if (att.size <= DISCORD_MAX) {
+          if (size <= DISCORD_MAX) {
             try {
               await target.send({
                 content: `**${cfg.renamePrefix}**`,
-                files:   [{ attachment: att.url, name: safeName }],
+                files:   [{ attachment: url, name: safeName }],
               });
               sent2 = true;
-            } catch (_) {}
+            } catch (e) {
+              log(`[Scraper] file upload failed for ${url} (${size === Infinity ? "?" : Math.round(size/1024)}KB): ${e.message}`, "warn");
+            }
           }
 
-          // Fallback: post CDN URL — works for any size, Discord embeds it
+          // Fallback: post URL directly — Discord auto-embeds mp4/gif/webm inline
           if (!sent2) {
             try {
-              await target.send(`**${cfg.renamePrefix}**\n${att.url}`);
+              await target.send(`**${cfg.renamePrefix}**\n${url}`);
               sent2 = true;
             } catch (e) {
-              log(`[Scraper] both send methods failed for ${att.url}: ${e.message}`, "error");
+              log(`[Scraper] both send methods failed for ${url}: ${e.message}`, "error");
             }
           }
 
@@ -12682,9 +12742,11 @@ async function runScraper(guildId) {
   }
 
   cfg.lastRunAt = Date.now();
-  saveScraperCfg();     // persist config + lastRunAt
+  cfg.lastRunResult = { posted: postedCount, needed, skippedSources, ts: Date.now() };
+  saveScraperCfg();     // persist config + lastRunAt + lastRunResult
   saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
-  log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos`, "success");
+  log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
+  return { posted: postedCount, needed, skippedSources };
 }
 
 // Scrapers are re-started inside loadAllData() once PostgreSQL data is fully restored
