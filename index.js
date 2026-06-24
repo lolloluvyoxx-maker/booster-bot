@@ -12358,9 +12358,9 @@ client.on("interactionCreate", async (interaction) => {
     cfg.enabled = !cfg.enabled;
     saveScraperCfg();
     if (cfg.enabled) {
-      // Fire immediately in background — no await so the panel
-      // responds instantly while the scraper runs behind the scenes
-      runScraper(guildId).then(() => rescheduleScraperTimer(guildId)).catch(() => {});
+      // Send 1 video immediately so the user sees something right away,
+      // then let the normal scheduler deliver the rest of the batch on interval
+      runScraper(guildId, 1).then(() => rescheduleScraperTimer(guildId)).catch(() => {});
     } else {
       clearTimeout(scraperTimers.get(guildId));
       scraperTimers.delete(guildId);
@@ -12607,10 +12607,44 @@ function rescheduleScraperTimer(guildId) {
 
 // ── Core scraper worker ───────────────────────────────────────────────────────
 const VIDEO_EXT_RE     = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
-// Matches bare video URLs in message text (e.g. links posted by bots or users)
+// Matches bare video URLs in message text
 const CONTENT_VIDEO_RE = /https?:\/\/[^\s<>"]+?\.(mp4|mov|webm|mkv|avi|gif)(\?[^\s<>"]*)?/gi;
+// Matches fxtwitter / vxtwitter / fixupx redirect URLs in message content
+const FXTWITTER_RE = /https?:\/\/[^\s<>"]*(?:fxtwitter|vxtwitter|fixupx)\.com\/[^\s<>"]+/gi;
 
-async function runScraper(guildId) {
+// Extracts the real MP4 URL from a fxtwitter/vxtwitter redirect
+// e.g. https://api.fxtwitter.com/2/go?url=https%3A%2F%2Fvideo.twimg.com%2F...mp4
+function extractMp4Url(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('fxtwitter.com') || u.hostname.includes('vxtwitter.com') || u.hostname.includes('fixupx.com')) {
+      const inner = u.searchParams.get('url') ?? u.searchParams.get('video_url');
+      if (inner) {
+        const decoded = decodeURIComponent(inner);
+        if (VIDEO_EXT_RE.test(decoded.split('?')[0])) return decoded;
+      }
+    }
+    // Direct twimg MP4
+    if (u.hostname.includes('twimg.com') && VIDEO_EXT_RE.test(u.pathname)) return url;
+  } catch {}
+  return null;
+}
+
+// HEAD-check whether a video URL is still reachable (expired CDN links → 403/404)
+async function isVideoAvailable(url) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6_000);
+    const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// overrideCount lets callers post fewer videos than the scheduled quota (e.g. 1 on Start)
+async function runScraper(guildId, overrideCount) {
   const cfg = getScraperCfg(guildId);
   if (!cfg.targetChannelId || cfg.sources.length === 0) return { posted: 0, needed: 0, skippedSources: 0 };
 
@@ -12632,7 +12666,7 @@ async function runScraper(guildId) {
   const cursors   = getScraperCursors(guildId);
   let postedCount = 0;
   let skippedSources = 0;
-  const needed    = cfg.schedule.count;
+  const needed    = (overrideCount != null && overrideCount > 0) ? overrideCount : cfg.schedule.count;
   const safeName  = cfg.renamePrefix.replace(/[^a-zA-Z0-9._\-]/g, "_") + ".mp4";
 
   // Shuffle sources so no single channel monopolises the quota
@@ -12675,64 +12709,62 @@ async function runScraper(guildId) {
         if (postedCount >= needed) break;
 
         // ── Collect every video source from this message ──────────────────
-        // videoItems: Array<{ url: string, size: number }>
-        // size = Infinity for links/embeds (unknown → always use URL fallback path)
-        const videoItems = [];
+        // Deduplicate by URL so we never double-post the same file
+        const _seenUrls = new Set();
+        const videoItems = []; // { url, size }
+        const addVideo = (url, size) => {
+          if (!url || _seenUrls.has(url)) return;
+          _seenUrls.add(url);
+          videoItems.push({ url, size });
+        };
 
-        // 1. File attachments — works for both user and bot messages
+        // 1. File attachments (direct uploads — user or bot)
         for (const att of m.attachments.values()) {
-          if (VIDEO_EXT_RE.test(att.name ?? "")) {
-            videoItems.push({ url: att.url, size: att.size });
+          if (VIDEO_EXT_RE.test(att.name ?? "")) addVideo(att.url, att.size);
+        }
+
+        // 2. Direct .mp4 / .mov / etc URLs in message text
+        for (const match of [...(m.content?.matchAll(CONTENT_VIDEO_RE) ?? [])]) {
+          addVideo(match[0], Infinity);
+        }
+
+        // 3. fxtwitter / vxtwitter / fixupx redirect URLs in message text
+        //    Real twimg MP4 URL is encoded in the ?url= query param — decode it
+        for (const match of [...(m.content?.matchAll(FXTWITTER_RE) ?? [])]) {
+          const mp4 = extractMp4Url(match[0]);
+          if (mp4) addVideo(mp4, Infinity);
+        }
+
+        // 4. Discord embeds — video.url often carries a fxtwitter redirect
+        for (const embed of m.embeds ?? []) {
+          const candidates = [embed.video?.url, embed.video?.proxyURL, embed.url].filter(Boolean);
+          for (const c of candidates) {
+            const mp4 = extractMp4Url(c) ?? (VIDEO_EXT_RE.test(c.split("?")[0]) ? c : null);
+            if (mp4) { addVideo(mp4, Infinity); break; }
           }
         }
 
-        // 2. Direct video URLs embedded in message content (bots often post raw links)
-        const contentMatches = [...(m.content?.matchAll(CONTENT_VIDEO_RE) ?? [])];
-        for (const match of contentMatches) {
-          videoItems.push({ url: match[0], size: Infinity });
-        }
-
-        // 3. Discord embeds that carry a video (e.g. Tenor GIFs, video embeds)
-        for (const embed of m.embeds ?? []) {
-          const vidUrl = embed.video?.url
-            ?? (embed.url && VIDEO_EXT_RE.test(embed.url.split("?")[0]) ? embed.url : null);
-          if (vidUrl) videoItems.push({ url: vidUrl, size: Infinity });
-        }
-
-        // ── Post each video found in this message ─────────────────────────
-        for (const { url, size } of videoItems) {
+        // ── Upload each video as a real attachment — NEVER as a link ─────
+        for (const { url } of videoItems) {
           if (postedCount >= needed) break paging;
 
-          // Try re-upload (renames the file). Falls back to CDN URL if too large
-          // or if the upload fails for any reason.
-          const DISCORD_MAX = 8 * 1024 * 1024; // 8 MB
-          let sent2 = false;
-
-          if (size <= DISCORD_MAX) {
-            try {
-              await target.send({
-                content: `**${cfg.renamePrefix}**`,
-                files:   [{ attachment: url, name: safeName }],
-              });
-              sent2 = true;
-            } catch (e) {
-              log(`[Scraper] file upload failed for ${url} (${size === Infinity ? "?" : Math.round(size/1024)}KB): ${e.message}`, "warn");
-            }
+          // Skip videos that have expired or been deleted
+          const available = await isVideoAvailable(url);
+          if (!available) {
+            log(`[Scraper] Skipping unavailable/expired video: ${url}`, "warn");
+            continue;
           }
 
-          // Fallback: post URL directly — Discord auto-embeds mp4/gif/webm inline
-          if (!sent2) {
-            try {
-              await target.send(`**${cfg.renamePrefix}**\n${url}`);
-              sent2 = true;
-            } catch (e) {
-              log(`[Scraper] both send methods failed for ${url}: ${e.message}`, "error");
-            }
-          }
-
-          if (sent2) {
+          try {
+            await target.send({
+              content: `**${cfg.renamePrefix}**`,
+              files:   [{ attachment: url, name: safeName }],
+            });
             postedCount++;
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
+          } catch (e) {
+            log(`[Scraper] Upload failed for ${url}: ${e.message}`, "warn");
+            // Skip silently — never fall back to posting a raw link
           }
         }
       }
