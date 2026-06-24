@@ -167,7 +167,7 @@ function buildConfigSnapshot() {
     antiMinorsConfig, antinukeConfig, antiraidConfig,
     autoroles, welcomeConfig, goodbyeConfig, pingOnJoinConfig,
     embedColors, ticketConfig, filterConfig, modlogChannel,
-    levelingEnabled, moderationEnabled, vanityLock, muteRole, birthdayChannel,
+    levelingEnabled, moderationEnabled, moderationCustom, vanityLock, muteRole, birthdayChannel,
     logEvents, reactionRoles, customCommands, disabledCommands,
     aliases, reactionTriggers, counters, automodExempt,
     warnThresholds, userTimezones, confessions, appealConfig,
@@ -242,6 +242,12 @@ async function loadAllData() {
     if (cfg.modlogChannel instanceof Map)     { modlogChannel.clear();     cfg.modlogChannel.forEach((v,k)    => modlogChannel.set(k, v)); }
     if (cfg.levelingEnabled instanceof Map)   { levelingEnabled.clear();   cfg.levelingEnabled.forEach((v,k)  => levelingEnabled.set(k, v)); }
     if (cfg.moderationEnabled instanceof Map) { moderationEnabled.clear(); cfg.moderationEnabled.forEach((v,k) => moderationEnabled.set(k, v)); }
+    if (cfg.moderationCustom  instanceof Map) {
+      moderationCustom.clear();
+      cfg.moderationCustom.forEach((v, k) => {
+        moderationCustom.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []));
+      });
+    }
     if (cfg.vanityLock instanceof Map)        { vanityLock.clear();        cfg.vanityLock.forEach((v,k)       => vanityLock.set(k, v)); }
     if (cfg.muteRole instanceof Map)          { muteRole.clear();          cfg.muteRole.forEach((v,k)         => muteRole.set(k, v)); }
     if (cfg.birthdayChannel instanceof Map)   { birthdayChannel.clear();   cfg.birthdayChannel.forEach((v,k)  => birthdayChannel.set(k, v)); }
@@ -1459,6 +1465,12 @@ const levelingEnabled = new Map();
 // ===== MODERATION TOGGLE (on by default -- disable with ,moderation off) =====
 // When off, the commands ,warn ,ban ,afk ,timeout refuse to execute
 const moderationEnabled = new Map(); // guildId -> boolean (default true)
+const moderationCustom  = new Map(); // guildId -> Set<commandName> (extra commands to block)
+
+function getModerationCustom(guildId) {
+  if (!moderationCustom.has(guildId)) moderationCustom.set(guildId, new Set());
+  return moderationCustom.get(guildId);
+}
 
 // Returns true when moderation is ON (or not explicitly set — defaults to ON)
 function isModerationEnabled(guildId) {
@@ -1478,13 +1490,15 @@ const MOD_COMMANDS = new Set([
   "role","temprole","massrole","massnick","afk",
 ]);
 
-// Single-line gate — call at the top of every handler that routes mod commands
 function modGate(message) {
-  if (!isModerationEnabled(message.guild.id)) {
-    err(message, "moderation is currently **disabled** — use `,moderation on` to re-enable.");
-    return true;   // blocked
+  if (!isModerationEnabled(message.guild.id)) return true; // fully disabled
+  // Even when moderation is on, custom per-guild commands are still blocked
+  const custom = moderationCustom.get(message.guild.id);
+  if (custom?.size) {
+    const cmd = message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
+    if (custom.has(cmd)) return true;
   }
-  return false;  // allowed
+  return false;
 }
 
 client.on("messageCreate", async (message) => {
@@ -3644,32 +3658,89 @@ client.on("messageCreate", async (message) => {
     return info(message, `leveling is currently **${enabled ? "enabled" : "disabled"}** — use \`,leveling on/off\` to toggle.`);
   }
 
-  // ,moderation <on|off|status> -- enable or disable all moderation commands
-  // When OFF: ,warn  ,ban  ,afk  ,timeout all refuse to run
+  // ,moderation <on|off|add|remove|list>
   if (command === "moderation") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
-    const sub = args[1]?.toLowerCase();
+    const sub  = args[1]?.toLowerCase();
+    const isOn = isModerationEnabled(message.guild.id);
+
+    // ,moderation on
     if (sub === "on" || sub === "enable") {
       moderationEnabled.set(message.guild.id, true);
       saveAllConfigs();
-      return ok(message, "moderation commands **enabled** ✅ — `,warn`, `,ban`, `,afk`, `,timeout` are now active.");
+      return ok(message, "moderation **enabled** ✅");
     }
+
+    // ,moderation off
     if (sub === "off" || sub === "disable") {
       moderationEnabled.set(message.guild.id, false);
       saveAllConfigs();
-      return ok(message, "moderation commands **disabled** 🔴 — `,warn`, `,ban`, `,afk`, `,timeout` will not execute until re-enabled.");
+      return ok(message, "moderation **disabled** 🔴");
     }
-    // Default: show status
-    const isOn = isModerationEnabled(message.guild.id);
-    return message.reply({
-      embeds: [{
+
+    // ,moderation add <command> — adds a command to the per-guild block list
+    if (sub === "add") {
+      const cmd = args[2]?.toLowerCase().replace(/^,/, "");
+      if (!cmd) return err(message, "usage: `,moderation add <command>`");
+      getModerationCustom(message.guild.id).add(cmd);
+      saveAllConfigs();
+      return ok(message, `\`,${cmd}\` added to the moderation block list — it will be silently ignored.`);
+    }
+
+    // ,moderation remove <command> — removes from the per-guild block list
+    if (sub === "remove" || sub === "del") {
+      const cmd = args[2]?.toLowerCase().replace(/^,/, "");
+      if (!cmd) return err(message, "usage: `,moderation remove <command>`");
+      const set = moderationCustom.get(message.guild.id);
+      if (!set?.has(cmd)) return err(message, `\`,${cmd}\` is not in the block list.`);
+      set.delete(cmd);
+      saveAllConfigs();
+      return ok(message, `\`,${cmd}\` removed from the block list.`);
+    }
+
+    // ,moderation list — show custom blocked commands
+    if (sub === "list") {
+      const custom = moderationCustom.get(message.guild.id);
+      const customList = custom?.size ? [...custom].map(c => `\`,${c}\``).join("  ") : "*(none)*";
+      const defaultList = [...MOD_COMMANDS].map(c => `\`,${c}\``).join(" ");
+      return message.reply({ embeds: [{
         color: PINK,
-        title: "🛡️ Moderation Toggle",
-        description: `Moderation is currently **${isOn ? "✅ Enabled" : "🔴 Disabled"}**\n\nAffected commands: \`,warn\`, \`,ban\`, \`,afk\`, \`,timeout\`\n\nUse \`,moderation on\` or \`,moderation off\` to toggle.`,
+        title: "🛡️ Moderation Block List",
+        description: [
+          `**Status:** ${isOn ? "✅ On" : "🔴 Off"}`,
+          "",
+          "**Default blocked commands** *(when moderation is off)*",
+          defaultList,
+          "",
+          "**Custom blocked commands** *(always blocked regardless of on/off)*",
+          customList,
+          "",
+          "Use `,moderation add <cmd>` / `,moderation remove <cmd>` to edit.",
+        ].join("\n"),
         footer: { text: message.guild.name },
         timestamp: new Date(),
-      }],
-    });
+      }]});
+    }
+
+    // ,moderation — status overview
+    const custom = moderationCustom.get(message.guild.id);
+    const customLine = custom?.size
+      ? `+${custom.size} custom: ` + [...custom].map(c => `\`,${c}\``).join(" ")
+      : "no custom commands";
+    return message.reply({ embeds: [{
+      color: PINK,
+      title: "🛡️ Moderation",
+      description: [
+        `**Status:** ${isOn ? "✅ Enabled" : "🔴 Disabled"}`,
+        `**Custom block list:** ${customLine}`,
+        "",
+        "`moderation on/off` — toggle",
+        "`moderation add <cmd>` — add a command to always block",
+        "`moderation remove <cmd>` — unblock a custom command",
+        "`moderation list` — see everything",
+      ].join("\n"),
+      footer: { text: message.guild.name }, timestamp: new Date(),
+    }]});
   }
 
   // ,rank [user]
@@ -12046,6 +12117,8 @@ const scraperCursors  = new Map();
 const scraperTimers   = new Map();
 // msgId → { guildId, authorId }  (live panel sessions)
 const configSessions  = new Map();
+// `userId:guildId` → Message  (lets sc_del_pick find the panel from an ephemeral)
+const scraperUserPanel = new Map();
 
 // Default config factory
 function getScraperCfg(guildId) {
@@ -12205,7 +12278,11 @@ client.on("messageCreate", async (message) => {
 
   if (sent) {
     configSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
-    setTimeout(() => configSessions.delete(sent.id), 60 * 60 * 1000);
+    scraperUserPanel.set(`${message.author.id}:${message.guild.id}`, sent);
+    setTimeout(() => {
+      configSessions.delete(sent.id);
+      scraperUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+    }, 60 * 60 * 1000);
   }
 });
 
@@ -12223,6 +12300,33 @@ async function refreshScraperPanel(interaction) {
 client.on("interactionCreate", async (interaction) => {
   const cid = interaction.customId ?? "";
   if (!cid.startsWith("sc_")) return;
+
+  // ── sc_del_pick comes from an ephemeral reply so its message ID is NOT
+  // in configSessions. Handle it early using the reverse-lookup map. ──────────
+  if (cid.startsWith("sc_del_pick:") && interaction.isStringSelectMenu()) {
+    const gId  = cid.replace("sc_del_pick:", "");
+    const cfg2 = getScraperCfg(gId);
+    const idx  = parseInt(interaction.values[0]);
+    if (!isNaN(idx) && idx >= 0 && idx < cfg2.sources.length) {
+      const removed = cfg2.sources.splice(idx, 1)[0];
+      saveScraperCfg();
+      await interaction.update({
+        content: `✅ Removed **${removed.label || removed.channelId}**`,
+        components: [],
+      });
+      // Refresh the original panel via reverse-lookup
+      const panelMsg = scraperUserPanel.get(`${interaction.user.id}:${gId}`);
+      if (panelMsg) {
+        await panelMsg.edit({
+          embeds:     [buildScraperEmbed(gId)],
+          components: buildScraperRows(gId),
+        }).catch(() => {});
+      }
+    } else {
+      await interaction.update({ content: "✖ Invalid selection.", components: [] });
+    }
+    return;
+  }
 
   const sess = configSessions.get(interaction.message?.id);
 
@@ -12250,7 +12354,9 @@ client.on("interactionCreate", async (interaction) => {
     cfg.enabled = !cfg.enabled;
     saveScraperCfg();
     if (cfg.enabled) {
-      rescheduleScraperTimer(guildId);
+      // Fire immediately in background — no await so the panel
+      // responds instantly while the scraper runs behind the scenes
+      runScraper(guildId).then(() => rescheduleScraperTimer(guildId)).catch(() => {});
     } else {
       clearTimeout(scraperTimers.get(guildId));
       scraperTimers.delete(guildId);
@@ -12319,17 +12425,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ content: "**Which source would you like to remove?**", components: [row], flags: 64 });
   }
 
-  // ── REMOVE SOURCE — pick handled ──────────────────────────────────────────
-  if (cid === `sc_del_pick:${guildId}` && interaction.isStringSelectMenu()) {
-    const idx = parseInt(interaction.values[0]);
-    if (!isNaN(idx) && idx >= 0 && idx < cfg.sources.length) {
-      const removed = cfg.sources.splice(idx, 1)[0];
-      saveScraperCfg();
-      await interaction.update({ content: `✅ Removed **${removed.label || removed.channelId}**`, components: [] });
-      return refreshScraperPanel(interaction);
-    }
-    return;
-  }
+  // sc_del_pick is handled before the session check above
 
   // ── SET TARGET CHANNEL ────────────────────────────────────────────────────
   if (cid === `sc_target:${guildId}`) {
@@ -12525,8 +12621,8 @@ async function runScraper(guildId) {
     // No cursor → first run → start from the oldest message in the channel
     // so all existing videos get posted immediately.
     // Cursor set → continue exactly from where the last run stopped.
-    let after    = cursor ?? "0"; // "0" = before the first-ever Discord message
-    let newestId = cursor ?? "0";
+    let after    = cursor ?? "1"; // "1" = before any real Discord snowflake
+    let newestId = cursor ?? "1";
 
     paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
       const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
@@ -12543,15 +12639,35 @@ async function runScraper(guildId) {
           if (!VIDEO_EXT_RE.test(att.name)) continue;
           if (postedCount >= needed) break paging;
 
-          try {
-            await target.send({
-              content: `**${cfg.renamePrefix}**`,
-              files:   [{ attachment: att.url, name: safeName }],
-            });
+          // Try re-upload (renames the file). If Discord rejects it
+          // (most likely >8MB limit), fall back to posting the CDN URL
+          // directly — Discord embeds it inline as a video player.
+          const DISCORD_MAX = 8 * 1024 * 1024; // 8 MB
+          let sent2 = false;
+
+          if (att.size <= DISCORD_MAX) {
+            try {
+              await target.send({
+                content: `**${cfg.renamePrefix}**`,
+                files:   [{ attachment: att.url, name: safeName }],
+              });
+              sent2 = true;
+            } catch (_) {}
+          }
+
+          // Fallback: post CDN URL — works for any size, Discord embeds it
+          if (!sent2) {
+            try {
+              await target.send(`**${cfg.renamePrefix}**\n${att.url}`);
+              sent2 = true;
+            } catch (e) {
+              log(`[Scraper] both send methods failed for ${att.url}: ${e.message}`, "error");
+            }
+          }
+
+          if (sent2) {
             postedCount++;
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
-          } catch (e) {
-            log(`[Scraper] send failed: ${e.message}`, "error");
           }
         }
       }
