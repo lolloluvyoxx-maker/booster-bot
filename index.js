@@ -12659,7 +12659,12 @@ async function runScraper(guildId) {
 
     paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
       const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
-      if (!msgs || msgs.size === 0) break;
+      if (!msgs || msgs.size === 0) {
+        // Cursor is past all content — reset so next run cycles from the oldest message
+        cursors.delete(source.channelId);
+        newestId = "0";
+        break;
+      }
 
       // Discord returns `after` results oldest→newest
       const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
@@ -12733,12 +12738,22 @@ async function runScraper(guildId) {
       }
 
       after = sorted.at(-1).id;
-      if (msgs.size < 100) break; // reached the newest message in the channel
+      if (msgs.size < 100) {
+        // Reached the newest message in the channel — reset cursor so next run cycles back
+        cursors.delete(source.channelId);
+        newestId = "0";
+        break;
+      }
       await new Promise(r => setTimeout(r, 350));
     }
 
     // Save advanced cursor — the only thing written to DB for dedup
-    if (newestId !== cursor) cursors.set(source.channelId, newestId);
+    // (If newestId was reset to "0" above, delete the cursor so next run starts fresh)
+    if (newestId === "0") {
+      cursors.delete(source.channelId);
+    } else if (newestId !== cursor) {
+      cursors.set(source.channelId, newestId);
+    }
   }
 
   cfg.lastRunAt = Date.now();
