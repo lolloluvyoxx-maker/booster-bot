@@ -157,6 +157,8 @@ const DB = {
   CH_PERMS:      'channel_perms',   // saved channel permission snapshots
   SCRAPER_CFG:   'scraper_cfg',      // video scraper config
   SCRAPER_CURSOR:'scraper_cursor',   // last message ID per source (dedup cursor)
+  TWITTER_CFG:   'twitter_cfg',      // twitter repost config
+  TWITTER_CURSOR:'twitter_cursor',   // last tweet ID per account (dedup cursor)
 };
 
 // ── Build the full guild config snapshot ─────────────────────────────────────
@@ -199,7 +201,9 @@ function saveHighlights()  { scheduleSave(DB.HIGHLIGHTS, () => highlights); }
 function saveTempBans()    { scheduleSave(DB.TEMPBANS,   () => tempBans); }
 function saveStats()       { scheduleSave(DB.STATS,      () => serverStats); }
 function saveMuteHist()    { scheduleSave(DB.MUTE_HIST,  () => muteHistory); }
-function saveChPerms()     { scheduleSave(DB.CH_PERMS,   () => channelPerms); }
+function saveChPerms()        { scheduleSave(DB.CH_PERMS,       () => channelPerms); }
+function saveTwitterCfg()     { scheduleSave(DB.TWITTER_CFG,    () => twitterRepostCfg, 2000); }
+function saveTwitterCursors() { scheduleSave(DB.TWITTER_CURSOR, () => twitterCursors,   3000); }
 
 // ── Load ALL data from DB on startup ─────────────────────────────────────────
 async function loadAllData() {
@@ -461,11 +465,43 @@ async function loadAllData() {
     console.log(`[DB] ✅ scraper_cursor restored (${scraperCursors.size} guild(s))`);
   }
 
+  // ── Twitter repost config ─────────────────────────────────────────────────
+  if (d[DB.TWITTER_CFG] instanceof Map) {
+    twitterRepostCfg.clear();
+    d[DB.TWITTER_CFG].forEach((v, guildId) => {
+      twitterRepostCfg.set(guildId, {
+        enabled: false, accounts: [], targetChannelId: null,
+        pollIntervalMs: 10 * 60_000, mediaOnly: false,
+        includeRetweets: false, includeReplies: false,
+        rsshubBase: 'https://rsshub.app',
+        lastRunAt: null, lastRunResult: null, ...v,
+      });
+    });
+    console.log(`[DB] ✅ twitter_cfg restored (${twitterRepostCfg.size} guild(s))`);
+  }
+
+  // ── Twitter cursors — one tweet ID per monitored account ─────────────────
+  if (d[DB.TWITTER_CURSOR] instanceof Map) {
+    twitterCursors.clear();
+    d[DB.TWITTER_CURSOR].forEach((v, guildId) => {
+      twitterCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
+    });
+    console.log(`[DB] ✅ twitter_cursor restored (${twitterCursors.size} guild(s))`);
+  }
+
   // ── Re-start enabled scrapers ─────────────────────────────────────────────
   for (const [guildId, cfg] of videoScraperCfg.entries()) {
     if (cfg.enabled && cfg.targetChannelId && cfg.sources.length > 0) {
       rescheduleScraperTimer(guildId);
       console.log(`[Scraper] ▶ resumed for guild ${guildId}`);
+    }
+  }
+
+  // ── Re-start enabled Twitter pollers ─────────────────────────────────────
+  for (const [guildId, cfg] of twitterRepostCfg.entries()) {
+    if (cfg.enabled && cfg.targetChannelId && cfg.accounts.length > 0) {
+      rescheduleTwitterTimer(guildId);
+      console.log(`[Twitter] ▶ resumed for guild ${guildId}`);
     }
   }
 
@@ -499,6 +535,8 @@ setInterval(async () => {
   if (!_saveQueue.has(DB.CH_PERMS))       saveChPerms();
   if (!_saveQueue.has(DB.SCRAPER_CFG))    saveScraperCfg();
   if (!_saveQueue.has(DB.SCRAPER_CURSOR)) saveScraperCursors();
+  if (!_saveQueue.has(DB.TWITTER_CFG))    saveTwitterCfg();
+  if (!_saveQueue.has(DB.TWITTER_CURSOR)) saveTwitterCursors();
 }, 60 * 1000);
 
 
@@ -13000,5 +13038,715 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TWITTER/X  REPOST  SYSTEM   (RSSHub polling — nessuna API Twitter necessaria)
+// Comando:  ,twitter   →   apre il pannello interattivo (solo Administrator)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── State maps ────────────────────────────────────────────────────────────────
+const twitterRepostCfg  = new Map(); // guildId → TwitterConfig
+const twitterCursors    = new Map(); // guildId → Map<username, lastTweetId>
+const twitterTimers     = new Map(); // guildId → Timeout
+const twitterSessions   = new Map(); // msgId   → { guildId, authorId }
+const twitterUserPanel  = new Map(); // `userId:guildId` → Message
+const _twitterRunning   = new Set(); // guard doppia esecuzione
+
+// ── Config factory ────────────────────────────────────────────────────────────
+function getTwitterCfg(guildId) {
+  if (!twitterRepostCfg.has(guildId)) {
+    twitterRepostCfg.set(guildId, {
+      enabled:         false,
+      accounts:        [],          // [{ username, label }]
+      targetChannelId: null,
+      pollIntervalMs:  10 * 60_000, // 10 minuti
+      mediaOnly:       false,
+      includeRetweets: false,
+      includeReplies:  false,
+      rsshubBase:      'https://rsshub.app',
+      lastRunAt:       null,
+      lastRunResult:   null,
+    });
+  }
+  return twitterRepostCfg.get(guildId);
+}
+
+function getTwitterCursors(guildId) {
+  if (!twitterCursors.has(guildId)) twitterCursors.set(guildId, new Map());
+  return twitterCursors.get(guildId);
+}
+
+// ── HTTP fetcher (built-in Node, zero dipendenze) ─────────────────────────────
+const _https = require('https');
+const _http  = require('http');
+
+function fetchUrl(url, timeoutMs = 12_000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? _https : _http;
+    const req = lib.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; DiscordBot/1.0; +https://discord.com)',
+        'Accept':     'application/rss+xml, application/xml, text/xml, */*',
+      },
+    }, (res) => {
+      // Segui redirect (301/302)
+      if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+        return fetchUrl(res.headers.location, timeoutMs).then(resolve).catch(reject);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.on('error', reject);
+  });
+}
+
+// ── RSS parser leggero (no dipendenze) ───────────────────────────────────────
+function parseRss(xml) {
+  const items = [];
+  const blocks = xml.match(/<item[\s\S]*?<\/item>/g) ?? [];
+
+  for (const block of blocks) {
+    const tag = (name) => {
+      const r = block.match(
+        new RegExp(`<${name}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${name}>` +
+                   `|<${name}[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i')
+      );
+      return r ? (r[1] ?? r[2] ?? '').trim() : '';
+    };
+    const attr = (tagName, attrName) => {
+      const r = block.match(new RegExp(`<${tagName}[^>]+${attrName}="([^"]+)"`, 'i'));
+      return r ? r[1] : '';
+    };
+
+    const title       = tag('title');
+    const link        = tag('link') || attr('link', 'href');
+    const pubDate     = tag('pubDate') || tag('published') || tag('dc:date');
+    const description = tag('description') || tag('content:encoded') || tag('summary');
+    const guid        = tag('guid');
+
+    // Tweet ID da URL o guid
+    const idMatch = (guid || link).match(/status(?:es)?[\/:](\d+)/);
+    const tweetId = idMatch ? idMatch[1] : (guid || link || Date.now().toString());
+
+    // Raccoglie URL media (immagini / video)
+    const mediaUrls = new Set();
+    const encUrl = attr('enclosure', 'url');
+    if (encUrl) mediaUrls.add(encUrl);
+    for (const m of block.matchAll(/url="([^"]+(?:\.jpg|\.jpeg|\.png|\.gif|\.mp4|\.webp)[^"]*)"/gi))
+      mediaUrls.add(m[1]);
+    for (const m of description.matchAll(/<img[^>]+src="([^"]+)"/gi))
+      mediaUrls.add(m[1]);
+
+    // Testo pulito
+    const cleanText = description
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ').trim().slice(0, 500);
+
+    items.push({ title, link, pubDate, cleanText, tweetId, mediaUrls: [...mediaUrls] });
+  }
+  return items;
+}
+
+// ── HTML entities unescape (per il testo del tweet) ──────────────────────────
+function unescapeHtml(str = '') {
+  return str
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+// ── Cuore del poller ──────────────────────────────────────────────────────────
+async function runTwitterPoller(guildId) {
+  if (_twitterRunning.has(guildId)) return null;
+  _twitterRunning.add(guildId);
+
+  const cfg = getTwitterCfg(guildId);
+  if (!cfg.enabled || !cfg.targetChannelId || cfg.accounts.length === 0) {
+    _twitterRunning.delete(guildId);
+    return null;
+  }
+
+  const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
+  if (!target) {
+    cfg.enabled = false;
+    saveTwitterCfg();
+    _twitterRunning.delete(guildId);
+    log(`[Twitter] Guild ${guildId}: target channel not found — disabling`, 'warn');
+    return null;
+  }
+
+  const cursors    = getTwitterCursors(guildId);
+  let   totalPosted = 0;
+  let   errors      = 0;
+
+  for (const account of cfg.accounts) {
+    try {
+      const rssUrl = `${cfg.rsshubBase.replace(/\/$/, '')}/twitter/user/${account.username}`;
+      let xml;
+      try {
+        xml = await fetchUrl(rssUrl, 15_000);
+      } catch (e) {
+        log(`[Twitter] RSS fetch failed for @${account.username}: ${e.message}`, 'warn');
+        errors++;
+        continue;
+      }
+
+      const items = parseRss(xml);
+      if (items.length === 0) continue;
+
+      // Primo accesso: imposta cursore sul tweet più recente e NON posta nulla
+      // (evita flood di decine di tweet storici al primo avvio)
+      if (!cursors.has(account.username)) {
+        const newest = items.reduce((a, b) => (a.tweetId > b.tweetId ? a : b));
+        cursors.set(account.username, newest.tweetId);
+        saveTwitterCursors();
+        log(`[Twitter] @${account.username}: primo avvio — cursore impostato a ${newest.tweetId}`, 'info');
+        continue;
+      }
+
+      const lastId = cursors.get(account.username);
+
+      // Ordina dal meno recente al più recente → posta in ordine cronologico
+      const newItems = items
+        .filter(i => i.tweetId > lastId)
+        .sort((a, b) => (a.tweetId < b.tweetId ? -1 : 1));
+
+      for (const item of newItems) {
+        // Filtro retweet (il titolo nell'RSS inizia con "RT @")
+        if (!cfg.includeRetweets && item.title.startsWith('RT @')) continue;
+        // Filtro risposte (il titolo inizia con "@")
+        if (!cfg.includeReplies && /^@\w/.test(item.title)) continue;
+        // Filtro media-only
+        if (cfg.mediaOnly && item.mediaUrls.length === 0) continue;
+
+        try {
+          const tweetText = unescapeHtml(item.cleanText) || unescapeHtml(item.title);
+
+          const embedObj = {
+            color:  0x1D9BF0, // blu Twitter/X ufficiale
+            author: {
+              name:     `@${account.username}${account.label ? `  ·  ${account.label}` : ''}`,
+              url:      `https://x.com/${account.username}`,
+              icon_url: `https://unavatar.io/twitter/${account.username}`,
+            },
+            description: tweetText || undefined,
+            url:         item.link || `https://x.com/${account.username}`,
+            timestamp:   item.pubDate ? new Date(item.pubDate).toISOString() : undefined,
+            footer:      { text: 'X / Twitter  ·  via RSSHub' },
+          };
+
+          // Prima immagine nell'embed (le altre come file allegati se disponibili)
+          const images = item.mediaUrls.filter(u => /\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(u));
+          if (images.length > 0) embedObj.image = { url: images[0] };
+
+          await target.send({ embeds: [embedObj] });
+
+          cursors.set(account.username, item.tweetId);
+          totalPosted++;
+          await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
+        } catch (e) {
+          log(`[Twitter] Post fallito (${item.tweetId}): ${e.message}`, 'warn');
+        }
+      }
+    } catch (e) {
+      log(`[Twitter] Errore imprevisto per @${account.username}: ${e.message}`, 'warn');
+      errors++;
+    }
+
+    await new Promise(r => setTimeout(r, 2_000)); // pausa tra account
+  }
+
+  cfg.lastRunAt     = Date.now();
+  cfg.lastRunResult = { posted: totalPosted, errors, accounts: cfg.accounts.length, ts: Date.now() };
+  saveTwitterCfg();
+  saveTwitterCursors();
+  log(`[Twitter] Guild ${guildId}: postati ${totalPosted} tweet(s), errori: ${errors}`, 'info');
+  _twitterRunning.delete(guildId);
+  return cfg.lastRunResult;
+}
+
+function rescheduleTwitterTimer(guildId) {
+  clearTimeout(twitterTimers.get(guildId));
+  twitterTimers.delete(guildId);
+  const cfg = getTwitterCfg(guildId);
+  if (!cfg.enabled) return;
+  const timer = setTimeout(() => {
+    runTwitterPoller(guildId)
+      .then(() => rescheduleTwitterTimer(guildId))
+      .catch(() => rescheduleTwitterTimer(guildId));
+  }, cfg.pollIntervalMs);
+  twitterTimers.set(guildId, timer);
+}
+
+// ── Embed del pannello ────────────────────────────────────────────────────────
+function buildTwitterEmbed(guildId) {
+  const cfg = getTwitterCfg(guildId);
+
+  const statusStr  = cfg.enabled ? '🟢 **Attivo**' : '⭕ **Spento**';
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : '*(non impostato — premi 🎯)*';
+  const intervalStr = `ogni **${msToHuman(cfg.pollIntervalMs)}**`;
+  const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : '*(mai eseguito)*';
+
+  let accountsStr;
+  if (cfg.accounts.length === 0) {
+    accountsStr = '*(nessuno — aggiungine uno con ➕)*';
+  } else {
+    accountsStr = cfg.accounts.map((a, i) =>
+      `\`${String(i + 1).padStart(2, '0')}.\` **@${a.username}**${a.label ? `  ·  ${a.label}` : ''}`
+    ).join('\n');
+  }
+
+  const filtersStr = [
+    cfg.mediaOnly       ? '📷 Solo media'  : '📝 Testo + media',
+    cfg.includeRetweets ? '🔁 RT inclusi'  : '🚫 RT esclusi',
+    cfg.includeReplies  ? '💬 Risposte incluse' : '🚫 Risposte escluse',
+  ].join('  ·  ');
+
+  const lastResultStr = (() => {
+    const r = cfg.lastRunResult;
+    if (!r) return '*(nessun dato)*';
+    if (r.errors && r.posted === 0) return `⚠️ ${r.errors} errore/i`;
+    return `✅ ${r.posted} tweet postati${r.errors ? ` · ⚠️ ${r.errors} errori` : ''}`;
+  })();
+
+  const readyHint = !cfg.targetChannelId
+    ? '> ⚠️ **Imposta prima un canale target.**'
+    : cfg.accounts.length === 0
+      ? '> ⚠️ **Aggiungi almeno un account Twitter.**'
+      : cfg.enabled
+        ? `> 🟢 Polling attivo — prossima scansione: ${intervalStr}.`
+        : '> ✅ Pronto! Premi **▶ Avvia** per iniziare.';
+
+  return {
+    color:  0x1D9BF0,
+    author: { name: '◈  Twitter/X Repost  ·  Pannello Config' },
+    description: [
+      'Monitora account Twitter/X via **RSSHub** e riposta automaticamente i tweet nel tuo canale.',
+      '',
+      readyHint,
+    ].join('\n'),
+    fields: [
+      { name: '📊  Stato',              value: statusStr,      inline: true  },
+      { name: '⏱  Intervallo polling', value: intervalStr,    inline: true  },
+      { name: '🕑  Ultima esecuzione',  value: lastStr,        inline: true  },
+      { name: '📤  Canale target',      value: targetStr,      inline: false },
+      { name: '🐦  Account monitorati', value: accountsStr,    inline: false },
+      { name: '🔍  Filtri attivi',      value: filtersStr,     inline: false },
+      { name: '📋  Ultimo risultato',   value: lastResultStr,  inline: false },
+      { name: '🌐  RSSHub base URL',    value: `\`${cfg.rsshubBase}\``, inline: false },
+    ],
+    footer:    { text: 'sensational  ·  twitter repost  ·  solo Administrator' },
+    timestamp: new Date(),
+  };
+}
+
+// ── Bottoni del pannello ──────────────────────────────────────────────────────
+function buildTwitterRows(guildId) {
+  const cfg = getTwitterCfg(guildId);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_toggle:${guildId}`)
+        .setLabel(cfg.enabled ? '⏹ Ferma' : '▶ Avvia')
+        .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`tw_run_now:${guildId}`)
+        .setLabel('⚡ Controlla Ora')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_add_acc:${guildId}`)
+        .setLabel('➕ Aggiungi Account')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`tw_del_acc:${guildId}`)
+        .setLabel('➖ Rimuovi Account')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(cfg.accounts.length === 0),
+      new ButtonBuilder()
+        .setCustomId(`tw_target:${guildId}`)
+        .setLabel('🎯 Canale Target')
+        .setStyle(ButtonStyle.Primary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_interval:${guildId}`)
+        .setLabel('⏱ Intervallo')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_filters:${guildId}`)
+        .setLabel('🔍 Filtri')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_rsshub:${guildId}`)
+        .setLabel('🌐 RSSHub URL')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_reset:${guildId}`)
+        .setLabel('🗑 Reset')
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+// ── Aggiorna il pannello in-place ─────────────────────────────────────────────
+async function refreshTwitterPanel(interaction) {
+  const sess = twitterSessions.get(interaction.message?.id);
+  if (!sess) return;
+  await interaction.message.edit({
+    embeds:     [buildTwitterEmbed(sess.guildId)],
+    components: buildTwitterRows(sess.guildId),
+  }).catch(() => {});
+}
+
+// ── Comando ,twitter ──────────────────────────────────────────────────────────
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(',')) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  if (args[0].toLowerCase() !== 'twitter') return;
+
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply({ embeds: [{ color: PINK, description: '✖ Serve il permesso **Administrator** per aprire il pannello Twitter.' }] });
+  }
+
+  const sent = await message.reply({
+    embeds:     [buildTwitterEmbed(message.guild.id)],
+    components: buildTwitterRows(message.guild.id),
+  }).catch(() => null);
+
+  if (sent) {
+    twitterSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
+    twitterUserPanel.set(`${message.author.id}:${message.guild.id}`, sent);
+    setTimeout(() => {
+      twitterSessions.delete(sent.id);
+      twitterUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+    }, 60 * 60 * 1000); // scade dopo 1 ora
+  }
+});
+
+// ── Interaction handler — pannello Twitter ────────────────────────────────────
+client.on('interactionCreate', async (interaction) => {
+  const cid = interaction.customId ?? '';
+  if (!cid.startsWith('tw_')) return;
+
+  // tw_del_pick viene da un reply efimero — gestisci prima del check sessione
+  if (cid.startsWith('tw_del_pick:') && interaction.isStringSelectMenu()) {
+    const gId  = cid.replace('tw_del_pick:', '');
+    const cfg2 = getTwitterCfg(gId);
+    const idx  = parseInt(interaction.values[0]);
+    if (!isNaN(idx) && idx >= 0 && idx < cfg2.accounts.length) {
+      const removed = cfg2.accounts.splice(idx, 1)[0];
+      saveTwitterCfg();
+      await interaction.update({
+        content:    `✅ Rimosso **@${removed.username}**`,
+        components: [],
+      });
+      const panelMsg = twitterUserPanel.get(`${interaction.user.id}:${gId}`);
+      if (panelMsg) {
+        await panelMsg.edit({
+          embeds:     [buildTwitterEmbed(gId)],
+          components: buildTwitterRows(gId),
+        }).catch(() => {});
+      }
+    } else {
+      await interaction.update({ content: '✖ Selezione non valida.', components: [] });
+    }
+    return;
+  }
+
+  const sess = twitterSessions.get(interaction.message?.id);
+
+  if (!sess) {
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      return interaction.reply({ content: '⚠ Sessione scaduta — esegui `,twitter` di nuovo.', flags: 64 }).catch(() => {});
+    }
+    if (!interaction.isModalSubmit()) return;
+  }
+
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ embeds: [{ color: PINK, description: '✖ Questo pannello è stato aperto da qualcun altro.' }], flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+  const guildId = sess?.guildId ?? cid.split(':')[1];
+  const cfg     = getTwitterCfg(guildId);
+
+  // ── TOGGLE ────────────────────────────────────────────────────────────────
+  if (cid === `tw_toggle:${guildId}`) {
+    if (!cfg.enabled && (!cfg.targetChannelId || cfg.accounts.length === 0)) {
+      return interaction.reply({ content: '⚠ Imposta prima un canale target e almeno un account.', flags: 64 });
+    }
+    cfg.enabled = !cfg.enabled;
+    saveTwitterCfg();
+    if (cfg.enabled) {
+      rescheduleTwitterTimer(guildId);
+    } else {
+      clearTimeout(twitterTimers.get(guildId));
+      twitterTimers.delete(guildId);
+    }
+    await interaction.deferUpdate();
+    return refreshTwitterPanel(interaction);
+  }
+
+  // ── RUN NOW ───────────────────────────────────────────────────────────────
+  if (cid === `tw_run_now:${guildId}`) {
+    if (!cfg.targetChannelId || cfg.accounts.length === 0) {
+      return interaction.reply({ content: '⚠ Imposta un canale target e almeno un account prima.', flags: 64 });
+    }
+    await interaction.deferUpdate();
+    await interaction.message.edit({
+      embeds:     [{ color: 0x1D9BF0, author: { name: '◈  Twitter/X Repost  ·  Controllo in corso…' }, description: '⚡ Sto controllando i feed RSS, attendere…' }],
+      components: [],
+    }).catch(() => {});
+    const result = await runTwitterPoller(guildId);
+    const note = (() => {
+      if (!result) return '\n\n⚠️ Poller già in esecuzione, riprova tra un momento.';
+      if (result.errors > 0 && result.posted === 0) return `\n\n⚠️ **${result.errors} errore/i** — controlla che gli account esistano e che RSSHub sia raggiungibile.`;
+      if (result.posted === 0) return '\n\n✅ Nessun nuovo tweet trovato.';
+      return `\n\n✅ Postati **${result.posted}** tweet${result.errors ? ` · ⚠️ ${result.errors} errori` : ''}.`;
+    })();
+    const baseEmbed = buildTwitterEmbed(guildId);
+    baseEmbed.description = (baseEmbed.description ?? '') + note;
+    return interaction.message.edit({
+      embeds:     [baseEmbed],
+      components: buildTwitterRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── ADD ACCOUNT ───────────────────────────────────────────────────────────
+  if (cid === `tw_add_acc:${guildId}`) {
+    if (cfg.accounts.length >= 20) return interaction.reply({ content: '✖ Massimo **20** account monitorabili.', flags: 64 });
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_add_acc:${guildId}`)
+      .setTitle('Aggiungi Account Twitter/X');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('username')
+          .setLabel('Username (senza @)')
+          .setPlaceholder('esempio: elonmusk')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(50)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('label')
+          .setLabel('Etichetta / soprannome (opzionale)')
+          .setPlaceholder('es. CEO Tesla')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(50)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── REMOVE ACCOUNT — mostra picker ────────────────────────────────────────
+  if (cid === `tw_del_acc:${guildId}`) {
+    if (cfg.accounts.length === 0) return interaction.reply({ content: 'Nessun account da rimuovere.', flags: 64 });
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`tw_del_pick:${guildId}`)
+        .setPlaceholder('Seleziona un account da rimuovere…')
+        .addOptions(
+          cfg.accounts.map((a, i) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`${i + 1}. @${a.username}${a.label ? ` · ${a.label}` : ''}`)
+              .setValue(`${i}`)
+          )
+        )
+    );
+    return interaction.reply({ content: '**Quale account vuoi smettere di monitorare?**', components: [row], flags: 64 });
+  }
+
+  // ── SET TARGET CHANNEL ────────────────────────────────────────────────────
+  if (cid === `tw_target:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_target:${guildId}`)
+      .setTitle('Canale Target per i Tweet');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('channel_id')
+          .setLabel('ID Canale (tasto destro → Copia ID)')
+          .setPlaceholder('1234567890123456789')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── INTERVALLO ────────────────────────────────────────────────────────────
+  if (cid === `tw_interval:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_interval:${guildId}`)
+      .setTitle('Intervallo Polling');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('interval')
+          .setLabel('Ogni quanto controllare? (es: 5m · 15m · 1h)')
+          .setPlaceholder('10m')
+          .setValue(msToHuman(cfg.pollIntervalMs))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── FILTRI ────────────────────────────────────────────────────────────────
+  if (cid === `tw_filters:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_filters:${guildId}`)
+      .setTitle('Filtri Contenuto');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('media_only')
+          .setLabel('Solo tweet con foto/video? (sì / no)')
+          .setValue(cfg.mediaOnly ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('include_rt')
+          .setLabel('Includi Retweet? (sì / no)')
+          .setValue(cfg.includeRetweets ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('include_replies')
+          .setLabel('Includi Risposte? (sì / no)')
+          .setValue(cfg.includeReplies ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RSSHUB BASE URL ───────────────────────────────────────────────────────
+  if (cid === `tw_rsshub:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_rsshub:${guildId}`)
+      .setTitle('RSSHub Base URL');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('rsshub_url')
+          .setLabel('URL istanza RSSHub (default: rsshub.app)')
+          .setPlaceholder('https://rsshub.app')
+          .setValue(cfg.rsshubBase)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(200)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RESET ─────────────────────────────────────────────────────────────────
+  if (cid === `tw_reset:${guildId}`) {
+    clearTimeout(twitterTimers.get(guildId));
+    twitterTimers.delete(guildId);
+    twitterCursors.delete(guildId);
+    twitterRepostCfg.delete(guildId);
+    saveTwitterCfg();
+    saveTwitterCursors();
+    await interaction.deferUpdate();
+    return interaction.message.edit({
+      embeds:     [buildTwitterEmbed(guildId)],
+      components: buildTwitterRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── MODAL SUBMISSIONS ─────────────────────────────────────────────────────
+  if (!interaction.isModalSubmit()) return;
+
+  // Aggiungi account
+  if (cid === `tw_modal_add_acc:${guildId}`) {
+    const username = interaction.fields.getTextInputValue('username').trim().replace(/^@/, '').toLowerCase();
+    const label    = interaction.fields.getTextInputValue('label').trim();
+    if (!username || !/^\w{1,50}$/.test(username)) {
+      return interaction.reply({ content: '✖ Username non valido. Usa solo lettere, numeri e underscore.', flags: 64 });
+    }
+    if (cfg.accounts.some(a => a.username === username)) {
+      return interaction.reply({ content: `✖ **@${username}** è già monitorato.`, flags: 64 });
+    }
+    cfg.accounts.push({ username, label: label || '' });
+    saveTwitterCfg();
+    await interaction.reply({ content: `✅ Aggiunto **@${username}**${label ? ` (${label})` : ''}.\n> Il cursore verrà impostato al tweet più recente alla prossima esecuzione — non ci sarà flood storico.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Canale target
+  if (cid === `tw_modal_target:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue('channel_id').trim().replace(/\D/g, '');
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `✖ Canale \`${channelId}\` non trovato.`, flags: 64 });
+    cfg.targetChannelId = channelId;
+    saveTwitterCfg();
+    await interaction.reply({ content: `✅ Canale target impostato su <#${channelId}>.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Intervallo
+  if (cid === `tw_modal_interval:${guildId}`) {
+    const ms = parseDuration(interaction.fields.getTextInputValue('interval').trim());
+    if (!ms || ms < 60_000) {
+      return interaction.reply({ content: '✖ Intervallo minimo: **1 minuto** (es. `1m`, `15m`, `1h`).', flags: 64 });
+    }
+    if (ms > 24 * 3_600_000) {
+      return interaction.reply({ content: '✖ Intervallo massimo: **24h**.', flags: 64 });
+    }
+    cfg.pollIntervalMs = ms;
+    saveTwitterCfg();
+    if (cfg.enabled) rescheduleTwitterTimer(guildId);
+    await interaction.reply({ content: `✅ Intervallo aggiornato: controllo ogni **${msToHuman(ms)}**.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Filtri
+  if (cid === `tw_modal_filters:${guildId}`) {
+    const YES = ['sì', 'si', 'yes', 'y', '1', 'true'];
+    cfg.mediaOnly       = YES.includes(interaction.fields.getTextInputValue('media_only').trim().toLowerCase());
+    cfg.includeRetweets = YES.includes(interaction.fields.getTextInputValue('include_rt').trim().toLowerCase());
+    cfg.includeReplies  = YES.includes(interaction.fields.getTextInputValue('include_replies').trim().toLowerCase());
+    saveTwitterCfg();
+    await interaction.reply({ content: `✅ Filtri aggiornati.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // RSSHub URL
+  if (cid === `tw_modal_rsshub:${guildId}`) {
+    const url = interaction.fields.getTextInputValue('rsshub_url').trim().replace(/\/$/, '');
+    if (!url.startsWith('http')) {
+      return interaction.reply({ content: '✖ URL non valido. Deve iniziare con `http://` o `https://`.', flags: 64 });
+    }
+    cfg.rsshubBase = url;
+    saveTwitterCfg();
+    await interaction.reply({ content: `✅ RSSHub URL impostato su \`${url}\`.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 client.login(process.env.TOKEN);
+
 
