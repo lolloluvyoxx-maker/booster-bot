@@ -12788,25 +12788,55 @@ async function runScraper(guildId, overrideCount) {
           }
 
           try {
-            // Build text content that appears ABOVE the video in Discord.
-            // Using message content (not a Discord embed) because Discord always
-            // renders file attachments above embeds in the same bubble on mobile —
-            // which makes them look like two separate messages. Content sits on top.
             const eCfg = cfg.embedConfig ?? {};
-            const lines = [];
-            if (eCfg.title)       lines.push(eCfg.title);
-            if (eCfg.description) lines.push(eCfg.description);
-            if (eCfg.footer)      lines.push(`-# ${eCfg.footer}`);
+            // Strip any leading -# the user may have typed in the footer field
+            // (we always add it ourselves so it renders as Discord subtext)
+            const cleanFooter = (eCfg.footer ?? '').replace(/^-#\s*/, '').trim();
 
-            await target.send({
-              content: lines.length > 0 ? lines.join('\n') : undefined,
-              files:   [{ attachment: url, name: safeName }],
-            });
+            // ── Attempt 1: Components v2 Container ──────────────────────────
+            // This creates a single bordered box (like a link-embed / fxtwitter card)
+            // with title, divider, video, and footer all inside one visual unit.
+            // flag 1<<15 = IsComponentsV2 (discord.js 14.16+ / API v10)
+            const C2_FLAG = 1 << 15;
+            const boxParts = [];
+            if (eCfg.title)       boxParts.push({ type: 10, content: eCfg.title });
+            if (eCfg.description) boxParts.push({ type: 10, content: eCfg.description });
+            boxParts.push({ type: 14, divider: true,  spacing: 1 }); // ── divider
+            boxParts.push({ type: 12, items: [{ media: { url: `attachment://${safeName}` } }] });
+            if (cleanFooter) {
+              boxParts.push({ type: 14, divider: false, spacing: 1 });
+              boxParts.push({ type: 10, content: `-# ${cleanFooter}` });
+            }
+
+            let uploadOk = false;
+            try {
+              await target.send({
+                flags:      C2_FLAG,
+                components: [{ type: 17, accent_color: eCfg.color ?? 0xFFFFFF, components: boxParts }],
+                files:      [{ attachment: url, name: safeName }],
+              });
+              uploadOk = true;
+            } catch (e2) {
+              log(`[Scraper] Components v2 failed (${e2.message}), falling back to content+file`, "warn");
+            }
+
+            // ── Fallback: plain content above the video ──────────────────────
+            if (!uploadOk) {
+              const lines = [];
+              if (eCfg.title)       lines.push(eCfg.title);
+              if (eCfg.description) lines.push(eCfg.description);
+              if (cleanFooter)      lines.push(`-# ${cleanFooter}`);
+              await target.send({
+                content: lines.length > 0 ? lines.join('\n') : undefined,
+                files:   [{ attachment: url, name: safeName }],
+              });
+            }
+
             postedCount++;
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
           } catch (e) {
             log(`[Scraper] Upload failed for ${url}: ${e.message}`, "warn");
-            // Skip silently — never fall back to posting a raw link
+            // Skip silently — never post as a raw link
           }
         }
       }
