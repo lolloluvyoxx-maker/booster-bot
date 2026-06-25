@@ -12396,7 +12396,7 @@ client.on("interactionCreate", async (interaction) => {
       embeds:     [{ color: PINK, author: { name: "◈  Video Scraper  ·  Running…" }, description: "⚡ Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
-    const result = await runScraper(guildId);
+    const result = await runScraper(guildId, 1);
     // Build a short result line to append to the refreshed embed
     let resultNote = "";
     if (result) {
@@ -12666,14 +12666,23 @@ async function isVideoAvailable(url) {
   }
 }
 
+// Prevents two scraper runs for the same guild from overlapping
+const _scraperRunning = new Set();
+
 // overrideCount lets callers post fewer videos than the scheduled quota (e.g. 1 on Start)
 async function runScraper(guildId, overrideCount) {
+  if (_scraperRunning.has(guildId)) {
+    log(`[Scraper] Guild ${guildId}: run skipped — previous run still in progress`, "warn");
+    return { posted: 0, needed: 0, skippedSources: 0 };
+  }
+  _scraperRunning.add(guildId);
   const cfg = getScraperCfg(guildId);
   if (!cfg.targetChannelId || cfg.sources.length === 0) return { posted: 0, needed: 0, skippedSources: 0 };
 
   const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
   if (!target?.isTextBased?.()) {
     log(`[Scraper] target ${cfg.targetChannelId} missing or not text-based`, "error");
+    _scraperRunning.delete(guildId);
     return { posted: 0, needed: 0, skippedSources: 0, error: "Target channel inaccessible" };
   }
 
@@ -12779,15 +12788,19 @@ async function runScraper(guildId, overrideCount) {
           }
 
           try {
+            // Build text content that appears ABOVE the video in Discord.
+            // Using message content (not a Discord embed) because Discord always
+            // renders file attachments above embeds in the same bubble on mobile —
+            // which makes them look like two separate messages. Content sits on top.
             const eCfg = cfg.embedConfig ?? {};
-            const embedObj = { color: eCfg.color ?? 0xFFFFFF };
-            if (eCfg.title)       embedObj.title       = eCfg.title;
-            if (eCfg.description) embedObj.description = eCfg.description;
-            if (eCfg.footer)      embedObj.footer      = { text: eCfg.footer };
+            const lines = [];
+            if (eCfg.title)       lines.push(eCfg.title);
+            if (eCfg.description) lines.push(eCfg.description);
+            if (eCfg.footer)      lines.push(`-# ${eCfg.footer}`);
 
             await target.send({
-              embeds: [embedObj],
-              files:  [{ attachment: url, name: safeName }],
+              content: lines.length > 0 ? lines.join('\n') : undefined,
+              files:   [{ attachment: url, name: safeName }],
             });
             postedCount++;
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
@@ -12822,6 +12835,7 @@ async function runScraper(guildId, overrideCount) {
   saveScraperCfg();     // persist config + lastRunAt + lastRunResult
   saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
   log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
+  _scraperRunning.delete(guildId);
   return { posted: postedCount, needed, skippedSources };
 }
 
