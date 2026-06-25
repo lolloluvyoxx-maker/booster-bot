@@ -444,7 +444,9 @@ async function loadAllData() {
       videoScraperCfg.set(guildId, {
         enabled: false, sources: [], targetChannelId: null,
         schedule: { count: 5, intervalMs: 3_600_000, randomize: true },
-        renamePrefix: 'DISCORD.GG/GRINDR', lastRunAt: null, lastRunResult: null, ...v,
+        renamePrefix: 'DISCORD.GG/GRINDR',
+        embedConfig: { color: 0xFFFFFF, title: '', description: '', footer: '' },
+        lastRunAt: null, lastRunResult: null, ...v,
       });
     });
     console.log(`[DB] ✅ scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
@@ -12132,6 +12134,7 @@ function getScraperCfg(guildId) {
       targetChannelId: null,
       schedule:        { count: 5, intervalMs: 3_600_000, randomize: true },
       renamePrefix:    "DISCORD.GG/GRINDR",
+      embedConfig:     { color: 0xFFFFFF, title: "", description: "", footer: "" },
       lastRunAt:       null,
       lastRunResult:   null,
     });
@@ -12273,6 +12276,23 @@ client.on("messageCreate", async (message) => {
 
   if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
     return message.reply({ embeds: [{ color: PINK, description: "✖ You need **Administrator** to open the config panel." }] });
+  }
+
+  // ,config embed → open the embed style editor
+  if (args[1]?.toLowerCase() === "embed") {
+    const sent2 = await message.reply({
+      embeds:     [buildEmbedConfigEmbed(message.guild.id)],
+      components: buildEmbedConfigRows(message.guild.id),
+    }).catch(() => null);
+    if (sent2) {
+      configSessions.set(sent2.id, { guildId: message.guild.id, authorId: message.author.id });
+      scraperUserPanel.set(`${message.author.id}:${message.guild.id}`, sent2);
+      setTimeout(() => {
+        configSessions.delete(sent2.id);
+        scraperUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+      }, 60 * 60 * 1000);
+    }
+    return;
   }
 
   const sent = await message.reply({
@@ -12586,6 +12606,8 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // ── Scraper scheduler ─────────────────────────────────────────────────────────
+// Posts 1 video per tick. Tick delay = intervalMs / count (with ±50% jitter).
+// e.g. "12 videos / 1h" → ~1 video every 5 min, spread randomly across the hour.
 function rescheduleScraperTimer(guildId) {
   clearTimeout(scraperTimers.get(guildId));
   scraperTimers.delete(guildId);
@@ -12593,15 +12615,16 @@ function rescheduleScraperTimer(guildId) {
   const cfg = getScraperCfg(guildId);
   if (!cfg.enabled || !cfg.targetChannelId || cfg.sources.length === 0) return;
 
-  const { intervalMs, randomize } = cfg.schedule;
+  const { intervalMs, count, randomize } = cfg.schedule;
+  const perVideoMs = Math.floor(intervalMs / Math.max(count, 1));
   const delay = randomize
-    ? Math.floor(intervalMs * (0.5 + Math.random()))  // 50%–150% of interval
-    : intervalMs;
+    ? Math.floor(perVideoMs * (0.5 + Math.random()))  // 50%–150% of per-video delay
+    : perVideoMs;
 
   scraperTimers.set(guildId, setTimeout(async () => {
     scraperTimers.delete(guildId);
-    await runScraper(guildId);
-    rescheduleScraperTimer(guildId);            // re-queue after each run
+    await runScraper(guildId, 1);    // 1 video per tick
+    rescheduleScraperTimer(guildId); // re-queue for the next one
   }, delay));
 }
 
@@ -12756,9 +12779,15 @@ async function runScraper(guildId, overrideCount) {
           }
 
           try {
+            const eCfg = cfg.embedConfig ?? {};
+            const embedObj = { color: eCfg.color ?? 0xFFFFFF };
+            if (eCfg.title)       embedObj.title       = eCfg.title;
+            if (eCfg.description) embedObj.description = eCfg.description;
+            if (eCfg.footer)      embedObj.footer      = { text: eCfg.footer };
+
             await target.send({
-              content: `**${cfg.renamePrefix}**`,
-              files:   [{ attachment: url, name: safeName }],
+              embeds: [embedObj],
+              files:  [{ attachment: url, name: safeName }],
             });
             postedCount++;
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
@@ -12799,4 +12828,133 @@ async function runScraper(guildId, overrideCount) {
 // Scrapers are re-started inside loadAllData() once PostgreSQL data is fully restored
 
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMBED CONFIG PANEL  (,config embed)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function buildEmbedConfigEmbed(guildId) {
+  const cfg  = getScraperCfg(guildId);
+  const eCfg = cfg.embedConfig ?? {};
+  const colorHex = '#' + ((eCfg.color ?? 0xFFFFFF).toString(16).padStart(6, '0').toUpperCase());
+  return {
+    color:       eCfg.color ?? 0xFFFFFF,
+    author:      { name: 'Video Embed Style  Config Panel' },
+    description: 'Customize the embed that wraps every reposted video.',
+    fields: [
+      { name: 'Color',       value: colorHex || '*(not set)*',           inline: true  },
+      { name: 'Title',       value: eCfg.title       || '*(not set)*',   inline: true  },
+      { name: 'Description', value: eCfg.description || '*(not set)*',   inline: false },
+      { name: 'Footer',      value: eCfg.footer      || '*(not set)*',   inline: false },
+    ],
+    footer:    { text: 'sensational · video scraper · Administrator only' },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildEmbedConfigRows(guildId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('emb_color:'   + guildId).setLabel('Color').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_title:'   + guildId).setLabel('Title').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_desc:'    + guildId).setLabel('Description').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_footer:'  + guildId).setLabel('Footer').setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
+// Embed config interaction handler
+client.on('interactionCreate', async (interaction) => {
+  const cid = interaction.customId ?? '';
+  if (!cid.startsWith('emb_')) return;
+
+  const sess = configSessions.get(interaction.message?.id);
+  if (!sess) {
+    if (interaction.isButton()) {
+      return interaction.reply({ content: 'Session expired — run `,config embed` again.', flags: 64 }).catch(() => {});
+    }
+    if (!interaction.isModalSubmit()) return;
+  }
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ content: 'This panel was opened by someone else.', flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+  const guildId = sess ? sess.guildId : cid.split(':')[1];
+  const cfg     = getScraperCfg(guildId);
+  if (!cfg.embedConfig) cfg.embedConfig = { color: 0xFFFFFF, title: '', description: '', footer: '' };
+
+  const refreshEmbedPanel = async () => {
+    if (!interaction.message) return;
+    await interaction.message.edit({
+      embeds:     [buildEmbedConfigEmbed(guildId)],
+      components: buildEmbedConfigRows(guildId),
+    }).catch(() => {});
+  };
+
+  // COLOR
+  if (cid === 'emb_color:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_color:' + guildId).setTitle('Set Embed Color');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('color_val').setLabel('Hex color (e.g. FF0000 or #FF0000)').setStyle(TextInputStyle.Short).setPlaceholder('#RRGGBB').setRequired(true).setMaxLength(7)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_color:' + guildId) {
+    const raw = interaction.fields.getTextInputValue('color_val').replace(/^#/, '').trim();
+    const num = parseInt(raw, 16);
+    if (isNaN(num) || raw.length > 6) return interaction.reply({ content: 'Invalid hex. Example: FF0000', flags: 64 });
+    cfg.embedConfig.color = num;
+    saveScraperCfg();
+    await interaction.reply({ content: 'Embed color set to #' + raw.toUpperCase().padStart(6,'0'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // TITLE
+  if (cid === 'emb_title:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_title:' + guildId).setTitle('Set Embed Title');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('title_val').setLabel('Title text (blank = no title)').setStyle(TextInputStyle.Short).setRequired(false).setValue(cfg.embedConfig.title ?? '').setMaxLength(256)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_title:' + guildId) {
+    cfg.embedConfig.title = interaction.fields.getTextInputValue('title_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Title set to: ' + (cfg.embedConfig.title || '*(none)*'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // DESCRIPTION
+  if (cid === 'emb_desc:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_desc:' + guildId).setTitle('Set Embed Description');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('desc_val').setLabel('Description text (blank = no description)').setStyle(TextInputStyle.Paragraph).setRequired(false).setValue(cfg.embedConfig.description ?? '').setMaxLength(2048)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_desc:' + guildId) {
+    cfg.embedConfig.description = interaction.fields.getTextInputValue('desc_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Description updated.', flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // FOOTER
+  if (cid === 'emb_footer:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_footer:' + guildId).setTitle('Set Embed Footer');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('footer_val').setLabel('Footer text (e.g. v3.9 | Made by you)').setStyle(TextInputStyle.Short).setRequired(false).setValue(cfg.embedConfig.footer ?? '').setMaxLength(2048)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_footer:' + guildId) {
+    cfg.embedConfig.footer = interaction.fields.getTextInputValue('footer_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Footer set to: ' + (cfg.embedConfig.footer || '*(none)*'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+});
+
+
 client.login(process.env.TOKEN);
+
