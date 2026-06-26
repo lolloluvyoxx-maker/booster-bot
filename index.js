@@ -6672,6 +6672,7 @@ setInterval(async () => {
 // -- STICKY MESSAGES ----------------------------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
+  if (message.content?.toLowerCase().startsWith(",sticky")) return; // ignore sticky management commands
   const sticky = stickyMessages.get(message.channel.id);
   if (!sticky) return;
   if (message.id === sticky.msgId) return;
@@ -12953,6 +12954,7 @@ async function runScraper(guildId, overrideCount) {
   saveScraperCfg();     // persist config + lastRunAt + lastRunResult
   saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
   log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
+  return { posted: postedCount, needed, skippedSources };
   } catch (e) {
     log(`[Scraper] Guild ${guildId}: unexpected error — ${e.message}`, "error");
     return { posted: 0, needed: 0, skippedSources: 0, error: e.message };
