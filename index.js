@@ -27,6 +27,11 @@ function deserialize(raw) {
   });
 }
 
+// Discord snowflakes are 15-20 digit numeric strings
+function isValidSnowflake(id) {
+  return typeof id === 'string' && /^\d{15,20}$/.test(id);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ██████  ██████      ██████  ███████ ██████  ███████ ██ ███████ ████████
 // ██   ██ ██   ██     ██   ██ ██      ██   ██ ██      ██ ██         ██
@@ -277,7 +282,18 @@ async function loadAllData() {
     if (cfg.ignoreList instanceof Map)        { ignoreList.clear();        cfg.ignoreList.forEach((v,k)       => ignoreList.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
     if (cfg.blacklistWords instanceof Map)    { blacklistWords.clear();    cfg.blacklistWords.forEach((v,k)   => blacklistWords.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
     if (cfg.autoResponders instanceof Map)    { autoResponders.clear();    cfg.autoResponders.forEach((v,k)   => autoResponders.set(k, v)); }
-    if (cfg.perksSystemConfig && typeof cfg.perksSystemConfig === 'object') Object.assign(perksSystemConfig, cfg.perksSystemConfig);
+    if (cfg.perksSystemConfig && typeof cfg.perksSystemConfig === 'object') {
+      const saved = cfg.perksSystemConfig;
+      const valid = {};
+      for (const [k, v] of Object.entries(saved)) {
+        if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
+          console.warn(`[DB] ⚠ guild_configs: skipping invalid ${k}: "${v}"`);
+          continue;
+        }
+        valid[k] = v;
+      }
+      Object.assign(perksSystemConfig, valid);
+    }
     if (cfg.customMessages    && typeof cfg.customMessages    === 'object') Object.assign(customMessages, cfg.customMessages);
     console.log('[DB] ✅ guild_configs restored');
   }
@@ -356,7 +372,18 @@ async function loadAllData() {
 
   // ── Global bot config ──────────────────────────────────────────────────────
   if (d[DB.BOT_CFG]) {
-    if (d[DB.BOT_CFG].perksSystemConfig) Object.assign(perksSystemConfig, d[DB.BOT_CFG].perksSystemConfig);
+    if (d[DB.BOT_CFG].perksSystemConfig) {
+      const saved = d[DB.BOT_CFG].perksSystemConfig;
+      const valid = {};
+      for (const [k, v] of Object.entries(saved)) {
+        if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
+          console.warn(`[DB] ⚠ Skipping invalid ${k}: "${v}" — not a valid Discord snowflake. Keeping hardcoded default.`);
+          continue;
+        }
+        valid[k] = v;
+      }
+      Object.assign(perksSystemConfig, valid);
+    }
     if (d[DB.BOT_CFG].customMessages)    Object.assign(customMessages,    d[DB.BOT_CFG].customMessages);
     console.log('[DB] ✅ bot_config restored');
   }
@@ -3427,8 +3454,13 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isModalSubmit()) return;
 
   if (id === "perks_modal_servers") {
-    perksSystemConfig.sourceGuildId = interaction.fields.getTextInputValue("source_id").trim();
-    perksSystemConfig.targetGuildId = interaction.fields.getTextInputValue("target_id").trim();
+    const srcId = interaction.fields.getTextInputValue("source_id").trim();
+    const tgtId = interaction.fields.getTextInputValue("target_id").trim();
+    if (!isValidSnowflake(srcId) || !isValidSnowflake(tgtId)) {
+      return interaction.reply({ content: "❌ Invalid server ID(s). IDs must be Discord snowflakes (15–20 digit numbers only).", flags: 64 });
+    }
+    perksSystemConfig.sourceGuildId = srcId;
+    perksSystemConfig.targetGuildId = tgtId;
     await saveAllConfigs();
     await refreshPanel(interaction);
     return interaction.reply({ content: "✅ Server IDs updated.", flags: 64 });
@@ -4336,53 +4368,29 @@ let activeMassDM = null; // { guildId, channelId, dmText, targetIds, startIndex,
 
 async function saveMassDMProgress() {
   if (!activeMassDM) return;
-  try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
-    const content = `\`\`\`json\n${MASSDM_TAG}\n${JSON.stringify(activeMassDM)}\n\`\`\``;
-    // Find existing massdm message or create new one
-    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    const existing = msgs?.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
-    if (existing) await existing.edit(content).catch(() => {});
-    else await ch.send(content).catch(() => {});
-  } catch {}
+  saveMassDM(); // DB-backed via scheduleSave
 }
 
 async function clearMassDMProgress() {
-  try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
-    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    const existing = msgs?.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
-    if (existing) await existing.delete().catch(() => {});
-  } catch {}
   activeMassDM = null;
-  saveMassDM();
+  saveMassDM(); // DB-backed via scheduleSave
 }
 
 async function resumeMassDMIfNeeded() {
   try {
-    const ch = client.channels.cache.get(CONFIG_CHANNEL_ID);
-    if (!ch) return;
-    const msgs = await ch.messages.fetch({ limit: 20 }).catch(() => null);
-    if (!msgs) return;
-    const saved = msgs.find(m => m.author.id === client.user.id && m.content.includes(MASSDM_TAG));
-    if (!saved) return;
-    const match = saved.content.match(/```json\n[^\n]+\n([\s\S]+)\n```/);
-    if (!match) return;
-    const state = JSON.parse(match[1]);
-    if (!state.targetIds?.length || state.startIndex >= state.targetIds.length) {
-      await saved.delete().catch(() => {});
+    if (!activeMassDM || !activeMassDM.targetIds?.length) return;
+    if (activeMassDM.startIndex >= activeMassDM.targetIds.length) {
+      activeMassDM = null;
+      saveMassDM();
       return;
     }
-    const remaining = state.targetIds.length - state.startIndex;
-    log(`[MassDM] Resuming — ${remaining} users left from index ${state.startIndex}`, "info");
-    // Notify in original channel
-    const notifyCh = client.channels.cache.get(state.channelId);
+    const remaining = activeMassDM.targetIds.length - activeMassDM.startIndex;
+    log(`[MassDM] Resuming — ${remaining} users left from index ${activeMassDM.startIndex}`, "info");
+    const notifyCh = client.channels.cache.get(activeMassDM.channelId);
     if (notifyCh) {
-      await notifyCh.send({ embeds: [{ color: PINK, title: "📨 Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n⏳ **${remaining}** users remaining (${state.sent} sent, ${state.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
+      await notifyCh.send({ embeds: [{ color: PINK, title: "📨 Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n⏳ **${remaining}** users remaining (${activeMassDM.sent} sent, ${activeMassDM.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
     }
-    runMassDM(state);
+    runMassDM(activeMassDM);
   } catch (e) {
     log(`[MassDM] Resume error: ${e.message}`, "error");
   }
