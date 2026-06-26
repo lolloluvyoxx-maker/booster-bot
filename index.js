@@ -1563,11 +1563,16 @@ const MOD_COMMANDS = new Set([
 function modGate(message, command) {
   const guildId = message.guild.id;
   const cmd = command ?? message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
-  // Custom block list — always silently blocks, regardless of on/off or MOD_COMMANDS membership
+  // Global force-disabled — permanently off, no toggle can re-enable these
+  if (FORCE_DISABLED_COMMANDS.has(cmd)) return true;
+  // Custom per-guild block list — always silently blocked
   const custom = moderationCustom.get(guildId);
   if (custom?.has(cmd)) return true;
-  // Built-in MOD_COMMANDS are only blocked when moderation is fully disabled
-  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) return true;
+  // Per-guild moderation toggle — block MOD_COMMANDS and tell the user why
+  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) {
+    message.reply({ embeds: [{ color: 0xff0000, description: `❌ Moderation commands are currently **disabled** in this server.\nUse \`,moderation on\` to re-enable them.` }] }).catch(() => {});
+    return true;
+  }
   return false;
 }
 
@@ -7048,8 +7053,12 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const sub = args[1]?.toLowerCase();
     if (sub === "off" || sub === "remove") {
+      const existing = stickyMessages.get(message.channel.id);
+      if (!existing) return err(message, "No sticky message set in this channel.");
+      const oldMsg = await message.channel.messages.fetch(existing.msgId).catch(() => null);
+      if (oldMsg) await oldMsg.delete().catch(() => {});
       stickyMessages.delete(message.channel.id);
-    saveSticky();
+      saveSticky();
       return ok(message, "Sticky message removed.");
     }
     const content = args.slice(1).join(" ");
@@ -12166,6 +12175,8 @@ const videoScraperCfg = new Map();
 const scraperCursors  = new Map();
 // guildId → NodeJS.Timeout
 const scraperTimers   = new Map();
+const scraperNextRunAt = new Map(); // guildId → timestamp of next scheduled post
+const scraperHourlyStats = new Map(); // guildId → { count, windowStart }
 // msgId → { guildId, authorId }  (live panel sessions)
 const configSessions  = new Map();
 // `userId:guildId` → Message  (lets sc_del_pick find the panel from an ephemeral)
@@ -12225,6 +12236,19 @@ function buildScraperEmbed(guildId) {
                      (schedule.randomize ? " *(±50% random jitter)*" : "");
   const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : "*(never run)*";
 
+  // Hourly progress counter
+  const _hs = scraperHourlyStats.get(guildId);
+  const _hsValid = _hs && Date.now() - _hs.windowStart < schedule.intervalMs;
+  const hourlyStr  = cfg.enabled
+    ? `**${_hsValid ? _hs.count : 0}** / **${schedule.count}** posted this window`
+    : "*(scraper off)*";
+
+  // Next scheduled post
+  const _nextTs = scraperNextRunAt.get(guildId);
+  const nextStr  = cfg.enabled
+    ? (_nextTs ? `<t:${Math.floor(_nextTs / 1000)}:R>` : "Scheduling…")
+    : "*(scraper off)*";
+
   let sourcesStr;
   if (cfg.sources.length === 0) {
     sourcesStr = "*(none — add at least one with ➕ Add Source)*";
@@ -12255,6 +12279,8 @@ function buildScraperEmbed(guildId) {
       { name: "📊  Status",           value: statusStr,                                        inline: true  },
       { name: "⏱  Schedule",          value: schedStr,                                          inline: true  },
       { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
+      { name: "📈  This window",        value: hourlyStr,                                         inline: true  },
+      { name: "⏭️  Next post",          value: nextStr,                                           inline: true  },
       { name: "📤  Target channel",   value: targetStr,                                          inline: false },
       { name: "📥  Source channels",  value: sourcesStr,                                         inline: false },
       { name: "✏️  Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
@@ -12442,7 +12468,9 @@ client.on("interactionCreate", async (interaction) => {
       embeds:     [{ color: PINK, author: { name: "◈  Video Scraper  ·  Running…" }, description: "⚡ Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
-    const result = await runScraper(guildId, 1);
+    let result;
+    try { result = await runScraper(guildId, 1); }
+    catch (e) { result = { posted: 0, needed: 1, skippedSources: 0, error: e.message }; }
     // Build a short result line to append to the refreshed embed
     let resultNote = "";
     if (result) {
@@ -12667,8 +12695,10 @@ function rescheduleScraperTimer(guildId) {
     ? Math.floor(perVideoMs * (0.5 + Math.random()))  // 50%–150% of per-video delay
     : perVideoMs;
 
+  scraperNextRunAt.set(guildId, Date.now() + delay);
   scraperTimers.set(guildId, setTimeout(async () => {
     scraperTimers.delete(guildId);
+    scraperNextRunAt.delete(guildId);
     await runScraper(guildId, 1);    // 1 video per tick
     rescheduleScraperTimer(guildId); // re-queue for the next one
   }, delay));
@@ -12722,8 +12752,9 @@ async function runScraper(guildId, overrideCount) {
     return { posted: 0, needed: 0, skippedSources: 0 };
   }
   _scraperRunning.add(guildId);
+  try {
   const cfg = getScraperCfg(guildId);
-  if (!cfg.targetChannelId || cfg.sources.length === 0) return { posted: 0, needed: 0, skippedSources: 0 };
+  if (!cfg.targetChannelId || cfg.sources.length === 0) { _scraperRunning.delete(guildId); return { posted: 0, needed: 0, skippedSources: 0 }; }
 
   const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
   if (!target?.isTextBased?.()) {
@@ -12868,17 +12899,28 @@ async function runScraper(guildId, overrideCount) {
 
             // ── Fallback: plain content above the video ──────────────────────
             if (!uploadOk) {
-              const lines = [];
-              if (eCfg.title)       lines.push(eCfg.title);
-              if (eCfg.description) lines.push(eCfg.description);
-              if (cleanFooter)      lines.push(`-# ${cleanFooter}`);
-              await target.send({
-                content: lines.length > 0 ? lines.join('\n') : undefined,
-                files:   [{ attachment: url, name: safeName }],
-              });
+              try {
+                const lines = [];
+                if (eCfg.title)       lines.push(eCfg.title);
+                if (eCfg.description) lines.push(eCfg.description);
+                if (cleanFooter)      lines.push(`-# ${cleanFooter}`);
+                await target.send({
+                  content: lines.length > 0 ? lines.join('\n') : undefined,
+                  files:   [{ attachment: url, name: safeName }],
+                });
+              } catch (eFb) {
+                log(`[Scraper] Fallback send also failed for ${url}: ${eFb.message}`, "warn");
+                continue; // skip this video, don't count it
+              }
             }
 
             postedCount++;
+            // Track hourly post count for the panel
+            const _hs = scraperHourlyStats.get(guildId);
+            const _now = Date.now();
+            if (!_hs || _now - _hs.windowStart >= cfg.schedule.intervalMs) {
+              scraperHourlyStats.set(guildId, { count: 1, windowStart: _now });
+            } else { _hs.count++; }
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
           } catch (e) {
             log(`[Scraper] Upload failed for ${url}: ${e.message}`, "warn");
@@ -12911,8 +12953,12 @@ async function runScraper(guildId, overrideCount) {
   saveScraperCfg();     // persist config + lastRunAt + lastRunResult
   saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
   log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
-  _scraperRunning.delete(guildId);
-  return { posted: postedCount, needed, skippedSources };
+  } catch (e) {
+    log(`[Scraper] Guild ${guildId}: unexpected error — ${e.message}`, "error");
+    return { posted: 0, needed: 0, skippedSources: 0, error: e.message };
+  } finally {
+    _scraperRunning.delete(guildId);
+  }
 }
 
 // Scrapers are re-started inside loadAllData() once PostgreSQL data is fully restored
