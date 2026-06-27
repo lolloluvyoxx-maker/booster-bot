@@ -3176,9 +3176,11 @@ client.on("messageCreate", async (message) => {
     };
 
     // Build select menu using top-level imports (StringSelectMenuBuilder / StringSelectMenuOptionBuilder)
+    // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
+    const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
     let selectMenu, mainEmbed, msg;
     try {
-      const visibleCategories = Object.entries(categoriess)
+      const visibleCategories = Object.entries(mergedCategories)
         .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id));
 
       selectMenu = new ActionRowBuilder().addComponents(
@@ -3210,7 +3212,7 @@ client.on("messageCreate", async (message) => {
           "Select a category from the dropdown menu below to view commands."
         ].join("\n"),
         thumbnail: { url: client.user.displayAvatarURL() },
-        footer: { text: `${client.user.username} • ${Object.values(categoriess).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+        footer: { text: `${client.user.username} • ${Object.values(mergedCategories).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
       };
 
       msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
@@ -3223,7 +3225,7 @@ client.on("messageCreate", async (message) => {
     helpSessions.set(msg.id, {
       mainEmbed,
       selectMenu,
-      categories: categoriess,
+      categories: mergedCategories,
       authorId: message.author.id,
       guildIconUrl: message.guild.iconURL(),
       currentCategory: null,
@@ -14156,6 +14158,44 @@ client.on("messageCreate", async (message) => {
     } catch(e) { return err(message,`Failed: ${e.message}`); }
   }
 
+  // ,rename-emoji <:emoji:> <newname>  OR  ,rename-emoji <currentname> <newname>
+  if (command === "rename-emoji" || command === "renameemoji") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const input   = args.slice(1).join(" ");
+    const match   = input.match(/<a?:(\w+):(\d+)>/);
+    let emoji, newName;
+    if (match) {
+      emoji   = message.guild.emojis.cache.get(match[2]) || message.guild.emojis.cache.find(e => e.name === match[1]);
+      newName = args.find(a => !a.match(/<a?:\w+:\d+>/) && a !== args[0])?.replace(/[^a-zA-Z0-9_]/g,"_") || null;
+    } else {
+      // ,rename-emoji oldname newname
+      emoji   = message.guild.emojis.cache.find(e => e.name === args[1]);
+      newName = args[2]?.replace(/[^a-zA-Z0-9_]/g,"_") || null;
+    }
+    if (!emoji)   return err(message,"Emoji not found. Provide a custom emoji or its exact name.\nUsage: `,rename-emoji <:emoji:> <newname>` or `,rename-emoji <oldname> <newname>`");
+    if (!newName || newName.length < 2) return err(message,"New name must be at least 2 characters.");
+    try {
+      await emoji.setName(newName.substring(0,32));
+      return ok(message,`Emoji renamed to **:${newName}:**`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  // ,rename-sticker <currentname> <newname>
+  if (command === "rename-sticker" || command === "renamesticker") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const oldName = args[1];
+    const newName = args[2]?.replace(/[^a-zA-Z0-9_ -]/g,"").substring(0,30);
+    if (!oldName || !newName) return err(message,"Usage: `,rename-sticker <currentname> <newname>`");
+    const sticker = message.guild.stickers.cache.find(s => s.name.toLowerCase() === oldName.toLowerCase());
+    if (!sticker) return err(message,`No sticker named **${oldName}** found.`);
+    try {
+      await sticker.edit({ name: newName });
+      return ok(message,`Sticker renamed to **${newName}**`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // ██  FUN — Anime Action GIFs  (hug · kiss · slap · pat · etc.)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -14732,11 +14772,14 @@ Object.assign(global._helpExtraCategories, {
   emotes: {
     label: "Emotes & Stickers",
     emoji: "✨",
-    description: "Steal, convert and find emojis/stickers",
+    description: "Steal, rename, convert and find emojis/stickers",
     commands: [
       [",steal <:emoji:> [name]",         "Steal a custom emoji and add to this server"],
       [",steal <url> <name>",             "Add an emoji from an image URL"],
       [",steal-sticker [name]",           "Steal a sticker (reply to sticker or attach image)"],
+      [",rename-emoji <:emoji:> <name>",  "Rename a custom emoji"],
+      [",rename-emoji <oldname> <name>",  "Rename a custom emoji by its current name"],
+      [",rename-sticker <oldname> <name>","Rename a server sticker"],
       [",emoji2sticker <:emoji:> [name]", "Convert a custom emoji into a sticker"],
       [",sticker2emoji [name]",           "Convert a sticker into a custom emoji (reply to sticker)"],
       [",findemoji",                      "Find all custom emojis in a replied message and add them"],
