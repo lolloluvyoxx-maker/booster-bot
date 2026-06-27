@@ -13928,7 +13928,7 @@ async function _ketoFetch(url) {
   const lo = url.toLowerCase();
   try {
     if (lo.includes("tiktok")) {
-      // Resolve short URLs (vm.tiktok.com/XXXX → real video URL)
+      // Resolve short URLs first (vm.tiktok.com/XXXX → real URL)
       let realUrl = url;
       if (lo.includes("vm.tiktok") || lo.includes("vt.tiktok")) {
         try {
@@ -13936,25 +13936,48 @@ async function _ketoFetch(url) {
           if (r.url && r.url !== url) realUrl = r.url;
         } catch {}
       }
+      // Try tikwm.com for full stats (likes, comments, shares)
+      try {
+        const wm = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(realUrl)}`,
+          { headers:{'User-Agent':'Mozilla/5.0'}, signal: AbortSignal.timeout(8000) }).then(r=>r.json());
+        if (wm?.data && wm.data.author) {
+          const d = wm.data;
+          return {
+            platform: "tiktok",
+            author:    d.author.nickname || d.author.unique_id || "Unknown",
+            handle:    d.author.unique_id || "",
+            authorUrl: `https://www.tiktok.com/@${d.author.unique_id||""}`,
+            title:     d.title || "",
+            thumbnail: d.cover || d.origin_cover || null,
+            likes:     d.digg_count    ?? null,
+            comments:  d.comment_count ?? null,
+            shares:    d.share_count   ?? null,
+            plays:     d.play_count    ?? null,
+          };
+        }
+      } catch {}
+      // Fallback: TikTok oEmbed
       const d = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(realUrl)}`,
         { headers:{'User-Agent':'Discordbot/1.0'}, signal: AbortSignal.timeout(8000) }).then(r=>r.json());
-      return { platform:"tiktok", author: d.author_name||"Unknown",
+      return { platform:"tiktok", author: d.author_name||"Unknown", handle:"",
                authorUrl: d.author_url||realUrl, title: d.title||"",
-               thumbnail: d.thumbnail_url||null };
+               thumbnail: d.thumbnail_url||null, likes:null, comments:null, shares:null };
     }
     if (lo.includes("twitter") || lo.includes("x.com")) {
       const d = await fetch(`https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`,
         { signal: AbortSignal.timeout(8000) }).then(r=>r.json());
       const text = (d.html||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim();
-      return { platform:"twitter", author: d.author_name||"Unknown",
-               authorUrl: d.author_url||url, title: text.slice(0,280), thumbnail: null };
+      return { platform:"twitter", author: d.author_name||"Unknown", handle: d.author_name||"",
+               authorUrl: d.author_url||url, title: text.slice(0,280), thumbnail: null,
+               likes:null, comments:null, shares:null };
     }
     if (lo.includes("instagram")) {
       const d = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}`,
         { signal: AbortSignal.timeout(8000) }).then(r=>r.json());
-      return { platform:"instagram", author: d.author_name||"Unknown",
+      return { platform:"instagram", author: d.author_name||"Unknown", handle: d.author_name||"",
                authorUrl:`https://instagram.com/${d.author_name||""}`,
-               title: d.title||"", thumbnail: d.thumbnail_url||null };
+               title: d.title||"", thumbnail: d.thumbnail_url||null,
+               likes:null, comments:null, shares:null };
     }
   } catch {}
   return null;
@@ -13977,18 +14000,41 @@ client.on("messageCreate", async (message) => {
   const data  = await _ketoFetch(link);
   if (!data) return;
   const meta = _KETO_META[data.platform] ?? { icon:"🔗", color:PINK, name:"Social" };
+
+  // Build stats line (TikTok only)
+  const statParts = [];
+  if (data.likes    != null) statParts.push(`❤️ ${_fmtNum(data.likes)}`);
+  if (data.comments != null) statParts.push(`💬 ${_fmtNum(data.comments)}`);
+  if (data.shares   != null) statParts.push(`↗️ ${_fmtNum(data.shares)}`);
+
+  const authorDisplay = data.handle
+    ? `**${data.author}** (@${data.handle})`
+    : `**${data.author}**`;
+
   const embed = {
     color: meta.color,
-    author: { name:`${meta.icon} ${data.author} — ${meta.name}`, url: data.authorUrl },
-    description: data.title||undefined,
+    author: { name:`${meta.icon}  ${meta.name}`, icon_url: "https://sf16-website-login.neutral.ttwstatic.com/obj/tiktok_web_login_static/tiktok/webapp/main/webapp-desktop/8152caf0c8e8bc67ae0d.png" },
+    title: authorDisplay,
+    url: data.authorUrl,
+    description: [
+      data.title ? data.title.slice(0,300) : null,
+      statParts.length ? "\n" + statParts.join("  ") : null,
+    ].filter(Boolean).join("\n"),
     image: data.thumbnail ? { url: data.thumbnail } : undefined,
     footer: { text:`Shared by ${message.author.username}` },
     timestamp: message.createdAt.toISOString(),
   };
-  const row = new ActionRowBuilder().addComponents(
+
+  const btns = [
     new ButtonBuilder().setLabel(`Open in ${meta.name}`).setStyle(ButtonStyle.Link).setURL(link),
-    new ButtonBuilder().setLabel(`@${data.author}`).setStyle(ButtonStyle.Link).setURL(data.authorUrl),
-  );
+  ];
+  if (data.handle) {
+    btns.push(new ButtonBuilder().setLabel(`@${data.handle}`).setStyle(ButtonStyle.Link).setURL(data.authorUrl));
+  } else {
+    btns.push(new ButtonBuilder().setLabel(`@${data.author}`).setStyle(ButtonStyle.Link).setURL(data.authorUrl));
+  }
+  const row = new ActionRowBuilder().addComponents(...btns);
+
   await message.channel.send({ embeds:[embed], components:[row] }).catch(()=>{});
   if (kc.deleteOriginal) await message.delete().catch(()=>{});
   else await message.suppressEmbeds(true).catch(()=>{});
@@ -14353,7 +14399,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,risky-roles — auto-action when a risky role is assigned
-  if (command === "risky-roles" || command === "riskyroles") {
+  if (command === "risky-roles" || command === "riskyroles" || command === "riskyrole") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
       return err(message,"Missing **Administrator** permission.");
     const sub  = args[1]?.toLowerCase();
@@ -14411,22 +14457,18 @@ client.on("messageCreate", async (message) => {
       // Step-by-step interactive wizard
       const panelData = { name:"New Panel", supportRoles:[], categoryId:null, transcriptChannelId:null, panelChannelId:null };
 
-      const wizardEmbed = (step, total, title, desc, current) => ({
-        color: PINK,
-        title: `🎫 Panel Setup — Step ${step}/${total}: ${title}`,
-        description: desc,
-        fields: current ? [{name:"Current value", value:current, inline:true}] : [],
-        footer: { text:"Click the button below, or Back/Skip" },
-      });
-
       // Step 1: Name
       const step1Row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("tp_setname").setLabel("✏️ Set Name").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("tp_skip1").setLabel("Skip").setStyle(ButtonStyle.Secondary),
       );
-      const msg1 = await message.reply({ embeds:[wizardEmbed(1,5,"Set the panel name",
-        "Click **Set Name** to enter a name for this ticket panel.\nThis name appears on the button users click to open a ticket.",
-        `\`${panelData.name}\``)], components:[step1Row] }).catch(()=>null);
+      const msg1 = await message.reply({ embeds:[{
+        color: PINK,
+        title: "🎫 Panel Setup — Step 1/4: Set the panel name",
+        description: "Click **Set Name** to enter a name for this ticket panel.\nThis name appears on the button users click to open a ticket.",
+        fields: [{name:"Current value", value:`\`${panelData.name}\``, inline:true}],
+        footer: { text:"Click a button below to continue" },
+      }], components:[step1Row] }).catch(()=>null);
       if (!msg1) return;
 
       // Store wizard state
@@ -14536,11 +14578,11 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Wizard buttons ────────────────────────────────────────────────────────
   if (id.startsWith("tp_") && interaction.isButton()) {
-    if (!client._tpWizards) return;
+    if (!client._tpWizards) client._tpWizards = new Map();
     const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
     const wiz = client._tpWizards.get(wizKey);
-    if (!wiz) return interaction.reply({content:"⚠️ Wizard expired — run `,ticketpanel setup` again.",flags:64});
-    if (interaction.user.id !== wiz.authorId) return interaction.reply({content:"This wizard is not yours.",flags:64});
+    if (!wiz) return interaction.reply({content:"⚠️ Session expired — run `,ticketpanel setup` again.",flags:64}).catch(()=>{});
+    if (interaction.user.id !== wiz.authorId) return interaction.reply({content:"This wizard is not yours.",flags:64}).catch(()=>{});
 
     // Show modals — no deferUpdate before showModal!
     if (id === "tp_setname") {
