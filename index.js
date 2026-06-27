@@ -1563,8 +1563,6 @@ const MOD_COMMANDS = new Set([
 function modGate(message, command) {
   const guildId = message.guild.id;
   const cmd = command ?? message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
-  // Global force-disabled — permanently off, no toggle can re-enable these
-  if (FORCE_DISABLED_COMMANDS.has(cmd)) return true;
   // Custom per-guild block list — always silently blocked
   const custom = moderationCustom.get(guildId);
   if (custom?.has(cmd)) return true;
@@ -12351,6 +12349,12 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, description: "✖ You need **Administrator** to open the config panel." }] });
   }
 
+  // Clean up any old session for this user+guild before opening a new panel
+  // (prevents stale configSessions entries accumulating in RAM for up to 1h each)
+  const _panelKey = `${message.author.id}:${message.guild.id}`;
+  const _oldPanel = scraperUserPanel.get(_panelKey);
+  if (_oldPanel) configSessions.delete(_oldPanel.id);
+
   // ,config embed → open the embed style editor
   if (args[1]?.toLowerCase() === "embed") {
     const sent2 = await message.reply({
@@ -12359,10 +12363,10 @@ client.on("messageCreate", async (message) => {
     }).catch(() => null);
     if (sent2) {
       configSessions.set(sent2.id, { guildId: message.guild.id, authorId: message.author.id });
-      scraperUserPanel.set(`${message.author.id}:${message.guild.id}`, sent2);
+      scraperUserPanel.set(_panelKey, sent2);
       setTimeout(() => {
         configSessions.delete(sent2.id);
-        scraperUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+        scraperUserPanel.delete(_panelKey);
       }, 60 * 60 * 1000);
     }
     return;
@@ -12375,10 +12379,10 @@ client.on("messageCreate", async (message) => {
 
   if (sent) {
     configSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
-    scraperUserPanel.set(`${message.author.id}:${message.guild.id}`, sent);
+    scraperUserPanel.set(_panelKey, sent);
     setTimeout(() => {
       configSessions.delete(sent.id);
-      scraperUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+      scraperUserPanel.delete(_panelKey);
     }, 60 * 60 * 1000);
   }
 });
@@ -12746,6 +12750,18 @@ async function isVideoAvailable(url) {
 // Prevents two scraper runs for the same guild from overlapping
 const _scraperRunning = new Set();
 
+// ── Stream a video URL directly to Discord without buffering the full file in RAM ──
+// Each call creates a fresh piped stream; safe to call twice for v2 + fallback.
+async function _openVideoStream(url) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal:  AbortSignal.timeout(30_000), // 30 s per-download timeout
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const { Readable } = require('stream');
+  return Readable.fromWeb(res.body);
+}
+
 // overrideCount lets callers post fewer videos than the scheduled quota (e.g. 1 on Start)
 async function runScraper(guildId, overrideCount) {
   if (_scraperRunning.has(guildId)) {
@@ -12753,6 +12769,15 @@ async function runScraper(guildId, overrideCount) {
     return { posted: 0, needed: 0, skippedSources: 0 };
   }
   _scraperRunning.add(guildId);
+
+  // Safety valve: force-release the lock after 3 minutes so a stuck run never blocks forever
+  const _runTimeout = setTimeout(() => {
+    if (_scraperRunning.has(guildId)) {
+      _scraperRunning.delete(guildId);
+      log(`[Scraper] Guild ${guildId}: force-killed after 3 min timeout`, 'error');
+    }
+  }, 3 * 60 * 1000);
+
   try {
   const cfg = getScraperCfg(guildId);
   if (!cfg.targetChannelId || cfg.sources.length === 0) { _scraperRunning.delete(guildId); return { posted: 0, needed: 0, skippedSources: 0 }; }
@@ -12855,13 +12880,21 @@ async function runScraper(guildId, overrideCount) {
         }
 
         // ── Upload each video as a real attachment — NEVER as a link ─────
-        for (const { url } of videoItems) {
+        // Each attempt opens a fresh piped stream so the entire file is NEVER
+        // loaded into a Buffer in RAM — only a small pipe-buffer (~64 KB) is used.
+        for (const { url, size: attSize } of videoItems) {
           if (postedCount >= needed) break paging;
 
           // Skip videos that have expired or been deleted
           const available = await isVideoAvailable(url);
           if (!available) {
             log(`[Scraper] Skipping unavailable/expired video: ${url}`, "warn");
+            continue;
+          }
+
+          // Skip videos that are definitely too large for Discord's 25 MB limit
+          if (attSize !== Infinity && attSize > 25 * 1024 * 1024) {
+            log(`[Scraper] Skipping oversized video (${Math.round(attSize / 1024 / 1024)} MB): ${url}`, "warn");
             continue;
           }
 
@@ -12872,8 +12905,6 @@ async function runScraper(guildId, overrideCount) {
             const cleanFooter = (eCfg.footer ?? '').replace(/^-#\s*/, '').trim();
 
             // ── Attempt 1: Components v2 Container ──────────────────────────
-            // This creates a single bordered box (like a link-embed / fxtwitter card)
-            // with title, divider, video, and footer all inside one visual unit.
             // flag 1<<15 = IsComponentsV2 (discord.js 14.16+ / API v10)
             const C2_FLAG = 1 << 15;
             const boxParts = [];
@@ -12888,10 +12919,11 @@ async function runScraper(guildId, overrideCount) {
 
             let uploadOk = false;
             try {
+              const stream1 = await _openVideoStream(url); // fresh stream, ~64 KB pipe buffer
               await target.send({
                 flags:      C2_FLAG,
                 components: [{ type: 17, accent_color: eCfg.color ?? 0xFFFFFF, components: boxParts }],
-                files:      [{ attachment: url, name: safeName }],
+                files:      [{ attachment: stream1, name: safeName }],
               });
               uploadOk = true;
             } catch (e2) {
@@ -12899,15 +12931,17 @@ async function runScraper(guildId, overrideCount) {
             }
 
             // ── Fallback: plain content above the video ──────────────────────
+            // Opens a second independent stream — no double-buffer in RAM.
             if (!uploadOk) {
               try {
                 const lines = [];
                 if (eCfg.title)       lines.push(eCfg.title);
                 if (eCfg.description) lines.push(eCfg.description);
                 if (cleanFooter)      lines.push(`-# ${cleanFooter}`);
+                const stream2 = await _openVideoStream(url); // fresh stream again
                 await target.send({
                   content: lines.length > 0 ? lines.join('\n') : undefined,
-                  files:   [{ attachment: url, name: safeName }],
+                  files:   [{ attachment: stream2, name: safeName }],
                 });
               } catch (eFb) {
                 log(`[Scraper] Fallback send also failed for ${url}: ${eFb.message}`, "warn");
@@ -12959,6 +12993,7 @@ async function runScraper(guildId, overrideCount) {
     log(`[Scraper] Guild ${guildId}: unexpected error — ${e.message}`, "error");
     return { posted: 0, needed: 0, skippedSources: 0, error: e.message };
   } finally {
+    clearTimeout(_runTimeout);
     _scraperRunning.delete(guildId);
   }
 }
