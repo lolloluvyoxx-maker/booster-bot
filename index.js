@@ -14455,7 +14455,7 @@ client.on("interactionCreate", async (interaction) => {
       wiz.cfg.ticketPanels.push(wiz.panelData);
       saveAllConfigs();
       client._tpWizards.delete(wizKey);
-      await interaction.editReply({embeds:[{color:PINK,title:"✅  Panel Created!",description:`**${wiz.panelData.name}** panel saved.\nUse `,ticketpanel manage ${wiz.cfg.ticketPanels.length}\` to send it to a channel.`}],components:[]}).catch(()=>{});
+      await interaction.editReply({embeds:[{color:PINK,title:"✅  Panel Created!",description:`**${wiz.panelData.name}** panel saved.\nUse \`,ticketpanel manage ${wiz.cfg.ticketPanels.length}\` to send it to a channel.`}],components:[]}).catch(()=>{});
     }
   }
 
