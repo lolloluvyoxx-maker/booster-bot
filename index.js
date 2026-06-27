@@ -12176,6 +12176,7 @@ const scraperCursors  = new Map();
 const scraperTimers   = new Map();
 const scraperNextRunAt = new Map(); // guildId → timestamp of next scheduled post
 const scraperHourlyStats = new Map(); // guildId → { count, windowStart }
+const scraperLastPosted  = new Map(); // guildId → { name: string, ts: number }
 // msgId → { guildId, authorId }  (live panel sessions)
 const configSessions  = new Map();
 // `userId:guildId` → Message  (lets sc_del_pick find the panel from an ephemeral)
@@ -12252,11 +12253,19 @@ function buildScraperEmbed(guildId) {
   if (cfg.sources.length === 0) {
     sourcesStr = "*(none — add at least one with ➕ Add Source)*";
   } else {
-    sourcesStr = cfg.sources.slice(0, 20).map((s, i) =>
-      `\`${String(i + 1).padStart(2, "0")}.\` <#${s.channelId}>` + (s.label ? `  ·  **${s.label}**` : "")
-    ).join("\n");
+    sourcesStr = cfg.sources.slice(0, 20).map((s, i) => {
+      // <#id> only resolves inside the same guild — use label/id directly instead
+      const display = s.label ? `**${s.label}**` : `\`${s.channelId}\``;
+      return `\`${String(i + 1).padStart(2, "0")}.\` ${display}  \`${s.channelId}\``;
+    }).join("\n");
     if (cfg.sources.length > 20) sourcesStr += `\n… and **${cfg.sources.length - 20}** more`;
   }
+
+  // Last posted video (tracked live in-memory)
+  const _lp = scraperLastPosted.get(guildId);
+  const lastPostedStr = _lp
+    ? `\`${_lp.name}\` — <t:${Math.floor(_lp.ts / 1000)}:R>`
+    : "*(none yet this session)*";
 
   const readyHint = !cfg.targetChannelId
     ? "> ⚠️ **Set a target channel** before starting."
@@ -12279,7 +12288,8 @@ function buildScraperEmbed(guildId) {
       { name: "⏱  Schedule",          value: schedStr,                                          inline: true  },
       { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
       { name: "📈  This window",        value: hourlyStr,                                         inline: true  },
-      { name: "⏭️  Next post",          value: nextStr,                                           inline: true  },
+      { name: "⏭️  Next run",          value: nextStr,                                           inline: true  },
+      { name: "📤  Last posted",       value: lastPostedStr,                                      inline: true  },
       { name: "📤  Target channel",   value: targetStr,                                          inline: false },
       { name: "📥  Source channels",  value: sourcesStr,                                         inline: false },
       { name: "✏️  Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
@@ -12388,14 +12398,47 @@ client.on("messageCreate", async (message) => {
 });
 
 // ── Refresh the panel in-place ────────────────────────────────────────────────
-async function refreshScraperPanel(interaction) {
-  const sess = configSessions.get(interaction.message?.id);
-  if (!sess) return;
-  await interaction.message.edit({
-    embeds:     [buildScraperEmbed(sess.guildId)],
-    components: buildScraperRows(sess.guildId),
-  }).catch(() => {});
+async function refreshScraperPanel(interaction, guildId) {
+  // Buttons/selects have interaction.message — use it directly.
+  // Modal submits do NOT have interaction.message, so fall back to the
+  // scraperUserPanel reverse-lookup map (keyed by authorId:guildId).
+  if (interaction.message) {
+    const sess = configSessions.get(interaction.message.id);
+    if (!sess) return;
+    await interaction.message.edit({
+      embeds:     [buildScraperEmbed(sess.guildId)],
+      components: buildScraperRows(sess.guildId),
+    }).catch(() => {});
+  } else {
+    // Modal path — guildId must be passed by the caller
+    if (!guildId) return;
+    const panelMsg = scraperUserPanel.get(`${interaction.user.id}:${guildId}`);
+    if (!panelMsg) return;
+    await panelMsg.edit({
+      embeds:     [buildScraperEmbed(guildId)],
+      components: buildScraperRows(guildId),
+    }).catch(() => {});
+  }
 }
+
+// ── Refresh ALL active config panels for a guild ──────────────────────────────
+// Called by the scraper after each video post and by the 60-second auto-tick.
+async function refreshAllPanelsForGuild(guildId) {
+  const embed = buildScraperEmbed(guildId);
+  const rows  = buildScraperRows(guildId);
+  for (const [msgId, sess] of configSessions) {
+    if (sess.guildId !== guildId) continue;
+    const msg = scraperUserPanel.get(`${sess.authorId}:${guildId}`);
+    if (!msg || msg.id !== msgId) continue;
+    await msg.edit({ embeds: [embed], components: rows }).catch(() => {});
+  }
+}
+
+// ── Auto-refresh every 60 s — keeps "Next post" countdown live ────────────────
+setInterval(() => {
+  const activeGuilds = new Set([...configSessions.values()].map(s => s.guildId));
+  for (const gId of activeGuilds) refreshAllPanelsForGuild(gId).catch(() => {});
+}, 60_000);
 
 // ── Interaction handler — config panel ────────────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
@@ -12463,7 +12506,7 @@ client.on("interactionCreate", async (interaction) => {
       scraperTimers.delete(guildId);
     }
     await interaction.deferUpdate();
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 
   // ── RUN NOW ──────────────────────────────────────────────────────────────
@@ -12629,7 +12672,7 @@ client.on("interactionCreate", async (interaction) => {
     saveScraperCfg();
     saveScraperCursors();
     await interaction.deferUpdate();
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 
   // ── MODAL SUBMISSIONS ─────────────────────────────────────────────────────
@@ -12646,7 +12689,7 @@ client.on("interactionCreate", async (interaction) => {
     cfg.sources.push({ channelId, label: label || ch.name || "" });
     saveScraperCfg();
     await interaction.reply({ content: `✅ Added <#${channelId}>${label ? ` as **${label}**` : ""} to sources.`, flags: 64 });
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 
   // Set target modal
@@ -12657,7 +12700,7 @@ client.on("interactionCreate", async (interaction) => {
     cfg.targetChannelId = channelId;
     saveScraperCfg();
     await interaction.reply({ content: `✅ Target set to <#${channelId}>.`, flags: 64 });
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 
   // Schedule modal
@@ -12672,7 +12715,7 @@ client.on("interactionCreate", async (interaction) => {
     saveScraperCfg();
     if (cfg.enabled) rescheduleScraperTimer(guildId);
     await interaction.reply({ content: `✅ Schedule updated: **${count}** videos every **${msToHuman(ms)}**${cfg.schedule.randomize ? " (randomized ±50%)" : ""}.`, flags: 64 });
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 
   // Rename modal
@@ -12680,7 +12723,7 @@ client.on("interactionCreate", async (interaction) => {
     cfg.renamePrefix = interaction.fields.getTextInputValue("prefix").trim();
     saveScraperCfg();
     await interaction.reply({ content: `✅ Videos will now be renamed to: \`${cfg.renamePrefix}\``, flags: 64 });
-    return refreshScraperPanel(interaction);
+    return refreshScraperPanel(interaction, guildId);
   }
 });
 
@@ -12734,16 +12777,21 @@ function extractMp4Url(url) {
   return null;
 }
 
-// HEAD-check whether a video URL is still reachable (expired CDN links → 403/404)
+// HEAD-check whether a video URL is still reachable AND get its size in one shot.
+// Returns { ok: true, size: number } or { ok: false }.
+// size = Infinity when the server doesn't send Content-Length.
 async function isVideoAvailable(url) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 6_000);
     const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal });
     clearTimeout(t);
-    return res.ok;
+    if (!res.ok) return { ok: false };
+    const cl   = parseInt(res.headers.get('content-length') || '0');
+    const size = cl > 0 ? cl : Infinity;
+    return { ok: true, size };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
@@ -12885,16 +12933,17 @@ async function runScraper(guildId, overrideCount) {
         for (const { url, size: attSize } of videoItems) {
           if (postedCount >= needed) break paging;
 
-          // Skip videos that have expired or been deleted
-          const available = await isVideoAvailable(url);
-          if (!available) {
+          // Single HEAD request: checks availability AND gets file size at the same time.
+          // attSize is reliable for Discord attachments; Infinity for Twitter/embed URLs.
+          // headSize fills the gap for URLs that advertise Content-Length.
+          const { ok: videoOk, size: headSize } = await isVideoAvailable(url);
+          if (!videoOk) {
             log(`[Scraper] Skipping unavailable/expired video: ${url}`, "warn");
             continue;
           }
-
-          // Skip videos that are definitely too large for Discord's 25 MB limit
-          if (attSize !== Infinity && attSize > 25 * 1024 * 1024) {
-            log(`[Scraper] Skipping oversized video (${Math.round(attSize / 1024 / 1024)} MB): ${url}`, "warn");
+          const effectiveSize = attSize !== Infinity ? attSize : headSize;
+          if (effectiveSize > 25 * 1024 * 1024) {
+            log(`[Scraper] Skipping oversized video (${Math.round(effectiveSize / 1024 / 1024)} MB): ${url}`, "warn");
             continue;
           }
 
@@ -12956,6 +13005,9 @@ async function runScraper(guildId, overrideCount) {
             if (!_hs || _now - _hs.windowStart >= cfg.schedule.intervalMs) {
               scraperHourlyStats.set(guildId, { count: 1, windowStart: _now });
             } else { _hs.count++; }
+            // Track what was just posted and push live update to all open panels
+            scraperLastPosted.set(guildId, { name: safeName, ts: Date.now() });
+            refreshAllPanelsForGuild(guildId).catch(() => {});
             await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
           } catch (e) {
             log(`[Scraper] Upload failed for ${url}: ${e.message}`, "warn");
@@ -12988,6 +13040,8 @@ async function runScraper(guildId, overrideCount) {
   saveScraperCfg();     // persist config + lastRunAt + lastRunResult
   saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
   log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
+  // Final refresh — ensures panel is up to date even if no videos were posted
+  refreshAllPanelsForGuild(guildId).catch(() => {});
   return { posted: postedCount, needed, skippedSources };
   } catch (e) {
     log(`[Scraper] Guild ${guildId}: unexpected error — ${e.message}`, "error");
