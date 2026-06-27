@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -13914,7 +13914,8 @@ client.on('interactionCreate', async (interaction) => {
 // ██  KETO — Social Media Auto-Embed (TikTok · Twitter/X · Instagram)
 // ══════════════════════════════════════════════════════════════════════════════
 const ketoConfig  = new Map(); // guildId → { enabled, deleteOriginal, channelIds: Set|null }
-const KETO_RE     = /https?:\/\/(?:www\.|vm\.|vt\.|m\.)?(?:(?:tiktok\.com\/(?:@[^\s\/]+\/video\/\d+|t\/\w+|v\/\d+))|(?:twitter\.com\/\w+\/status\/\d+)|(?:x\.com\/\w+\/status\/\d+)|(?:instagram\.com\/(?:p|reel|tv)\/[\w-]+))/gi;
+// Matches full TikTok URLs AND short share links (vm.tiktok.com/XXXX, vt.tiktok.com/XXXX)
+const KETO_RE     = /https?:\/\/(?:(?:(?:www\.|m\.)?tiktok\.com\/(?:@[^\s\/]+\/video\/\d+|t\/\w+|v\/\d+))|(?:(?:vm|vt)\.tiktok\.com\/[\w]+)|(?:twitter\.com\/\w+\/status\/\d+)|(?:x\.com\/\w+\/status\/\d+)|(?:instagram\.com\/(?:p|reel|tv)\/[\w-]+))/gi;
 
 function _fmtNum(n) {
   if (!n && n !== 0) return null;
@@ -13927,10 +13928,18 @@ async function _ketoFetch(url) {
   const lo = url.toLowerCase();
   try {
     if (lo.includes("tiktok")) {
-      const d = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`,
+      // Resolve short URLs (vm.tiktok.com/XXXX → real video URL)
+      let realUrl = url;
+      if (lo.includes("vm.tiktok") || lo.includes("vt.tiktok")) {
+        try {
+          const r = await fetch(url, { method:"HEAD", redirect:"follow", signal: AbortSignal.timeout(5000) });
+          if (r.url && r.url !== url) realUrl = r.url;
+        } catch {}
+      }
+      const d = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(realUrl)}`,
         { headers:{'User-Agent':'Discordbot/1.0'}, signal: AbortSignal.timeout(8000) }).then(r=>r.json());
       return { platform:"tiktok", author: d.author_name||"Unknown",
-               authorUrl: d.author_url||url, title: d.title||"",
+               authorUrl: d.author_url||realUrl, title: d.title||"",
                thumbnail: d.thumbnail_url||null };
     }
     if (lo.includes("twitter") || lo.includes("x.com")) {
@@ -14464,11 +14473,68 @@ client.on("messageCreate", async (message) => {
 });
 
 // ── Ticket Panel V2 — interaction handler ─────────────────────────────────────
+
+// Helper: build embed+row for each wizard step
+function _wizardStepContent(step, wiz) {
+  const { panelData } = wiz;
+  const steps = {
+    2: {
+      title: "Support team roles",
+      desc:  "Click **Set Roles** to enter role IDs that can see and manage tickets.\nLeave blank to allow all staff with Manage Channels.",
+      current: panelData.supportRoles?.length ? panelData.supportRoles.map(r=>`<@&${r}>`).join(", ") : "*(none)*",
+      row: new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_setroles").setLabel("👥 Set Roles").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_skip2").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tp_save_finish").setLabel("✅ Finish").setStyle(ButtonStyle.Success),
+      ),
+    },
+    3: {
+      title: "Ticket category",
+      desc:  "Click **Set Category** to choose which Discord category new ticket channels are created in.",
+      current: panelData.categoryId ? `<#${panelData.categoryId}>` : "*(not set)*",
+      row: new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_setcategory").setLabel("📁 Set Category").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_skip3").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tp_save_finish").setLabel("✅ Finish").setStyle(ButtonStyle.Success),
+      ),
+    },
+    4: {
+      title: "Transcript channel",
+      desc:  "Click **Set Transcript** to log closed tickets to a channel. This is optional.",
+      current: panelData.transcriptChannelId ? `<#${panelData.transcriptChannelId}>` : "*(not set)*",
+      row: new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_settranscript").setLabel("📋 Set Transcript").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_skip4").setLabel("Skip / Finish").setStyle(ButtonStyle.Secondary),
+      ),
+    },
+  };
+  const s = steps[step];
+  if (!s) return _wizardDoneContent(wiz);
+  return {
+    embeds: [{ color:PINK, title:`🎫 Panel Setup — Step ${step}/4: ${s.title}`, description:s.desc,
+               fields: [{name:"Current value", value:s.current, inline:true}],
+               footer: {text:"Click a button below to continue"} }],
+    components: [s.row],
+  };
+}
+function _wizardDoneContent(wiz) {
+  const cfg = guildCfg(wiz.guildId);
+  return { embeds:[{color:PINK, title:"✅  Panel Created!",
+    description:`**${wiz.panelData.name}** saved as panel **#${(cfg.ticketPanels||[]).length}**.\n\nUse \`,ticketpanel manage ${(cfg.ticketPanels||[]).length}\` → **Send panel to a channel** to deploy it.`}], components:[] };
+}
+function _tpWizardSave(wiz) {
+  const cfg = guildCfg(wiz.guildId);
+  cfg.ticketPanels = cfg.ticketPanels || [];
+  cfg.ticketPanels.push(wiz.panelData);
+  saveAllConfigs();
+  client._tpWizards.delete(`tp_wizard:${wiz.authorId}:${wiz.guildId}`);
+}
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.guild) return;
   const id = interaction.customId || "";
 
-  // ── Wizard button handler ─────────────────────────────────────────────────
+  // ── Wizard buttons ────────────────────────────────────────────────────────
   if (id.startsWith("tp_") && interaction.isButton()) {
     if (!client._tpWizards) return;
     const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
@@ -14476,7 +14542,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!wiz) return interaction.reply({content:"⚠️ Wizard expired — run `,ticketpanel setup` again.",flags:64});
     if (interaction.user.id !== wiz.authorId) return interaction.reply({content:"This wizard is not yours.",flags:64});
 
-    // Show modal for name input
+    // Show modals — no deferUpdate before showModal!
     if (id === "tp_setname") {
       const modal = new ModalBuilder().setCustomId("tp_modal_name").setTitle("Panel Name");
       modal.addComponents(new ActionRowBuilder().addComponents(
@@ -14484,39 +14550,85 @@ client.on("interactionCreate", async (interaction) => {
       ));
       return interaction.showModal(modal);
     }
-    if (id.startsWith("tp_skip") || id === "tp_back") {
-      await interaction.deferUpdate();
-      // advance wizard
-      return _tpWizardStep(wiz, interaction);
+    if (id === "tp_setroles") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_wiz_roles").setTitle("Support Team Roles");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("roles").setLabel("Role IDs comma-separated (blank = any staff)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.supportRoles?.join(",")||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
     }
+    if (id === "tp_setcategory") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_wiz_category").setTitle("Ticket Category");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("catid").setLabel("Category ID (where ticket channels are created)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.categoryId||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
+    }
+    if (id === "tp_settranscript") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_wiz_transcript").setTitle("Transcript Channel");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("chid").setLabel("Channel ID (leave blank to skip)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.transcriptChannelId||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
+    }
+
+    // Skip buttons — advance to next step embed (use update to edit the message)
+    if (id === "tp_skip1") { wiz.step = 2; return interaction.update(_wizardStepContent(2, wiz)).catch(()=>{}); }
+    if (id === "tp_skip2") { wiz.step = 3; return interaction.update(_wizardStepContent(3, wiz)).catch(()=>{}); }
+    if (id === "tp_skip3") { wiz.step = 4; return interaction.update(_wizardStepContent(4, wiz)).catch(()=>{}); }
+    if (id === "tp_skip4") { _tpWizardSave(wiz); return interaction.update(_wizardDoneContent(wiz)).catch(()=>{}); }
+
+    // Finish button
     if (id === "tp_save_finish") {
-      await interaction.deferUpdate();
-      wiz.cfg.ticketPanels = wiz.cfg.ticketPanels || [];
-      wiz.cfg.ticketPanels.push(wiz.panelData);
-      saveAllConfigs();
-      client._tpWizards.delete(wizKey);
-      await interaction.editReply({embeds:[{color:PINK,title:"✅  Panel Created!",description:`**${wiz.panelData.name}** panel saved.\nUse \`,ticketpanel manage ${wiz.cfg.ticketPanels.length}\` to send it to a channel.`}],components:[]}).catch(()=>{});
+      _tpWizardSave(wiz);
+      return interaction.update(_wizardDoneContent(wiz)).catch(()=>{});
     }
   }
 
   // ── Wizard modal submissions ──────────────────────────────────────────────
-  if (id === "tp_modal_name" && interaction.isModalSubmit()) {
+  const WIZ_MODALS = ["tp_modal_name","tp_modal_wiz_roles","tp_modal_wiz_category","tp_modal_wiz_transcript"];
+  if (WIZ_MODALS.includes(id) && interaction.isModalSubmit()) {
     const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
     const wiz = client._tpWizards?.get(wizKey);
-    if (!wiz) return interaction.reply({content:"Wizard expired.",flags:64});
-    wiz.panelData.name = interaction.fields.getTextInputValue("pname").trim() || wiz.panelData.name;
-    await interaction.deferUpdate().catch(()=>{});
-    return _tpWizardStep(wiz, interaction);
+    if (!wiz) return interaction.reply({content:"Wizard expired — run `,ticketpanel setup` again.",flags:64});
+
+    // Save the submitted value
+    if (id === "tp_modal_name") {
+      wiz.panelData.name = interaction.fields.getTextInputValue("pname").trim() || wiz.panelData.name;
+    }
+    if (id === "tp_modal_wiz_roles") {
+      const raw = interaction.fields.getTextInputValue("roles");
+      wiz.panelData.supportRoles = raw.split(",").map(s=>s.trim()).filter(Boolean);
+    }
+    if (id === "tp_modal_wiz_category") {
+      wiz.panelData.categoryId = interaction.fields.getTextInputValue("catid").trim() || null;
+    }
+    if (id === "tp_modal_wiz_transcript") {
+      wiz.panelData.transcriptChannelId = interaction.fields.getTextInputValue("chid").trim() || null;
+    }
+
+    // Advance to next step — edit the original wizard message, acknowledge modal silently
+    wiz.step += 1;
+    const origMsg = await interaction.channel.messages.fetch(wiz.msgId).catch(()=>null);
+    if (wiz.step <= 4) {
+      if (origMsg) await origMsg.edit(_wizardStepContent(wiz.step, wiz)).catch(()=>{});
+    } else {
+      _tpWizardSave(wiz);
+      if (origMsg) await origMsg.edit(_wizardDoneContent(wiz)).catch(()=>{});
+    }
+    // Silently acknowledge the modal (ephemeral deferred reply = invisible to others)
+    return interaction.deferReply({flags:64}).catch(()=>{});
   }
 
-  // ── Panel manage menu ────────────────────────────────────────────────────
+  // ── Panel manage menu ─────────────────────────────────────────────────────
   if (id.startsWith("tpm_action:") && interaction.isStringSelectMenu()) {
-    const [,idxStr, guildId] = id.split(":");
-    const idx  = parseInt(idxStr);
+    const parts   = id.split(":");
+    const idx     = parseInt(parts[1]);
+    const guildId = parts[2];
     if (interaction.guild.id !== guildId) return;
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
       return interaction.reply({content:"Missing **Administrator** permission.",flags:64});
-    const cfg = guildCfg(interaction.guild.id);
+    const cfg   = guildCfg(interaction.guild.id);
     const panel = cfg.ticketPanels?.[idx];
     if (!panel) return interaction.reply({content:"Panel not found.",flags:64});
     const action = interaction.values[0];
@@ -14564,7 +14676,6 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Panel manage modal submissions ────────────────────────────────────────
   if (id.startsWith("tpm_modal_") && interaction.isModalSubmit()) {
-    const [,, modalType, idxStr] = id.split("_").concat(id.split(":"));
     const parts = id.split(":");
     const mtype = id.replace("tpm_modal_","").split(":")[0];
     const idx   = parseInt(parts[1]);
@@ -14605,8 +14716,7 @@ client.on("interactionCreate", async (interaction) => {
       await ch.send({embeds:[{
         color: PINK, title:`🎫  ${panel.name}`,
         description:"Click the button below to open a ticket.\nOur support team will assist you shortly.",
-        footer:{text:interaction.guild.name},
-        timestamp:new Date().toISOString(),
+        footer:{text:interaction.guild.name}, timestamp:new Date().toISOString(),
       }], components:[panelBtn]}).catch(e=>interaction.reply({content:`❌ Failed to send: ${e.message}`,flags:64}));
       panel.panelChannelId = channelId; saveAllConfigs();
       return interaction.reply({content:`✅ Panel **${panel.name}** sent to <#${channelId}>!`,flags:64});
@@ -14662,7 +14772,6 @@ client.on("interactionCreate", async (interaction) => {
     const hasRole   = (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
     if (!isCreator && !hasPerm && !hasRole) return interaction.reply({content:"You don't have permission to close this ticket.",flags:64});
 
-    // Log to transcript channel if configured
     const tChId = (cfg2.ticketPanels||[]).find(p=>p.categoryId === interaction.channel.parentId)?.transcriptChannelId;
     if (tChId) {
       const tCh = interaction.guild.channels.cache.get(tChId);
@@ -14676,58 +14785,6 @@ client.on("interactionCreate", async (interaction) => {
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 5000);
   }
 });
-
-// ── Ticket Panel Wizard helper ────────────────────────────────────────────────
-async function _tpWizardStep(wiz, interaction) {
-  const step = ++wiz.step;
-  const { panelData, guildId } = wiz;
-
-  const mk = (step, title, desc, current) => ({
-    color: PINK,
-    title: `🎫 Panel Setup — Step ${step}/5: ${title}`,
-    description: desc,
-    fields: current ? [{name:"Current value",value:current,inline:true}] : [],
-  });
-
-  if (step === 2) {
-    const modal = new ModalBuilder().setCustomId("tp_modal_roles2").setTitle("Support Team Roles (Step 2/5)");
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("roles").setLabel("Role IDs (comma-separated, or leave blank)").setStyle(TextInputStyle.Short).setRequired(false)
-    ));
-    return interaction.showModal(modal).catch(async()=>{
-      await interaction.followUp({content:"⚠️ Couldn't show modal — enter role IDs:",ephemeral:true}).catch(()=>{});
-    });
-  }
-  if (step === 3) {
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_skip3").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish_early").setLabel("Finish").setStyle(ButtonStyle.Success),
-    );
-    const modal = new ModalBuilder().setCustomId("tp_modal_category").setTitle("Ticket Category (Step 3/5)");
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("catid").setLabel("Category ID (where tickets are created)").setStyle(TextInputStyle.Short).setRequired(false)
-    ));
-    return interaction.showModal(modal).catch(()=>{});
-  }
-  if (step === 4) {
-    const modal = new ModalBuilder().setCustomId("tp_modal_transcript2").setTitle("Transcript Channel (Step 4/5)");
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("chid").setLabel("Transcript channel ID (or leave blank)").setStyle(TextInputStyle.Short).setRequired(false)
-    ));
-    return interaction.showModal(modal).catch(()=>{});
-  }
-  if (step >= 5) {
-    // Final step — save
-    const cfg = guildCfg(guildId);
-    cfg.ticketPanels = cfg.ticketPanels || [];
-    cfg.ticketPanels.push(panelData);
-    saveAllConfigs();
-    const wizKey = `tp_wizard:${wiz.authorId}:${guildId}`;
-    client._tpWizards.delete(wizKey);
-    await interaction.editReply({embeds:[{color:PINK,title:"✅  Panel Created!",
-      description:`**${panelData.name}** saved as panel **#${cfg.ticketPanels.length}**.\n\nUse \`,ticketpanel manage ${cfg.ticketPanels.length}\` → **Send panel to a channel** to deploy it.`}],components:[]}).catch(()=>{});
-  }
-}
 
 // Risky role auto-punishment listener
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
