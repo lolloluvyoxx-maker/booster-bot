@@ -13966,20 +13966,57 @@ async function _ketoFetch(url) {
                thumbnail: d.thumbnail_url||null, likes:null, comments:null, shares:null };
     }
     if (lo.includes("twitter") || lo.includes("x.com")) {
-      const d = await fetch(`https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`,
-        { signal: AbortSignal.timeout(8000) }).then(r=>r.json());
-      const text = (d.html||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim();
-      return { platform:"twitter", author: d.author_name||"Unknown", handle: d.author_name||"",
-               authorUrl: d.author_url||url, title: text.slice(0,280), thumbnail: null,
-               likes:null, comments:null, shares:null };
+      // Use CDN syndication API (no auth required, returns tweet data + video)
+      const tweetId = url.match(/status\/(\d+)/)?.[1];
+      if (!tweetId) return null;
+      const tw = await fetch(
+        `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en`,
+        { headers:{"User-Agent":"Mozilla/5.0"}, signal: AbortSignal.timeout(8000) }
+      ).then(r=>r.json()).catch(()=>null);
+      if (!tw) return null;
+      const author    = tw.user?.name        || "Unknown";
+      const handle    = tw.user?.screen_name || "";
+      const text      = tw.text              || "";
+      // Extract video URL (highest bitrate mp4)
+      const variants  = tw.mediaDetails?.find(m=>m.type==="video")?.video_info?.variants || [];
+      const videoUrl  = variants.filter(v=>v.content_type==="video/mp4")
+                              .sort((a,b)=>(b.bitrate||0)-(a.bitrate||0))[0]?.url || null;
+      const thumbnail = tw.mediaDetails?.[0]?.media_url_https || null;
+      return {
+        platform:"twitter", author, handle,
+        authorUrl: `https://twitter.com/${handle}`,
+        title: text.slice(0,280), thumbnail, videoUrl, videoSize:null,
+        likes: tw.favorite_count ?? null,
+        comments: tw.conversation_count ?? null,
+        shares: tw.retweet_count ?? null, plays:null,
+      };
     }
     if (lo.includes("instagram")) {
-      const d = await fetch(`https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}`,
-        { signal: AbortSignal.timeout(8000) }).then(r=>r.json());
-      return { platform:"instagram", author: d.author_name||"Unknown", handle: d.author_name||"",
-               authorUrl:`https://instagram.com/${d.author_name||""}`,
-               title: d.title||"", thumbnail: d.thumbnail_url||null,
-               likes:null, comments:null, shares:null };
+      // Instagram oembed requires auth since 2021 → scrape og: tags instead
+      const shortcode = url.match(/\/(p|reel|tv)\/([\w-]+)/)?.[2];
+      if (!shortcode) return null;
+      const html = await fetch(
+        `https://www.instagram.com/p/${shortcode}/`,
+        { headers:{"User-Agent":"facebookexternalhit/1.1"}, signal: AbortSignal.timeout(10000) }
+      ).then(r=>r.text()).catch(()=>null);
+      if (!html) return null;
+      const og = t => html.match(new RegExp(`<meta[^>]+property="og:${t}"[^>]+content="([^"]+)"`))?.[1]
+                   || html.match(new RegExp(`<meta[^>]+content="([^"]+)"[^>]+property="og:${t}"`))?.[1] || "";
+      const ogTitle    = og("title");
+      const ogDesc     = og("description");
+      const ogImage    = og("image");
+      const ogVideo    = og("video");
+      // Title is usually "username on Instagram: …"
+      const author     = ogTitle.split(" on Instagram")[0]?.trim() || "Instagram";
+      const handleM    = ogTitle.match(/@([\w.]+)/);
+      const handle     = handleM?.[1] || "";
+      return {
+        platform:"instagram", author, handle,
+        authorUrl: handle ? `https://instagram.com/${handle}` : url,
+        title: ogDesc.slice(0,300), thumbnail: ogImage||null,
+        videoUrl: ogVideo||null, videoSize:null,
+        likes:null, comments:null, shares:null, plays:null,
+      };
     }
   } catch {}
   return null;
@@ -13990,6 +14027,25 @@ const _KETO_META = {
   twitter:   { icon:"🐦", color:0x1DA1F2, name:"Twitter/X" },
   instagram: { icon:"📸", color:0xC13584, name:"Instagram"  },
 };
+
+// Risky permissions that can be monitored via ,riskypermission
+const RISKY_PERM_OPTIONS = [
+  { name:"Administrator",       flag:PermissionFlagsBits.Administrator,            emoji:"👑" },
+  { name:"Manage Server",       flag:PermissionFlagsBits.ManageGuild,              emoji:"⚙️" },
+  { name:"Manage Roles",        flag:PermissionFlagsBits.ManageRoles,              emoji:"🎭" },
+  { name:"Manage Channels",     flag:PermissionFlagsBits.ManageChannels,           emoji:"📁" },
+  { name:"Kick Members",        flag:PermissionFlagsBits.KickMembers,              emoji:"👢" },
+  { name:"Ban Members",         flag:PermissionFlagsBits.BanMembers,               emoji:"🔨" },
+  { name:"Manage Messages",     flag:PermissionFlagsBits.ManageMessages,           emoji:"✉️" },
+  { name:"Manage Webhooks",     flag:PermissionFlagsBits.ManageWebhooks,           emoji:"🔗" },
+  { name:"Manage Emojis",       flag:PermissionFlagsBits.ManageEmojisAndStickers,  emoji:"😀" },
+  { name:"Mention Everyone",    flag:PermissionFlagsBits.MentionEveryone,          emoji:"📢" },
+  { name:"View Audit Log",      flag:PermissionFlagsBits.ViewAuditLog,             emoji:"📋" },
+  { name:"Moderate Members",    flag:PermissionFlagsBits.ModerateMembers,          emoji:"🛡️" },
+  { name:"Manage Nicknames",    flag:PermissionFlagsBits.ManageNicknames,          emoji:"✏️" },
+  { name:"Move Members",        flag:PermissionFlagsBits.MoveMembers,              emoji:"🚶" },
+  { name:"Manage Threads",      flag:PermissionFlagsBits.ManageThreads,            emoji:"🧵" },
+];
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -14457,7 +14513,42 @@ client.on("messageCreate", async (message) => {
     return err(message,"Usage: `,risky-roles add/remove/action/list [@role] [strip|kick|ban]`");
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ── ,riskypermission ──────────────────────────────────────────────────────
+  if (command === "riskypermission" || command === "riskyperm" || command === "riskyperms") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message, "You need **Administrator** permission.");
+    const cfg = guildCfg(message.guild.id);
+    cfg.riskyPerms = cfg.riskyPerms || [];
+    const monitored = cfg.riskyPerms;
+    const monitoredLines = monitored.length
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      : "*None — no permissions monitored.*";
+    const embed = {
+      color: PINK,
+      title: "⚠️  Risky Permission Monitor",
+      description: [
+        "Select which permissions to flag as **risky**.",
+        "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
+        "",
+        "**Currently monitored:**",
+        monitoredLines,
+      ].join("\n"),
+      footer: { text: "Select from the menu below. Your selection replaces the current list." },
+    };
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`rp_set:${message.guild.id}`)
+      .setPlaceholder("Select permissions to monitor…")
+      .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
+      .addOptions(RISKY_PERM_OPTIONS.map(p =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
+          .setDescription(monitored.includes(p.name) ? "✅ Monitored" : "Not monitored")
+          .setDefault(monitored.includes(p.name))
+      ));
+    return message.reply({ embeds:[embed], components:[new ActionRowBuilder().addComponents(menu)] });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
   // ██  TICKET PANEL V2 — Interactive wizard + panel management
   // ═══════════════════════════════════════════════════════════════════════════
   if (command === "ticketpanel" || command === "tp") {
@@ -14967,18 +15058,16 @@ client.on("interactionCreate", async (interaction) => {
 
     const ticketNum = activity.ticketNum||"0000";
 
-    // Remove opener from channel
-    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:false}).catch(()=>{});
-    for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
-    ticketActivity.delete(channelId);
-
-    // Rename channel
-    await interaction.channel.setName(`closed-${ticketNum}`).catch(()=>{});
-
-    // Update confirmation message
+    // ── Acknowledge FIRST (before any slow API calls) ──
     await interaction.update({embeds:[{color:0xFF4444,description:`🔒 **Ticket closed by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
 
-    // Support controls
+    // Now do the slow operations safely
+    for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
+    ticketActivity.delete(channelId);
+    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:false}).catch(()=>{});
+    await interaction.channel.setName(`closed-${ticketNum}`).catch(()=>{});
+
+    // Support controls message
     await interaction.channel.send({
       embeds:[{color:0x2B2D31, description:"**Support team ticket controls**", footer:{text:`Ticket #${ticketNum} · Closed by ${interaction.user.username}`}, timestamp:new Date().toISOString()}],
       components:[new ActionRowBuilder().addComponents(
@@ -14986,9 +15075,9 @@ client.on("interactionCreate", async (interaction) => {
         new ButtonBuilder().setCustomId(`ticket_reopen:${channelId}:${creatorId}:${ticketNum}`).setLabel("Open").setStyle(ButtonStyle.Success).setEmoji("🔓"),
         new ButtonBuilder().setCustomId(`ticket_delete:${channelId}`).setLabel("Delete").setStyle(ButtonStyle.Danger).setEmoji("🗑️"),
       )],
-    });
+    }).catch(()=>{});
 
-    // Auto transcript to log channel
+    // Auto-send transcript to log channel
     const tChId = cfg2.ticketPanels?.[activity.panelIdx??0]?.transcriptChannelId;
     if (tChId) {
       const tCh = interaction.guild.channels.cache.get(tChId);
@@ -15021,13 +15110,17 @@ client.on("interactionCreate", async (interaction) => {
     const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
       || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
     if (!canAct) return interaction.reply({content:"❌ No permission.",flags:64});
-    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true}).catch(()=>{});
+
+    // ── Acknowledge FIRST ──
+    await interaction.update({embeds:[{color:PINK,description:`🔓 **Reopening ticket…**`}],components:[]}).catch(()=>{});
+
+    // Slow operations after ack
+    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true}).catch(()=>{});
     await interaction.channel.setName(`ticket-${ticketNum||"0000"}`).catch(()=>{});
     if (creatorId) {
       openTickets.set(`${interaction.guild.id}-${creatorId}`, channelId);
       ticketActivity.set(channelId,{creatorId,guildId:interaction.guild.id,lastActivity:Date.now(),closing:false,ticketNum});
     }
-    await interaction.update({embeds:[{color:PINK,description:`🔓 **Ticket reopened by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
     await interaction.channel.send({
       content:`<@${creatorId}> This ticket has been reopened by <@${interaction.user.id}>.`,
       components:[new ActionRowBuilder().addComponents(
@@ -15045,31 +15138,115 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.update({embeds:[{color:0xFF4444,description:"🗑️ Deleting..."}],components:[]}).catch(()=>{});
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
   }
+
+  // ── ,riskypermission select menu ──────────────────────────────────────────
+  if (id.startsWith("rp_set:") && interaction.isStringSelectMenu()) {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
+      return interaction.reply({content:"❌ Missing **Administrator** permission.",flags:64});
+    const cfg = guildCfg(interaction.guild.id);
+    cfg.riskyPerms = interaction.values; // replace entire list with selection
+    saveAllConfigs();
+    const monitored = cfg.riskyPerms;
+    const monitoredLines = monitored.length
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      : "*None — no permissions monitored.*";
+    const newEmbed = {
+      color: PINK,
+      title: "⚠️  Risky Permission Monitor — Updated",
+      description: [
+        "Select which permissions to flag as **risky**.",
+        "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
+        "",
+        "**Currently monitored:**",
+        monitoredLines,
+      ].join("\n"),
+      footer: { text: "Select from the menu below. Your selection replaces the current list." },
+    };
+    const newMenu = new StringSelectMenuBuilder()
+      .setCustomId(`rp_set:${interaction.guild.id}`)
+      .setPlaceholder("Select permissions to monitor…")
+      .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
+      .addOptions(RISKY_PERM_OPTIONS.map(p =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
+          .setDescription(monitored.includes(p.name) ? "✅ Monitored" : "Not monitored")
+          .setDefault(monitored.includes(p.name))
+      ));
+    return interaction.update({embeds:[newEmbed], components:[new ActionRowBuilder().addComponents(newMenu)]}).catch(()=>{});
+  }
 });
-// Risky role auto-punishment listener
+// Risky role + risky permission auto-enforcement
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (!newMember.guild) return;
   const cfg = guildCfg(newMember.guild.id);
-  if (!cfg.riskyRoles?.roles?.length) return;
-  const addedRoles = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
-  const riskyAdded = addedRoles.filter(r => cfg.riskyRoles.roles.includes(r));
-  if (!riskyAdded.length) return;
-  // Check whitelist
-  const wl = cfg.securityWhitelist;
+  const wl  = cfg.securityWhitelist;
   if (wl?.users?.includes(newMember.id)) return;
   if (wl?.roles?.some(r => oldMember.roles.cache.has(r))) return;
-  const action = cfg.riskyRoles.action || "strip";
-  log(`[RiskyRoles] User ${newMember.user.tag} assigned risky role(s) in ${newMember.guild.name} — ${action}`, "warn");
-  try {
-    if (action === "strip") {
-      await newMember.roles.remove(riskyAdded, "Risky role auto-strip").catch(()=>{});
-    } else if (action === "kick") {
-      await newMember.send({ embeds:[{color:0xff0000,description:`You were kicked from **${newMember.guild.name}** for being assigned a restricted role.`}] }).catch(()=>{});
-      await newMember.kick("Risky role assigned").catch(()=>{});
-    } else if (action === "ban") {
-      await newMember.ban({ reason:"Risky role assigned — security action" }).catch(()=>{});
+
+  const addedRoles = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
+  if (!addedRoles.length) return;
+
+  // ── Risky roles check ──────────────────────────────────────────────────
+  if (cfg.riskyRoles?.roles?.length) {
+    const riskyAdded = addedRoles.filter(r => cfg.riskyRoles.roles.includes(r));
+    if (riskyAdded.length) {
+      const action = cfg.riskyRoles.action || "strip";
+      log(`[RiskyRoles] ${newMember.user.tag} got risky role(s) in ${newMember.guild.name} → ${action}`, "warn");
+      try {
+        if (action === "strip") {
+          await newMember.roles.remove(riskyAdded, "Risky role auto-strip").catch(()=>{});
+        } else if (action === "kick") {
+          await newMember.send({ embeds:[{color:0xff0000,description:`You were kicked from **${newMember.guild.name}** for receiving a restricted role.`}] }).catch(()=>{});
+          await newMember.kick("Risky role assigned").catch(()=>{});
+        } else if (action === "ban") {
+          await newMember.ban({ reason:"Risky role assigned — security action" }).catch(()=>{});
+        }
+      } catch(e) { log(`[RiskyRoles] Action failed: ${e.message}`, "error"); }
     }
-  } catch(e) { log(`[RiskyRoles] Action failed: ${e.message}`, "error"); }
+  }
+});
+
+// ── ,riskypermission — roleUpdate monitor ─────────────────────────────────────
+// Fires whenever a role's permissions are edited.
+// If a blacklisted permission was NEWLY added to the role, remove it immediately.
+client.on("roleUpdate", async (oldRole, newRole) => {
+  if (!newRole.guild) return;
+  const cfg        = guildCfg(newRole.guild.id);
+  const riskyPerms = cfg.riskyPerms || [];
+  if (!riskyPerms.length) return;
+
+  // Which monitored permissions were just added to this role?
+  const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
+  const newlyAdded   = riskyOptions.filter(p =>
+    !oldRole.permissions.has(p.flag) && newRole.permissions.has(p.flag)
+  );
+  if (!newlyAdded.length) return;
+
+  const permNames = newlyAdded.map(p => `${p.emoji} **${p.name}**`).join(", ");
+  log(`[RiskyPerms] Role "${newRole.name}" in ${newRole.guild.name} got blacklisted perm(s): ${permNames} — reverting`, "warn");
+
+  // Build the new permission bitfield with the blacklisted permissions removed
+  const stripped = newRole.permissions.remove(newlyAdded.map(p => p.flag));
+  await newRole.setPermissions(stripped, `Risky permission auto-reverted: ${newlyAdded.map(p=>p.name).join(", ")}`).catch(e => {
+    log(`[RiskyPerms] Could not revert role "${newRole.name}": ${e.message}`, "error");
+  });
+
+  // Alert in a log channel if configured (uses the first panel's transcript channel as fallback)
+  const logChId = cfg.securityLogChannel
+    || cfg.ticketPanels?.find(p => p.transcriptChannelId)?.transcriptChannelId;
+  if (logChId) {
+    const logCh = newRole.guild.channels.cache.get(logChId);
+    if (logCh) await logCh.send({ embeds:[{
+      color: 0xFF4444,
+      title: "⚠️  Risky Permission Blocked",
+      description: [
+        `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
+        `**Blocked permission(s):** ${permNames}`,
+        `The permission(s) have been automatically removed from the role.`,
+      ].join("\n"),
+      timestamp: new Date().toISOString(),
+    }]}).catch(()=>{});
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
