@@ -15322,18 +15322,12 @@ client.on("interactionCreate", async (interaction) => {
     const [,channelId,creatorId] = id.split(":");
     const activity = ticketActivity.get(channelId);
     const cfg2     = guildCfg(interaction.guild.id);
-    if (!activity) return interaction.update({embeds:[{color:PINK,description:"Already closed."}],components:[]}).catch(()=>{}).then(()=>interaction.channel.send({embeds:[{color:PINK,description:"<:RUSH_warning:1521327864954355752> Already closed."}]}).catch(()=>{}));
+    if (!activity) return interaction.update({embeds:[{color:PINK,description:"Already closed."}],components:[]}).catch(()=>{});
 
     const ticketNum = activity.ticketNum||"0000";
 
     // ── Acknowledge FIRST (before any slow API calls) ──
-    // NOTE: interaction.update() is an EDIT of the interaction message — Discord has a known
-    // bug where custom emoji in an EDITED interaction message render as plain "<:name:id>"
-    // text instead of the actual emoji image. So we ack with plain text here, then send the
-    // emoji version as a brand-new message right after (regular channel.send always renders
-    // custom emoji correctly, same as every other prefix command in this bot).
     await interaction.update({embeds:[{color:0xFF4444,description:`**Ticket closed by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
-    await interaction.channel.send({embeds:[{color:0xFF4444,description:`<:RUSH_unlock:1491885459905839244> **Ticket closed by <@${interaction.user.id}>**`}]}).catch(()=>{});
 
     // Now do the slow operations safely
     for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
@@ -15358,7 +15352,7 @@ client.on("interactionCreate", async (interaction) => {
       const tCh = interaction.guild.channels.cache.get(tChId);
       if (tCh) {
         const buf = await _generateTranscript(interaction.channel).catch(()=>null);
-        const e   = {color:PINK,title:`Ticket Closed — #${ticketNum}`,description:`<:RUSH_unlock:1491885459905839244> Closed by <@${interaction.user.id}>`,timestamp:new Date().toISOString()};
+        const e   = {color:PINK,title:`Ticket Closed — #${ticketNum}`,description:`Closed by <@${interaction.user.id}>`,timestamp:new Date().toISOString()};
         if (buf) await tCh.send({embeds:[e],files:[{attachment:buf,name:`transcript-${ticketNum}.txt`}]}).catch(()=>{});
         else     await tCh.send({embeds:[e]}).catch(()=>{});
       }
@@ -15388,7 +15382,6 @@ client.on("interactionCreate", async (interaction) => {
 
     // ── Acknowledge FIRST ──
     await interaction.update({embeds:[{color:PINK,description:`**Reopening ticket…**`}],components:[]}).catch(()=>{});
-    await interaction.channel.send({embeds:[{color:PINK,description:`<:RUSH_unlock:1491885459905839244> **Reopening ticket…**`}]}).catch(()=>{});
 
     // Slow operations after ack
     if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true,UseExternalEmojis:true}).catch(()=>{});
@@ -15418,7 +15411,6 @@ client.on("interactionCreate", async (interaction) => {
       || supportRoles.some(r=>interaction.member.roles.cache.has(r));
     if (!canDelete) return interaction.reply({content:"<:steal:1521327958634135655> Only support staff can delete tickets.",flags:64});
     await interaction.update({embeds:[{color:0xFF4444,description:"Deleting..."}],components:[]}).catch(()=>{});
-    await interaction.channel.send({embeds:[{color:0xFF4444,description:"<:RUSH_trash_can:1491886201974820894> Deleting..."}]}).catch(()=>{});
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
   }
 
