@@ -4558,8 +4558,36 @@ async function runMassDM(state) {
 
 const TICKET_CATEGORY_ID = "1409003502826557560";
 const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
-const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing }
+const TICKET_NO_RESPONSE_MS = 30 * 60 * 1000;  // 30 minutes — delete if creator never writes
+const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing, openedAt, creatorMsgSent }
 const ticketWarnings = new Map();
+
+// Auto-delete a ticket where the creator never responded within 30 minutes
+async function closeNoResponseTicket(channelId, activity) {
+  if (activity.closing) return;
+  activity.closing = true;
+  ticketActivity.set(channelId, activity);
+  try {
+    const guild = client.guilds.cache.get(activity.guildId);
+    if (!guild) { ticketActivity.delete(channelId); return; }
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) { ticketActivity.delete(channelId); return; }
+
+    await ch.send({ embeds:[{ color:0xFF4444, description:`<@${activity.creatorId}> This ticket has been deleted because no message was sent within **30 minutes**.` }] }).catch(()=>{});
+
+    ticketActivity.delete(channelId);
+    ticketWarnings.delete(channelId);
+    for (const [key, chId] of openTickets.entries()) {
+      if (chId === channelId) { openTickets.delete(key); break; }
+    }
+    await new Promise(r => setTimeout(r, 5000));
+    await ch.delete("[Auto-Delete] No response in 30min").catch(e => log(`[Tickets] ❌ Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] ✅ Auto-deleted ${ch.name} (no creator response in 30min)`, "success");
+  } catch (e) {
+    log(`[Tickets] ❌ closeNoResponseTicket error ${channelId}: ${e.message}`, "error");
+    ticketActivity.delete(channelId);
+  }
+}
 
 async function closeInactiveTicket(channelId, activity) {
   if (activity.closing) return;
@@ -4660,6 +4688,7 @@ client.on("messageCreate", async (message) => {
   if (!activity || activity.closing) return;
   if (message.author.id !== activity.creatorId) return;
   activity.lastActivity = Date.now();
+  activity.creatorMsgSent = true; // mark that creator has responded
   ticketActivity.set(message.channel.id, activity);
   log(`[Tickets] Timer reset for ${message.channel.name}`, "info");
 });
@@ -4672,6 +4701,12 @@ setInterval(async () => {
   for (const [channelId, activity] of entries) {
     if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
+    // 30-minute no-response: creator never sent a message since ticket opened
+    if (!activity.creatorMsgSent && activity.openedAt && (now - activity.openedAt) >= TICKET_NO_RESPONSE_MS) {
+      log(`[Tickets] ${channelId}: creator never responded in 30min — auto-deleting`, "info");
+      closeNoResponseTicket(channelId, activity);
+      continue;
+    }
     const minutesLeft = Math.ceil((TICKET_TIMEOUT_MS - elapsed) / 60000);
     log(`[Tickets] ${channelId}: ${Math.floor(elapsed/60000)}min inactive (${minutesLeft}min left)`, "info");
     if (elapsed >= TICKET_TIMEOUT_MS) {
@@ -14904,7 +14939,7 @@ function _buildPanelMessage(panel, guildId, panelIdx) {
     else if (!emoji) b.setLabel(panel.name || "Open a Ticket");
     components = [new ActionRowBuilder().addComponents(b)];
   }
-  return { embeds:[{color:PINK, description:panel.description||"Click below to open a support ticket.", footer:{text:panel.name}}], components };
+  return { embeds:[{color:PINK, title:panel.name||null, description:panel.description||"Click below to open a support ticket."}], components };
 }
 async function _generateTranscript(channel) {
   const msgs = [];
@@ -15190,21 +15225,18 @@ client.on("interactionCreate", async (interaction) => {
     if (!ch) return interaction.reply({content:"❌ Could not create ticket channel — check my permissions.",flags:64});
 
     openTickets.set(`${guildId}-${interaction.user.id}`, ch.id);
-    ticketActivity.set(ch.id, { creatorId:interaction.user.id, guildId, lastActivity:Date.now(), closing:false, ticketNum, panelIdx });
+    ticketActivity.set(ch.id, { creatorId:interaction.user.id, guildId, lastActivity:Date.now(), closing:false, ticketNum, panelIdx, openedAt:Date.now(), creatorMsgSent:false });
 
     const catLabel = category!=="default" ? `  ·  **${category}**` : "";
     const supportMentions = (panel?.supportRoles||[]).map(r=>`<@&${r}>`).join(" ");
     await ch.send({
-      content:`${supportMentions ? supportMentions+" — " : ""}New ticket from <@${interaction.user.id}>`,
+      content:`${supportMentions ? supportMentions+" — " : ""}<@${interaction.user.id}> Welcome`,
       embeds:[{
         color:PINK,
-        title:`🎫  Ticket #${ticketNum}${catLabel}`,
-        description:`Welcome <@${interaction.user.id}>!\nA support member will be with you shortly.\n\nPlease describe your issue and we'll get back to you as soon as possible.\n\n> Click **🔒 Close** below to close this ticket.`,
-        footer:{text:interaction.guild.name},
-        timestamp:new Date().toISOString(),
+        description:`Support will be with you shortly.\nTo close this ticket press the **Close** button below.`,
       }],
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_close:${ch.id}:${interaction.user.id}`).setLabel("🔒 Close").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(`ticket_close:${ch.id}:${interaction.user.id}`).setLabel("Close").setEmoji("🔒").setStyle(ButtonStyle.Secondary)
       )],
     });
     return interaction.reply({content:`✅ Ticket opened: ${ch}`,flags:64});
@@ -15249,7 +15281,8 @@ client.on("interactionCreate", async (interaction) => {
     // Now do the slow operations safely
     for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
     ticketActivity.delete(channelId);
-    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:false}).catch(()=>{});
+    // ── Remove creator access completely (falls back to @everyone deny) ──
+    if (creatorId) await interaction.channel.permissionOverwrites.delete(creatorId).catch(()=>{});
     await interaction.channel.setName(`closed-${ticketNum}`).catch(()=>{});
 
     // Support controls message
@@ -15309,17 +15342,23 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.channel.send({
       content:`<@${creatorId}> This ticket has been reopened by <@${interaction.user.id}>.`,
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_close:${channelId}:${creatorId}`).setLabel("🔒 Close").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId(`ticket_close:${channelId}:${creatorId}`).setLabel("Close").setEmoji("🔒").setStyle(ButtonStyle.Secondary)
       )],
     }).catch(()=>{});
   }
 
-  // ── Delete button ─────────────────────────────────────────────────────────
+  // ── Delete button — support roles only ───────────────────────────────────
   if (id.startsWith("ticket_delete:") && interaction.isButton()) {
     const cfg2 = guildCfg(interaction.guild.id);
-    const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
-      || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
-    if (!canAct) return interaction.reply({content:"❌ No permission.",flags:64});
+    const panelIdx = ticketActivity.get(id.split(":")[1])?.panelIdx ?? null;
+    const panel = panelIdx != null ? cfg2.ticketPanels?.[panelIdx] : null;
+    // Support roles from the specific panel first, fall back to any panel's roles
+    const supportRoles = panel?.supportRoles?.length
+      ? panel.supportRoles
+      : (cfg2.ticketPanels||[]).flatMap(p=>p.supportRoles||[]);
+    const canDelete = interaction.member.permissions.has(PermissionFlagsBits.Administrator)
+      || supportRoles.some(r=>interaction.member.roles.cache.has(r));
+    if (!canDelete) return interaction.reply({content:"❌ Only support staff can delete tickets.",flags:64});
     await interaction.update({embeds:[{color:0xFF4444,description:"🗑️ Deleting..."}],components:[]}).catch(()=>{});
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
   }
