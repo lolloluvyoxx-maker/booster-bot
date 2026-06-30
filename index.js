@@ -1694,7 +1694,7 @@ client.on("messageCreate", async (message) => {
   // Remove AFK if user sends a message
   if (afkUsers.has(`${message.guild.id}-${message.author.id}`)) {
     afkUsers.delete(`${message.guild.id}-${message.author.id}`);
-    message.reply({ embeds: [{ color: PINK, description: `👋 ${message.author} **Welcome back**, your AFK has been removed.` }] }).catch(() => {});
+    message.reply({ embeds: [{ color: PINK, description: `<a:009Cinnamoroll_Wave:1265534373873320047> ${message.author} **Welcome back**, your AFK has been removed.` }] }).catch(() => {});
   }
   // Notify if mentioning an AFK user
   for (const mentioned of message.mentions.users.values()) {
@@ -2582,7 +2582,7 @@ client.on("messageCreate", async (message) => {
       }).catch(() => null);
       const count = await countVideosInChannel(targetChannel);
       const embed = {
-        color: PINK, title: `🎬 Video Count — #${targetChannel.name}`,
+        color: PINK, title: `<:movieslotbluedns:1414214240218120295> Video Count — #${targetChannel.name}`,
         description: `Found **${count}** video${count !== 1 ? 's' : ''} in <#${targetChannel.id}>`,
         footer: { text: 'sensational • white edition' }, timestamp: new Date(),
       };
@@ -2621,7 +2621,7 @@ client.on("messageCreate", async (message) => {
 
     const resultEmbed = {
       color: PINK,
-      title: `🎬 Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
+      title: `<:movieslotbluedns:1414214240218120295> Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
       description: `**Total: ${serverTotal}** videos across **${textChannels.size}** channels`,
       fields,
       footer: { text: 'sensational • white edition' },
@@ -3028,7 +3028,7 @@ client.on("messageCreate", async (message) => {
       },
       economy: {
         label: "Economy",
-        emoji: "💰",
+        emoji: "<:RUSH_dollar:1491884534130806814>",
         description: "Coins, gambling, work and more",
         commands: [
           [",balance [user]", "Check coin balance"],
@@ -3145,7 +3145,7 @@ client.on("messageCreate", async (message) => {
       },
       lastfm: {
         label: "Last.fm",
-        emoji: "🎵",
+        emoji: "<:musicnote:1519516650418999338>",
         description: "Music tracking with Last.fm",
         commands: [
           [",fm set <username>", "Link your Last.fm account"],
@@ -3159,7 +3159,7 @@ client.on("messageCreate", async (message) => {
       },
       leveling: {
         label: "Leveling",
-        emoji: "📈",
+        emoji: "<:RUSH_poll:1491885655754543144>",
         description: "XP and level system",
         commands: [
           [",rank [user]", "View your rank and XP"],
@@ -3187,7 +3187,7 @@ client.on("messageCreate", async (message) => {
       },
       nsfw: {
         label: "NSFW (Owner Only)",
-        emoji: "🔞",
+        emoji: "<:18plus:1071521486038380594>",
         description: "Anti-minors system — owner only",
         commands: [
           [",addc #channel", "Add channel to minor monitoring"],
@@ -3932,7 +3932,7 @@ client.on("messageCreate", async (message) => {
   if (command === "balance" || command === "bal") {
     const target = message.mentions.users.first() || message.author;
     const bal = economy.get(target.id) || 0;
-    return message.reply({ embeds: [{ color: PINK, title: `💰 ${target.username}'s Balance`, description: `**${bal}** coins` }] });
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_dollar:1491884534130806814> ${target.username}'s Balance`, description: `**${bal}** coins` }] });
   }
 
   // ,daily
@@ -4001,7 +4001,7 @@ client.on("messageCreate", async (message) => {
       .slice(0, 10);
     if (entries.length === 0) return message.reply("<:RUSH_list:1491885704043565166> No economy data yet.");
     const lines = entries.map(([id, bal], i) => `**${i + 1}.** <@${id}> — **${bal}** coins`);
-    return message.reply({ embeds: [{ color: PINK, title: "💰 Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_dollar:1491884534130806814> Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // -- REMINDERS --------------------------------------------
@@ -4363,7 +4363,7 @@ client.on("messageCreate", async (message) => {
       const artists = data.topartists?.artist;
       if (!artists) return err(message, "No data found.");
       const lines = artists.map((a, i) => `**${i + 1}.** ${a.name} — ${a.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `🎵 Top Artists for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1519516650418999338> Top Artists for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -4377,7 +4377,7 @@ client.on("messageCreate", async (message) => {
       const tracks = data.toptracks?.track;
       if (!tracks) return err(message, "No data found.");
       const lines = tracks.map((t, i) => `**${i + 1}.** ${t.name} by ${t.artist.name} — ${t.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `🎵 Top Tracks for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1519516650418999338> Top Tracks for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -4391,7 +4391,7 @@ client.on("messageCreate", async (message) => {
       const albums = data.topalbums?.album;
       if (!albums) return err(message, "No data found.");
       const lines = albums.map((a, i) => `**${i + 1}.** ${a.name} by ${a.artist.name} — ${a.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `🎵 Top Albums for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1519516650418999338> Top Albums for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -9192,7 +9192,7 @@ client.on("messageCreate", async (message) => {
   // ,leave -- make bot leave server (owner only)
   if (command === "leave") {
     if (!isOwner(message.author.id)) return err(message, "Owner only.");
-    await message.reply("👋 Leaving server...");
+    await message.reply("<a:009Cinnamoroll_Wave:1265534373873320047> Leaving server...");
     await message.guild.leave();
   }
 
@@ -10562,7 +10562,7 @@ client.on("messageCreate", async (message) => {
     const reqAttach = [...cfg.requireAttach].map(id => `<#${id}>`).join(", ") || "none";
     const logCh = cfg.logChannelId ? `<#${cfg.logChannelId}>` : "not set";
     const modRole = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "not set";
-    return message.reply({ embeds: [{ color: PINK, title: "🔞 Anti-Minors Config", fields: [
+    return message.reply({ embeds: [{ color: PINK, title: "<:18plus:1071521486038380594> Anti-Minors Config", fields: [
       { name: "Monitored Channels", value: monitored, inline: false },
       { name: "Require Attachment", value: reqAttach, inline: false },
       { name: "Log Channel", value: logCh, inline: true },
@@ -10731,7 +10731,7 @@ function buildPanelEmbed(s) {
       { name: "<:RUSH_comment:1491884212297531572>  Source",          value: srcLine,                       inline: true  },
       { name: "<:RUSH_comment:1491884212297531572>  Target",          value: tgtLine,                       inline: true  },
       { name: "<:RUSH_gear:1491885926798852240>  Clone options",   value: toggleLine,                    inline: false },
-      { name: "🎬  Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
+      { name: "<:movieslotbluedns:1414214240218120295>  Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
       { name: "✏️  Extra param",     value: extraLine,                     inline: false },
     ],
     footer: { text: "sensational  ·  setup panel  ·  all changes apply instantly" },
@@ -10777,7 +10777,7 @@ function buildPanelComponents(s) {
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬  Step 2 — Choose how to name the videos...")
+      .setPlaceholder("<:movieslotbluedns:1414214240218120295>  Step 2 — Choose how to name the videos...")
       .addOptions([
         { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   emoji: "🔤",
           description: "Pattern followed by an incrementing number",  default: s.videoRenameMode === "prefix"   },
@@ -10814,7 +10814,7 @@ function buildPanelComponents(s) {
   // ── ROW 5: Action bar ─────────────────────────────────────────────────────
   const row5 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("<:RUSH_task:1491885155537780746> Manual IDs" ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("🎬 Video opts" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("<:movieslotbluedns:1414214240218120295> Video opts" ).setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("sp_launch").setLabel("<:RUSH_rocket:1491885681058779347> Launch"     ).setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("sp_cancel").setLabel("✖ Cancel"      ).setStyle(ButtonStyle.Danger),
   );
@@ -11206,7 +11206,7 @@ client.on("interactionCreate", async (interaction) => {
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
-      .setTitle("🎬 Video & Rename Options")
+      .setTitle("<:movieslotbluedns:1414214240218120295> Video & Rename Options")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
@@ -12374,7 +12374,7 @@ function buildScraperEmbed(guildId) {
       { name: "<:RUSH_list:1491885704043565166>  Status",           value: statusStr,                                        inline: true  },
       { name: "<:RUSH_clock:1491886134110847128>  Schedule",          value: schedStr,                                          inline: true  },
       { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
-      { name: "📈  This window",        value: hourlyStr,                                         inline: true  },
+      { name: "<:RUSH_poll:1491885655754543144>  This window",        value: hourlyStr,                                         inline: true  },
       { name: "⏭️  Next run",          value: nextStr,                                           inline: true  },
       { name: "<:RUSH_comment:1491884212297531572>  Last posted",       value: lastPostedStr,                                      inline: true  },
       { name: "<:RUSH_comment:1491884212297531572>  Target channel",   value: targetStr,                                          inline: false },
@@ -14092,7 +14092,7 @@ async function _ketoFetch(url) {
 }
 
 const _KETO_META = {
-  tiktok:    { icon:"🎵", color:0x010101, name:"TikTok"    },
+  tiktok:    { icon:"<:musicnote:1519516650418999338>", color:0x010101, name:"TikTok"    },
   twitter:   { icon:"🐦", color:0x1DA1F2, name:"Twitter/X" },
   instagram: { icon:"📸", color:0xC13584, name:"Instagram"  },
 };
@@ -14406,13 +14406,13 @@ client.on("messageCreate", async (message) => {
   const FUN_ACTIONS = {
     hug:       { verb:"hugs",         emoji:"🤗", url:"https://nekos.best/api/v2/hug"       },
     kiss:      { verb:"kisses",       emoji:"💋", url:"https://nekos.best/api/v2/kiss"      },
-    slap:      { verb:"slaps",        emoji:"👋", url:"https://nekos.best/api/v2/slap"      },
+    slap:      { verb:"slaps",        emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/slap"      },
     pat:       { verb:"pats",         emoji:"🐾", url:"https://nekos.best/api/v2/pat"       },
     cuddle:    { verb:"cuddles",      emoji:"🥰", url:"https://nekos.best/api/v2/cuddle"    },
     poke:      { verb:"pokes",        emoji:"👉", url:"https://nekos.best/api/v2/poke"      },
     bite:      { verb:"bites",        emoji:"😬", url:"https://nekos.best/api/v2/bite"      },
     highfive:  { verb:"high fives",   emoji:"🙌", url:"https://nekos.best/api/v2/highfive"  },
-    wave:      { verb:"waves at",     emoji:"👋", url:"https://nekos.best/api/v2/wave"      },
+    wave:      { verb:"waves at",     emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/wave"      },
     punch:     { verb:"punches",      emoji:"👊", url:"https://nekos.best/api/v2/punch"     },
     dance:     { verb:"dances with",  emoji:"💃", url:"https://nekos.best/api/v2/dance"     },
     feed:      { verb:"feeds",        emoji:"🍙", url:"https://nekos.best/api/v2/feed"      },
@@ -15543,14 +15543,14 @@ Object.assign(global._helpExtraCategories, {
     commands: [
       [",hug [@user]",       "Hug someone 🤗"],
       [",kiss [@user]",      "Kiss someone 💋"],
-      [",slap [@user]",      "Slap someone 👋"],
+      [",slap [@user]",      "Slap someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
       [",pat [@user]",       "Pat someone 🐾"],
       [",cuddle [@user]",    "Cuddle someone 🥰"],
       [",poke [@user]",      "Poke someone 👉"],
       [",bite [@user]",      "Bite someone 😬"],
       [",punch [@user]",     "Punch someone 👊"],
       [",highfive [@user]",  "High five someone 🙌"],
-      [",wave [@user]",      "Wave at someone 👋"],
+      [",wave [@user]",      "Wave at someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
       [",dance [@user]",     "Dance with someone 💃"],
       [",feed [@user]",      "Feed someone 🍙"],
       [",tickle [@user]",    "Tickle someone 😂"],
@@ -15559,7 +15559,7 @@ Object.assign(global._helpExtraCategories, {
       [",blush [@user]",     "Blush at someone 😳"],
       [",wink [@user]",      "Wink at someone 😉"],
       [",throw [@user]",     "Throw something at someone 🎯"],
-      [",fuck [@user]",      "🔞 NSFW-only channels"],
+      [",fuck [@user]",      "<:18plus:1071521486038380594> NSFW-only channels"],
     ]
   },
   securityv2: {
