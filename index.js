@@ -1676,7 +1676,7 @@ client.on("guildMemberRemove", async (member) => {
 client.on("messageReactionAdd", async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
-  if (reaction.emoji.name !== "<:awhitestar:1356027539906105417>") return;
+  if (reaction.emoji.id !== "1356027539906105417") return;
   const config = starboardConfig.get(reaction.message.guild?.id);
   if (!config || starboardSent.has(reaction.message.id)) return;
   if (reaction.count >= config.threshold) {
@@ -4046,7 +4046,7 @@ client.on("messageCreate", async (message) => {
     const endTime = Date.now() + ms;
     const embed = { color: PINK, title: "<:RUSH_giveaway:1491885329978888212> GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with <:RUSH_giveaway:1491885329978888212> to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.username}` } };
     const msg = await message.channel.send({ embeds: [embed] });
-    await msg.react("<:RUSH_giveaway:1491885329978888212>");
+    await msg.react("1491885329978888212");
     giveaways.set(msg.id, { prize, endTime, entries: [], channelId: message.channel.id, guildId: message.guild.id, ended: false });
     saveGiveaways();
     message.delete().catch(() => {});
@@ -4473,9 +4473,9 @@ async function runMassDM(state) {
 
   if (statusMsg) {
     activeMassDM.statusMsgId = statusMsg.id;
-    await statusMsg.react("<:steal:1521327958634135655>").catch(() => {});
+    await statusMsg.react("1521327958634135655").catch(() => {});
     statusMsg.createReactionCollector({
-      filter: (r, u) => r.emoji.name === "<:steal:1521327958634135655>" && !u.bot,
+      filter: (r, u) => r.emoji.id === "1521327958634135655" && !u.bot,
       time: 48 * 60 * 60 * 1000
     }).on("collect", () => { cancelled = true; });
   }
