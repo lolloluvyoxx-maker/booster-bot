@@ -15211,11 +15211,11 @@ client.on("interactionCreate", async (interaction) => {
 
     const perms = [
       { id:guildId, deny:[PermissionFlagsBits.ViewChannel] },
-      { id:interaction.user.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
-      { id:interaction.guild.members.me.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] },
+      { id:interaction.user.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.UseExternalEmojis] },
+      { id:interaction.guild.members.me.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseExternalEmojis] },
     ];
     for (const rId of (panel?.supportRoles||[])) {
-      perms.push({ id:rId, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] });
+      perms.push({ id:rId, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.UseExternalEmojis] });
     }
     const ch = await interaction.guild.channels.create({
       name:`ticket-${ticketNum}`, type:0,
@@ -15333,7 +15333,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.update({embeds:[{color:PINK,description:`<:RUSH_unlock:1491885459905839244> **Reopening ticket…**`}],components:[]}).catch(()=>{});
 
     // Slow operations after ack
-    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true}).catch(()=>{});
+    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true,UseExternalEmojis:true}).catch(()=>{});
     await interaction.channel.setName(`ticket-${ticketNum||"0000"}`).catch(()=>{});
     if (creatorId) {
       openTickets.set(`${interaction.guild.id}-${creatorId}`, channelId);
