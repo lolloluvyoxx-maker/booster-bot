@@ -193,7 +193,9 @@ function buildConfigSnapshot() {
 }
 
 // ── Convenience save triggers (call these wherever data changes) ──────────────
-function saveAllConfigs()  { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot); }
+function saveAllConfigs()    { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot); }
+// Security data must survive container restarts — flush to DB instantly (no debounce)
+function saveSecurityNow()  { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot, 0); }
 function saveWarns()       { scheduleSave(DB.WARNS,      () => warns,          1500); }
 function saveXP()          { scheduleSave(DB.XP,         () => xpData,         8000); }
 function saveGiveaways()   { scheduleSave(DB.GIVEAWAYS,  () => giveaways); }
@@ -247,7 +249,7 @@ async function loadAllData() {
   const cfg = d[DB.GUILD_CFG];
   if (cfg) {
     if (cfg.antiMinorsConfig instanceof Map)  { antiMinorsConfig.clear();  cfg.antiMinorsConfig.forEach((v,k) => antiMinorsConfig.set(k, fixSetFields(v,'channels','requireAttach','whitelist'))); }
-    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => antinukeConfig.set(k, v)); }
+    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => antinukeConfig.set(k, fixSetFields(v, 'whitelist'))); }
     if (cfg.antiraidConfig instanceof Map)    { antiraidConfig.clear();    cfg.antiraidConfig.forEach((v,k)   => antiraidConfig.set(k, v)); }
     if (cfg.autoroles instanceof Map)         { autoroles.clear();         cfg.autoroles.forEach((v,k)        => autoroles.set(k, v)); }
     if (cfg.welcomeConfig instanceof Map)     { welcomeConfig.clear();     cfg.welcomeConfig.forEach((v,k)    => welcomeConfig.set(k, v)); }
@@ -290,7 +292,42 @@ async function loadAllData() {
     if (cfg.ignoreList instanceof Map)        { ignoreList.clear();        cfg.ignoreList.forEach((v,k)       => ignoreList.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
     if (cfg.blacklistWords instanceof Map)    { blacklistWords.clear();    cfg.blacklistWords.forEach((v,k)   => blacklistWords.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
     if (cfg.autoResponders instanceof Map)    { autoResponders.clear();    cfg.autoResponders.forEach((v,k)   => autoResponders.set(k, v)); }
-    if (cfg._generalCfg instanceof Map)       { _generalCfg.clear();       cfg._generalCfg.forEach((v,k)      => _generalCfg.set(k, v)); }
+    if (cfg._generalCfg instanceof Map) {
+      _generalCfg.clear();
+      cfg._generalCfg.forEach((v, k) => {
+        if (!v || typeof v !== 'object') v = {};
+        // ── Ticket panels ────────────────────────────────────────────────────
+        if (!Array.isArray(v.ticketPanels)) v.ticketPanels = [];
+        v.ticketPanels = v.ticketPanels.map(p => ({
+          name:               p.name               ?? "Support",
+          description:        p.description        ?? "",
+          buttonLabel:        p.buttonLabel         ?? "",
+          buttonEmoji:        p.buttonEmoji         ?? "",
+          buttonColor:        p.buttonColor         ?? "Success",
+          supportRoles:       Array.isArray(p.supportRoles)  ? p.supportRoles  : [],
+          categories:         Array.isArray(p.categories)    ? p.categories    : [],
+          categoryId:         p.categoryId          ?? null,
+          transcriptChannelId:p.transcriptChannelId ?? null,
+          panelChannelId:     p.panelChannelId      ?? null,
+          createdAt:          p.createdAt           ?? Date.now(),
+        }));
+        // ── Security V2 ──────────────────────────────────────────────────────
+        if (!Array.isArray(v.riskyPerms)) v.riskyPerms = [];
+        if (!v.riskyRoles || typeof v.riskyRoles !== 'object')
+          v.riskyRoles = { roles: [], action: "strip" };
+        if (!Array.isArray(v.riskyRoles.roles)) v.riskyRoles.roles = [];
+        if (!v.securityWhitelist || typeof v.securityWhitelist !== 'object')
+          v.securityWhitelist = { users: [], roles: [], channels: [] };
+        if (!Array.isArray(v.securityWhitelist.users))    v.securityWhitelist.users    = [];
+        if (!Array.isArray(v.securityWhitelist.roles))    v.securityWhitelist.roles    = [];
+        if (!Array.isArray(v.securityWhitelist.channels)) v.securityWhitelist.channels = [];
+        if (!v.actionLimits      || typeof v.actionLimits      !== 'object') v.actionLimits      = {};
+        if (!v.actionPunishments || typeof v.actionPunishments !== 'object') v.actionPunishments = {};
+        _generalCfg.set(k, v);
+      });
+      const secGuilds = [..._generalCfg.entries()].filter(([,v]) => v.riskyPerms?.length || v.riskyRoles?.roles?.length || Object.keys(v.actionLimits||{}).length);
+      console.log(`[DB] ✅ _generalCfg restored (${_generalCfg.size} guilds; ${secGuilds.length} with active Security V2 config)`);
+    }
     if (cfg.ketoConfig instanceof Map)        { ketoConfig.clear();        cfg.ketoConfig.forEach((v,k)       => {
       if (v.channelIds && !(v.channelIds instanceof Set)) v.channelIds = new Set(Array.isArray(v.channelIds) ? v.channelIds : []);
       ketoConfig.set(k, v);
@@ -1576,17 +1613,14 @@ const MOD_COMMANDS = new Set([
 function modGate(message, command) {
   const guildId = message.guild.id;
   const cmd = command ?? message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
-  // Custom per-guild block list — silently blocked for everyone (even admins)
+  // Custom per-guild block list — silently dropped for everyone (even admins)
   const custom = moderationCustom.get(guildId);
   if (custom?.has(cmd)) return true;
-  // ── Server admins & owners always bypass the moderation toggle ──────────
-  // The ,moderation on/off toggle is for locking out regular users, not admins.
+  // Server admins & owners always bypass the moderation toggle
   if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return false;
-  // Per-guild moderation toggle — block MOD_COMMANDS for non-admins
-  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) {
-    message.reply({ embeds: [{ color: 0xff0000, description: `❌ Moderation commands are currently **disabled** in this server.\nUse \`,moderation on\` to re-enable them.` }] }).catch(() => {});
-    return true;
-  }
+  // Per-guild moderation toggle — silently drop MOD_COMMANDS for non-admins
+  // (no reply sent — the command simply does not run)
+  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) return true;
   return false;
 }
 
@@ -14405,7 +14439,7 @@ client.on("messageCreate", async (message) => {
       const cfg = guildCfg(message.guild.id);
       if (!cfg.actionLimits) cfg.actionLimits = {};
       cfg.actionLimits[action] = { count, seconds };
-      saveAllConfigs();
+      saveSecurityNow();
       return ok(message,`Limit set: max **${count}** \`${action}\` action(s) per **${seconds}s** before punishment fires.`);
     }
 
@@ -14419,7 +14453,7 @@ client.on("messageCreate", async (message) => {
       if (!cfg.actionPunishments) cfg.actionPunishments = {};
       const targets = action === "all" ? VALID_ACTIONS : [action];
       for (const t of targets) { if (action==="all"||VALID_ACTIONS.includes(t)) cfg.actionPunishments[t] = punish; }
-      saveAllConfigs();
+      saveSecurityNow();
       return ok(message,`Punishment for \`${action}\` set to **${punish}**.`);
     }
   }
@@ -14436,37 +14470,37 @@ client.on("messageCreate", async (message) => {
     if (sub === "add_user" || sub === "add-user") {
       const user = message.mentions.users.first();
       if (!user) return err(message,"Mention a user.");
-      if (!wl.users.includes(user.id)) { wl.users.push(user.id); saveAllConfigs(); }
+      if (!wl.users.includes(user.id)) { wl.users.push(user.id); saveSecurityNow(); }
       return ok(message,`${user.tag} added to the security whitelist (users).`);
     }
     if (sub === "remove_user" || sub === "remove-user") {
       const user = message.mentions.users.first();
       if (!user) return err(message,"Mention a user.");
-      wl.users = wl.users.filter(id=>id!==user.id); saveAllConfigs();
+      wl.users = wl.users.filter(id=>id!==user.id); saveSecurityNow();
       return ok(message,`${user.tag} removed from the security whitelist.`);
     }
     if (sub === "add_role" || sub === "add-role") {
       const role = message.mentions.roles.first();
       if (!role) return err(message,"Mention a role.");
-      if (!wl.roles.includes(role.id)) { wl.roles.push(role.id); saveAllConfigs(); }
+      if (!wl.roles.includes(role.id)) { wl.roles.push(role.id); saveSecurityNow(); }
       return ok(message,`${role.name} added to the security whitelist (roles).`);
     }
     if (sub === "remove_role" || sub === "remove-role") {
       const role = message.mentions.roles.first();
       if (!role) return err(message,"Mention a role.");
-      wl.roles = wl.roles.filter(id=>id!==role.id); saveAllConfigs();
+      wl.roles = wl.roles.filter(id=>id!==role.id); saveSecurityNow();
       return ok(message,`${role.name} removed from the security whitelist.`);
     }
     if (sub === "add_channel" || sub === "add-channel") {
       const ch = message.mentions.channels.first();
       if (!ch) return err(message,"Mention a channel.");
-      if (!wl.channels.includes(ch.id)) { wl.channels.push(ch.id); saveAllConfigs(); }
+      if (!wl.channels.includes(ch.id)) { wl.channels.push(ch.id); saveSecurityNow(); }
       return ok(message,`${ch} added to the security whitelist (channels) — AutoMod won't fire there.`);
     }
     if (sub === "remove_channel" || sub === "remove-channel") {
       const ch = message.mentions.channels.first();
       if (!ch) return err(message,"Mention a channel.");
-      wl.channels = wl.channels.filter(id=>id!==ch.id); saveAllConfigs();
+      wl.channels = wl.channels.filter(id=>id!==ch.id); saveSecurityNow();
       return ok(message,`${ch} removed from the security whitelist.`);
     }
     if (sub === "view_users"||sub==="view-users")
@@ -14490,18 +14524,18 @@ client.on("messageCreate", async (message) => {
     if (sub === "add") {
       if (!role) return err(message,"Mention a role to mark as risky.");
       if (!cfg.riskyRoles.roles.includes(role.id)) cfg.riskyRoles.roles.push(role.id);
-      saveAllConfigs();
+      saveSecurityNow();
       return ok(message,`${role} marked as a **risky role** — anyone assigned it will be **${cfg.riskyRoles.action}**ped.`);
     }
     if (sub === "remove") {
       if (!role) return err(message,"Mention a role to unmark.");
-      cfg.riskyRoles.roles = cfg.riskyRoles.roles.filter(id=>id!==role.id); saveAllConfigs();
+      cfg.riskyRoles.roles = cfg.riskyRoles.roles.filter(id=>id!==role.id); saveSecurityNow();
       return ok(message,`${role} removed from risky roles.`);
     }
     if (sub === "action") {
       const action = args[2]?.toLowerCase();
       if (!["strip","kick","ban"].includes(action)) return err(message,"Action must be: `strip`, `kick` or `ban`");
-      cfg.riskyRoles.action = action; saveAllConfigs();
+      cfg.riskyRoles.action = action; saveSecurityNow();
       return ok(message,`Risky role action set to **${action}**.`);
     }
     if (sub === "list") {
@@ -14546,6 +14580,102 @@ client.on("messageCreate", async (message) => {
           .setDefault(monitored.includes(p.name))
       ));
     return message.reply({ embeds:[embed], components:[new ActionRowBuilder().addComponents(menu)] });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ██  SECURITY — Overview panel
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (command === "security") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message, "Missing **Administrator** permission.");
+
+    const gid = message.guild.id;
+    const cfg = guildCfg(gid);
+    const an  = getAntiNuke(gid);
+    const ar  = getAntiRaid(gid);
+
+    // ── AntiNuke ────────────────────────────────────────────────────────────
+    const anWL = an.whitelist instanceof Set ? [...an.whitelist] : [];
+    const anField = [
+      an.enabled ? "🟢 **Enabled**" : "🔴 Disabled",
+      `Punishment: \`${an.punishment||"ban"}\`  ·  Threshold: \`${an.threshold||3}\` actions`,
+      anWL.length ? `Whitelist: ${anWL.slice(0,5).map(id=>`<@${id}>`).join(", ")}${anWL.length>5?` +${anWL.length-5} more`:""}` : "Whitelist: *empty*",
+    ].join("\n");
+
+    // ── AntiRaid ────────────────────────────────────────────────────────────
+    const arField = [
+      ar.enabled ? "🟢 **Enabled**" : "🔴 Disabled",
+      `Action: \`${ar.action||"kick"}\`  ·  Threshold: \`${ar.joinThreshold||10}\` joins / \`${Math.round((ar.joinWindow||10000)/1000)}s\``,
+    ].join("\n");
+
+    // ── Risky Permissions ───────────────────────────────────────────────────
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    const riskyPermsField = riskyPerms.length
+      ? RISKY_PERM_OPTIONS.filter(p=>riskyPerms.includes(p.name)).map(p=>`${p.emoji} \`${p.name}\``).join("  ")
+      : "🔴 *None monitored — use `,riskypermission` to set up*";
+
+    // ── Risky Roles ─────────────────────────────────────────────────────────
+    const rr = cfg.riskyRoles;
+    const rrRoles = Array.isArray(rr?.roles) ? rr.roles : [];
+    const riskyRolesField = [
+      rrRoles.length ? rrRoles.map(id=>`<@&${id}>`).join(", ") : "🔴 *None set — use `,risky-roles add @role`*",
+      rrRoles.length ? `Action on assignment: \`${rr.action||"strip"}\`` : "",
+    ].filter(Boolean).join("\n");
+
+    // ── Action Limits & Punishments ─────────────────────────────────────────
+    const al = cfg.actionLimits      || {};
+    const ap = cfg.actionPunishments || {};
+    const limitEntries = Object.entries(al);
+    const limitsField = limitEntries.length
+      ? limitEntries.map(([a,{count,seconds}]) =>
+          `\`${a}\`  ${count}×/${seconds}s${ap[a]? ` → **${ap[a]}**`:""}`
+        ).join("\n")
+      : "🔴 *None set — use `,setlimit <action> <count> [seconds]`*";
+
+    // ── Security Whitelist ──────────────────────────────────────────────────
+    const wl       = cfg.securityWhitelist || {};
+    const wlUsers  = Array.isArray(wl.users)    ? wl.users    : [];
+    const wlRoles  = Array.isArray(wl.roles)    ? wl.roles    : [];
+    const wlChs    = Array.isArray(wl.channels) ? wl.channels : [];
+    const wlParts  = [
+      wlUsers.length  ? `👤 Users: ${wlUsers.slice(0,4).map(id=>`<@${id}>`).join(", ")}${wlUsers.length>4?` +${wlUsers.length-4} more`:""}` : null,
+      wlRoles.length  ? `🎭 Roles: ${wlRoles.slice(0,4).map(id=>`<@&${id}>`).join(", ")}${wlRoles.length>4?` +${wlRoles.length-4} more`:""}` : null,
+      wlChs.length    ? `📢 Channels: ${wlChs.slice(0,4).map(id=>`<#${id}>`).join(", ")}${wlChs.length>4?` +${wlChs.length-4} more`:""}` : null,
+    ].filter(Boolean);
+    const wlField = wlParts.length ? wlParts.join("\n") : "*No whitelisted entries*";
+
+    // ── Moderation toggle ───────────────────────────────────────────────────
+    const modOn      = isModerationEnabled(gid);
+    const customBl   = getModerationCustom(gid);
+    const modField   = [
+      modOn ? "🟢 **Enabled** (mod commands usable by staff)" : "🔴 **Disabled** (mod commands silently blocked for non-admins)",
+      customBl.size ? `Always-blocked: ${[...customBl].map(c=>`\`${c}\``).join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+
+    // ── VanityLock ──────────────────────────────────────────────────────────
+    const vl    = vanityLock.get(gid);
+    const vlStr = vl?.enabled ? `🟢 **Enabled** — watching \`/${vl.vanity}\`` : "🔴 Disabled";
+
+    const fields = [
+      { name:"🛡️  AntiNuke",                    value: anField,       inline: true  },
+      { name:"🌊  AntiRaid",                    value: arField,       inline: true  },
+      { name:"\u200b",                          value: "\u200b",      inline: false },
+      { name:"⚠️  Risky Permissions Monitor",  value: riskyPermsField, inline: false },
+      { name:"🔺  Risky Roles",                value: riskyRolesField, inline: false },
+      { name:"📊  Action Limits & Punishments", value: limitsField,   inline: false },
+      { name:"✅  Security Whitelist",          value: wlField,       inline: false },
+      { name:"🔒  Moderation Toggle",           value: modField,      inline: true  },
+      { name:"🎀  Vanity Lock",                 value: vlStr,         inline: true  },
+    ];
+
+    return message.reply({ embeds:[{
+      color:       PINK,
+      title:       `🔐  Security Overview — ${message.guild.name}`,
+      description: "All protection systems at a glance. Green = active, Red = off or unconfigured.",
+      fields,
+      footer:      { text: ",antinuke · ,antiraid · ,risky-roles · ,riskypermission · ,whitelist · ,setlimit · ,setpunishment" },
+      timestamp:   new Date().toISOString(),
+    }]}).catch(()=>{});
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -14736,6 +14866,19 @@ function _tpWizardSave(wiz) {
   saveAllConfigs();
   client._tpWizards?.delete(`tp_wizard:${wiz.authorId}:${wiz.guildId}`);
 }
+// Safely resolve an emoji string to what Discord.js ButtonBuilder.setEmoji() accepts.
+// Handles: Unicode ("🎫"), custom ("<:name:id>"), animated ("<a:name:id>")
+function _resolveEmoji(raw) {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  // Match custom/animated Discord emoji <:name:id> or <a:name:id>
+  const m = s.match(/^<?(a?):?(\w{2,32}):(\d{17,21})>?$/);
+  if (m) return { animated: m[1]==="a", name: m[2], id: m[3] };
+  // Strip any text before/after the emoji; pass Unicode emoji as-is
+  return s;
+}
+
 function _buildPanelMessage(panel, guildId, panelIdx) {
   const bStyle = _TP_BSTYLE[panel.buttonColor] ?? ButtonStyle.Success;
   let components;
@@ -14743,8 +14886,9 @@ function _buildPanelMessage(panel, guildId, panelIdx) {
     const catBtns = panel.categories.slice(0,5).map(cat => {
       const b = new ButtonBuilder()
         .setCustomId(`ticket_create:${guildId}:${panelIdx}:${encodeURIComponent(cat.name)}`)
-        .setLabel(cat.name).setStyle(bStyle);
-      if (cat.emoji) b.setEmoji(cat.emoji);
+        .setLabel(cat.name||"Ticket").setStyle(bStyle);
+      const emoji = _resolveEmoji(cat.emoji);
+      if (emoji) { try { b.setEmoji(emoji); } catch {} }
       return b;
     });
     components = [new ActionRowBuilder().addComponents(...catBtns)];
@@ -14753,7 +14897,8 @@ function _buildPanelMessage(panel, guildId, panelIdx) {
       .setCustomId(`ticket_create:${guildId}:${panelIdx}:default`)
       .setLabel(panel.buttonLabel || panel.name || "Open a Ticket")
       .setStyle(bStyle);
-    if (panel.buttonEmoji) b.setEmoji(panel.buttonEmoji);
+    const emoji = _resolveEmoji(panel.buttonEmoji);
+    if (emoji) { try { b.setEmoji(emoji); } catch {} }
     components = [new ActionRowBuilder().addComponents(b)];
   }
   return { embeds:[{color:PINK, description:panel.description||"Click below to open a support ticket.", footer:{text:panel.name}}], components };
@@ -14825,7 +14970,7 @@ client.on("interactionCreate", async (interaction) => {
     if (id==="tp_setemoji") {
       const modal = new ModalBuilder().setCustomId("tp_modal_emoji").setTitle("Button Emoji");
       modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("emoji").setLabel("Emoji (unicode or :name:, leave blank to remove)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.buttonEmoji||"").setRequired(false)
+        new TextInputBuilder().setCustomId("emoji").setLabel("Emoji (unicode or <:name:id> — leave blank to remove)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.buttonEmoji||"").setRequired(false).setMaxLength(100)
       ));
       return interaction.showModal(modal);
     }
@@ -14877,21 +15022,37 @@ client.on("interactionCreate", async (interaction) => {
     if (!wiz) return interaction.reply({content:"Session expired.",flags:64}).catch(()=>{});
     const gv = f => { try { return interaction.fields.getTextInputValue(f)?.trim()||""; } catch{ return ""; }};
 
-    if (id==="tp_modal_name")  { const n=gv("pname"); const b=gv("blabel"); if(n) wiz.panelData.name=n; if(b) wiz.panelData.buttonLabel=b; }
-    if (id==="tp_modal_desc")  { wiz.panelData.description = gv("desc")||wiz.panelData.description; }
-    if (id==="tp_modal_emoji") { wiz.panelData.buttonEmoji  = gv("emoji")||""; }
+    if (id==="tp_modal_name")  {
+      const n=gv("pname"); const b=gv("blabel");
+      if (n) wiz.panelData.name=n;
+      // Only update button label if user typed something; blank keeps the existing label
+      if (b) wiz.panelData.buttonLabel=b;
+    }
+    // Allow clearing description by leaving blank (empty string = no description)
+    if (id==="tp_modal_desc")  { wiz.panelData.description = gv("desc"); }
+    // Allow clearing emoji by leaving blank
+    if (id==="tp_modal_emoji") { wiz.panelData.buttonEmoji = gv("emoji"); }
     if (id==="tp_modal_cats")  {
       const raw = gv("cats");
-      wiz.panelData.categories = raw ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji}/u)?.[0]||""; return {emoji:em,name:t.replace(em,"").trim()}; }).filter(c=>c.name) : [];
+      wiz.panelData.categories = raw
+        ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u)?.[0]||""; return {emoji:em, name:t.replace(em,"").trim()}; }).filter(c=>c.name)
+        : [];
     }
     if (id==="tp_modal_wiz_roles")    { wiz.panelData.supportRoles=gv("roles").split(",").map(s=>s.trim()).filter(Boolean); }
-    if (id==="tp_modal_wiz_channels") { const c=gv("catid"); const t=gv("tchid"); if(c) wiz.panelData.categoryId=c; if(t) wiz.panelData.transcriptChannelId=t; }
+    if (id==="tp_modal_wiz_channels") {
+      const c=gv("catid"); const t=gv("tchid");
+      // Allow clearing by submitting blank; only override if user typed something OR explicitly cleared
+      wiz.panelData.categoryId           = c || null;
+      wiz.panelData.transcriptChannelId  = t || null;
+    }
 
     wiz.step += 1;
+    // Acknowledge the modal FIRST so Discord doesn't show "interaction failed"
+    await interaction.reply({content:"✅ Saved — check the setup message above.", flags:64}).catch(()=>{});
     const origMsg = await interaction.channel.messages.fetch(wiz.msgId).catch(()=>null);
     if (wiz.step <= 6) { if (origMsg) await origMsg.edit(_wizardStepContent(wiz.step,wiz)).catch(()=>{}); }
     else { _tpWizardSave(wiz); if (origMsg) await origMsg.edit(_wizardDoneContent(wiz)).catch(()=>{}); }
-    return interaction.deferReply({flags:64}).catch(()=>{});
+    return;
   }
 
   // ── Panel manage — select menu ────────────────────────────────────────────
@@ -14911,28 +15072,29 @@ client.on("interactionCreate", async (interaction) => {
 
     const modalDefs = {
       name:        {cid:`tpm_modal_name:${idx}`,       title:"Panel title & button label",
-                    fields:[{id:"pname",label:"Panel title",style:"Short",val:panel.name},{id:"blabel",label:"Button label",style:"Short",val:panel.buttonLabel||panel.name}]},
+                    fields:[{id:"pname",label:"Panel title",style:"Short",val:panel.name||""},{id:"blabel",label:"Button label (blank = keep current)",style:"Short",val:panel.buttonLabel||panel.name||""}]},
       description: {cid:`tpm_modal_desc:${idx}`,        title:"Panel description",
-                    fields:[{id:"desc",label:"Description (markdown supported)",style:"Paragraph",val:panel.description||""}]},
+                    fields:[{id:"desc",label:"Description (markdown — blank to clear)",style:"Paragraph",val:panel.description||""}]},
       style:       {cid:`tpm_modal_style:${idx}`,       title:"Button emoji & colour",
-                    fields:[{id:"emoji",label:"Button emoji (unicode/:name:)",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Colour: Primary / Success / Danger / Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
+                    fields:[{id:"emoji",label:"Emoji: unicode or <:name:id> — blank to remove",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Colour: Primary / Success / Danger / Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
       categories:  {cid:`tpm_modal_cats:${idx}`,        title:"Ticket categories",
                     fields:[{id:"cats",label:'"🤝 Partners, 📝 Reports, ❓ Other"',style:"Paragraph",val:panel.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||""}]},
       roles:       {cid:`tpm_modal_roles:${idx}`,       title:"Support team roles",
-                    fields:[{id:"roles",label:"Role IDs comma-separated",style:"Short",val:panel.supportRoles?.join(",")||""}]},
+                    fields:[{id:"roles",label:"Role IDs comma-separated (blank = any staff)",style:"Short",val:panel.supportRoles?.join(",")||""}]},
       transcript:  {cid:`tpm_modal_transcript:${idx}`,  title:"Transcript channel",
-                    fields:[{id:"chid",label:"Transcript channel ID",style:"Short",val:panel.transcriptChannelId||""}]},
+                    fields:[{id:"chid",label:"Transcript channel ID (blank to clear)",style:"Short",val:panel.transcriptChannelId||""}]},
       category:    {cid:`tpm_modal_category:${idx}`,    title:"Ticket category channel",
-                    fields:[{id:"catid",label:"Category channel ID",style:"Short",val:panel.categoryId||""}]},
+                    fields:[{id:"catid",label:"Category channel ID (blank to clear)",style:"Short",val:panel.categoryId||""}]},
       send:        {cid:`tpm_modal_send:${idx}`,         title:"Send panel to channel",
                     fields:[{id:"channelid",label:"Channel ID to send panel into",style:"Short",val:panel.panelChannelId||""}]},
     };
     const m = modalDefs[action];
-    if (!m) return interaction.reply({content:"Unknown action.",flags:64});
+    if (!m) return interaction.reply({content:"Unknown action.",flags:64}).catch(()=>{});
     const modal = new ModalBuilder().setCustomId(m.cid).setTitle(m.title);
     for (const f of m.fields) {
       modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId(f.id).setLabel(f.label).setStyle(f.style==="Paragraph"?TextInputStyle.Paragraph:TextInputStyle.Short).setValue(f.val).setRequired(false)
+        // setValue must receive a string — coerce to "" to be safe
+        new TextInputBuilder().setCustomId(f.id).setLabel(f.label).setStyle(f.style==="Paragraph"?TextInputStyle.Paragraph:TextInputStyle.Short).setValue(String(f.val??'')).setRequired(false)
       ));
     }
     return interaction.showModal(modal);
@@ -14950,12 +15112,26 @@ client.on("interactionCreate", async (interaction) => {
     if (!panel) return interaction.reply({content:"Panel not found.",flags:64});
     const gv = f => { try { return interaction.fields.getTextInputValue(f)?.trim()||""; } catch{ return ""; }};
 
-    if (mtype==="name")       { const n=gv("pname"); const b=gv("blabel"); if(n) panel.name=n; if(b) panel.buttonLabel=b; }
-    if (mtype==="desc")       { panel.description = gv("desc")||panel.description; }
-    if (mtype==="style")      { panel.buttonEmoji=gv("emoji"); const c=gv("color"); if(_TP_BSTYLE[c]) panel.buttonColor=c; }
-    if (mtype==="cats")       {
+    if (mtype==="name") {
+      const n=gv("pname"); const b=gv("blabel");
+      if (n) panel.name=n;
+      if (b) panel.buttonLabel=b; // blank keeps existing (Discord requires non-empty label)
+    }
+    // Allow clearing description by leaving blank
+    if (mtype==="desc") { panel.description = gv("desc"); }
+    if (mtype==="style") {
+      // Allow clearing emoji by leaving blank
+      panel.buttonEmoji = gv("emoji");
+      // Normalise color to title-case so "primary" / "PRIMARY" / "Primary" all work
+      const rawColor = gv("color");
+      const normColor = rawColor.charAt(0).toUpperCase() + rawColor.slice(1).toLowerCase();
+      if (_TP_BSTYLE[normColor]) panel.buttonColor = normColor;
+    }
+    if (mtype==="cats") {
       const raw=gv("cats");
-      panel.categories = raw ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji}/u)?.[0]||""; return {emoji:em,name:t.replace(em,"").trim()}; }).filter(c=>c.name) : [];
+      panel.categories = raw
+        ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u)?.[0]||""; return {emoji:em, name:t.replace(em,"").trim()}; }).filter(c=>c.name)
+        : [];
     }
     if (mtype==="roles")      { panel.supportRoles=gv("roles").split(",").map(s=>s.trim()).filter(Boolean); }
     if (mtype==="transcript") { panel.transcriptChannelId=gv("chid")||null; }
@@ -14964,12 +15140,17 @@ client.on("interactionCreate", async (interaction) => {
     if (mtype==="send") {
       const channelId = gv("channelid");
       const ch = interaction.guild.channels.cache.get(channelId);
-      if (!ch) return interaction.reply({content:"❌ Channel not found.",flags:64});
-      await ch.send(_buildPanelMessage(panel, interaction.guild.id, idx)).catch(e=>{ return interaction.reply({content:`❌ Failed: ${e.message}`,flags:64}); });
+      if (!ch) return interaction.reply({content:"❌ Channel not found — double-check the channel ID.",flags:64}).catch(()=>{});
+      // Send the panel; catch errors properly to avoid a double-reply
+      const sendResult = await ch.send(_buildPanelMessage(panel, interaction.guild.id, idx)).catch(e => e);
+      if (sendResult instanceof Error)
+        return interaction.reply({content:`❌ Failed to send panel: ${sendResult.message}`,flags:64}).catch(()=>{});
       panel.panelChannelId = channelId;
+      saveAllConfigs();
+      return interaction.reply({content:`✅ Panel **${panel.name}** sent to <#${channelId}>!`, flags:64}).catch(()=>{});
     }
     saveAllConfigs();
-    return interaction.reply({content: mtype==="send" ? `✅ Panel **${panel.name}** sent to <#${gv("channelid")}>!` : "✅ Panel updated.", flags:64});
+    return interaction.reply({content:"✅ Panel updated.", flags:64}).catch(()=>{});
   }
 
   // ── Ticket Create Button ──────────────────────────────────────────────────
@@ -15145,7 +15326,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({content:"❌ Missing **Administrator** permission.",flags:64});
     const cfg = guildCfg(interaction.guild.id);
     cfg.riskyPerms = interaction.values; // replace entire list with selection
-    saveAllConfigs();
+    saveSecurityNow(); // flush immediately — security config must survive restarts
     const monitored = cfg.riskyPerms;
     const monitoredLines = monitored.length
       ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
@@ -15178,21 +15359,23 @@ client.on("interactionCreate", async (interaction) => {
 // Risky role + risky permission auto-enforcement
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (!newMember.guild) return;
-  const cfg = guildCfg(newMember.guild.id);
-  const wl  = cfg.securityWhitelist;
-  if (wl?.users?.includes(newMember.id)) return;
-  if (wl?.roles?.some(r => oldMember.roles.cache.has(r))) return;
+  try {
+    const cfg = guildCfg(newMember.guild.id);
+    // Defensive defaults in case config isn't fully initialised yet
+    const wl = cfg.securityWhitelist || {};
+    if (Array.isArray(wl.users) && wl.users.includes(newMember.id)) return;
+    if (Array.isArray(wl.roles) && wl.roles.some(r => oldMember.roles.cache.has(r))) return;
 
-  const addedRoles = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
-  if (!addedRoles.length) return;
+    const addedRoles = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
+    if (!addedRoles.length) return;
 
-  // ── Risky roles check ──────────────────────────────────────────────────
-  if (cfg.riskyRoles?.roles?.length) {
-    const riskyAdded = addedRoles.filter(r => cfg.riskyRoles.roles.includes(r));
-    if (riskyAdded.length) {
-      const action = cfg.riskyRoles.action || "strip";
-      log(`[RiskyRoles] ${newMember.user.tag} got risky role(s) in ${newMember.guild.name} → ${action}`, "warn");
-      try {
+    // ── Risky roles check ────────────────────────────────────────────────────
+    const riskyRoles = cfg.riskyRoles;
+    if (Array.isArray(riskyRoles?.roles) && riskyRoles.roles.length) {
+      const riskyAdded = addedRoles.filter(r => riskyRoles.roles.includes(r));
+      if (riskyAdded.length) {
+        const action = riskyRoles.action || "strip";
+        log(`[RiskyRoles] ${newMember.user.tag} got risky role(s) in ${newMember.guild.name} → ${action}`, "warn");
         if (action === "strip") {
           await newMember.roles.remove(riskyAdded, "Risky role auto-strip").catch(()=>{});
         } else if (action === "kick") {
@@ -15201,9 +15384,24 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         } else if (action === "ban") {
           await newMember.ban({ reason:"Risky role assigned — security action" }).catch(()=>{});
         }
-      } catch(e) { log(`[RiskyRoles] Action failed: ${e.message}`, "error"); }
+      }
     }
-  }
+
+    // ── Risky permissions check (role-based — member's roles just gained a risky perm) ──
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    if (riskyPerms.length) {
+      const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
+      for (const addedRoleId of addedRoles) {
+        const role = newMember.guild.roles.cache.get(addedRoleId);
+        if (!role) continue;
+        const hasRiskyPerm = riskyOptions.some(p => role.permissions.has(p.flag));
+        if (hasRiskyPerm) {
+          log(`[RiskyPerms/member] ${newMember.user.tag} received role "${role.name}" with risky perm — stripping role`, "warn");
+          await newMember.roles.remove(addedRoleId, "Role contains a monitored risky permission").catch(()=>{});
+        }
+      }
+    }
+  } catch (e) { log(`[Security/guildMemberUpdate] ${e.message}`, "error"); }
 });
 
 // ── ,riskypermission — roleUpdate monitor ─────────────────────────────────────
@@ -15211,42 +15409,44 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 // If a blacklisted permission was NEWLY added to the role, remove it immediately.
 client.on("roleUpdate", async (oldRole, newRole) => {
   if (!newRole.guild) return;
-  const cfg        = guildCfg(newRole.guild.id);
-  const riskyPerms = cfg.riskyPerms || [];
-  if (!riskyPerms.length) return;
+  try {
+    const cfg        = guildCfg(newRole.guild.id);
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    if (!riskyPerms.length) return;
 
-  // Which monitored permissions were just added to this role?
-  const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
-  const newlyAdded   = riskyOptions.filter(p =>
-    !oldRole.permissions.has(p.flag) && newRole.permissions.has(p.flag)
-  );
-  if (!newlyAdded.length) return;
+    // Which monitored permissions were just added to this role?
+    const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
+    const newlyAdded   = riskyOptions.filter(p =>
+      !oldRole.permissions.has(p.flag) && newRole.permissions.has(p.flag)
+    );
+    if (!newlyAdded.length) return;
 
-  const permNames = newlyAdded.map(p => `${p.emoji} **${p.name}**`).join(", ");
-  log(`[RiskyPerms] Role "${newRole.name}" in ${newRole.guild.name} got blacklisted perm(s): ${permNames} — reverting`, "warn");
+    const permNames = newlyAdded.map(p => `${p.emoji} **${p.name}**`).join(", ");
+    log(`[RiskyPerms] Role "${newRole.name}" in ${newRole.guild.name} got blacklisted perm(s): ${permNames} — reverting`, "warn");
 
-  // Build the new permission bitfield with the blacklisted permissions removed
-  const stripped = newRole.permissions.remove(newlyAdded.map(p => p.flag));
-  await newRole.setPermissions(stripped, `Risky permission auto-reverted: ${newlyAdded.map(p=>p.name).join(", ")}`).catch(e => {
-    log(`[RiskyPerms] Could not revert role "${newRole.name}": ${e.message}`, "error");
-  });
+    // Build the new permission bitfield with the blacklisted permissions removed
+    const stripped = newRole.permissions.remove(newlyAdded.map(p => p.flag));
+    await newRole.setPermissions(stripped, `Risky permission auto-reverted: ${newlyAdded.map(p=>p.name).join(", ")}`).catch(e => {
+      log(`[RiskyPerms] Could not revert role "${newRole.name}": ${e.message}`, "error");
+    });
 
-  // Alert in a log channel if configured (uses the first panel's transcript channel as fallback)
-  const logChId = cfg.securityLogChannel
-    || cfg.ticketPanels?.find(p => p.transcriptChannelId)?.transcriptChannelId;
-  if (logChId) {
-    const logCh = newRole.guild.channels.cache.get(logChId);
-    if (logCh) await logCh.send({ embeds:[{
-      color: 0xFF4444,
-      title: "⚠️  Risky Permission Blocked",
-      description: [
-        `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
-        `**Blocked permission(s):** ${permNames}`,
-        `The permission(s) have been automatically removed from the role.`,
-      ].join("\n"),
-      timestamp: new Date().toISOString(),
-    }]}).catch(()=>{});
-  }
+    // Alert in a log channel if configured (uses the first panel's transcript channel as fallback)
+    const logChId = cfg.securityLogChannel
+      || (Array.isArray(cfg.ticketPanels) ? cfg.ticketPanels.find(p => p.transcriptChannelId)?.transcriptChannelId : null);
+    if (logChId) {
+      const logCh = newRole.guild.channels.cache.get(logChId);
+      if (logCh) await logCh.send({ embeds:[{
+        color: 0xFF4444,
+        title: "⚠️  Risky Permission Blocked",
+        description: [
+          `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
+          `**Blocked permission(s):** ${permNames}`,
+          `The permission(s) have been automatically removed from the role.`,
+        ].join("\n"),
+        timestamp: new Date().toISOString(),
+      }]}).catch(()=>{});
+    }
+  } catch (e) { log(`[Security/roleUpdate] ${e.message}`, "error"); }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
