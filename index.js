@@ -14895,10 +14895,13 @@ function _buildPanelMessage(panel, guildId, panelIdx) {
   } else {
     const b = new ButtonBuilder()
       .setCustomId(`ticket_create:${guildId}:${panelIdx}:default`)
-      .setLabel(panel.buttonLabel || panel.name || "Open a Ticket")
       .setStyle(bStyle);
     const emoji = _resolveEmoji(panel.buttonEmoji);
     if (emoji) { try { b.setEmoji(emoji); } catch {} }
+    // If there's a label, set it; if no label but also no emoji, fall back to panel name
+    const label = panel.buttonLabel;
+    if (label) b.setLabel(label);
+    else if (!emoji) b.setLabel(panel.name || "Open a Ticket");
     components = [new ActionRowBuilder().addComponents(b)];
   }
   return { embeds:[{color:PINK, description:panel.description||"Click below to open a support ticket.", footer:{text:panel.name}}], components };
@@ -14956,7 +14959,7 @@ client.on("interactionCreate", async (interaction) => {
       const modal = new ModalBuilder().setCustomId("tp_modal_name").setTitle("Panel Name & Button Label");
       modal.addComponents(
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("pname").setLabel("Panel title (shown in embed)").setStyle(TextInputStyle.Short).setMaxLength(50).setValue(wiz.panelData.name).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("blabel").setLabel("Button label").setStyle(TextInputStyle.Short).setMaxLength(40).setValue(wiz.panelData.buttonLabel||wiz.panelData.name).setRequired(false)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("blabel").setLabel("Button label (blank = emoji only)").setStyle(TextInputStyle.Short).setMaxLength(40).setValue(wiz.panelData.buttonLabel??wiz.panelData.name).setRequired(false)),
       );
       return interaction.showModal(modal);
     }
@@ -14970,7 +14973,7 @@ client.on("interactionCreate", async (interaction) => {
     if (id==="tp_setemoji") {
       const modal = new ModalBuilder().setCustomId("tp_modal_emoji").setTitle("Button Emoji");
       modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("emoji").setLabel("Emoji (unicode or <:name:id> — leave blank to remove)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.buttonEmoji||"").setRequired(false).setMaxLength(100)
+        new TextInputBuilder().setCustomId("emoji").setLabel("Emoji: unicode / <:name:id> / blank=remove").setStyle(TextInputStyle.Short).setValue(wiz.panelData.buttonEmoji||"").setRequired(false).setMaxLength(100)
       ));
       return interaction.showModal(modal);
     }
@@ -15025,8 +15028,8 @@ client.on("interactionCreate", async (interaction) => {
     if (id==="tp_modal_name")  {
       const n=gv("pname"); const b=gv("blabel");
       if (n) wiz.panelData.name=n;
-      // Only update button label if user typed something; blank keeps the existing label
-      if (b) wiz.panelData.buttonLabel=b;
+      // Always save buttonLabel — blank means emoji-only button (no text)
+      wiz.panelData.buttonLabel = b;
     }
     // Allow clearing description by leaving blank (empty string = no description)
     if (id==="tp_modal_desc")  { wiz.panelData.description = gv("desc"); }
@@ -15072,11 +15075,11 @@ client.on("interactionCreate", async (interaction) => {
 
     const modalDefs = {
       name:        {cid:`tpm_modal_name:${idx}`,       title:"Panel title & button label",
-                    fields:[{id:"pname",label:"Panel title",style:"Short",val:panel.name||""},{id:"blabel",label:"Button label (blank = keep current)",style:"Short",val:panel.buttonLabel||panel.name||""}]},
+                    fields:[{id:"pname",label:"Panel title",style:"Short",val:panel.name||""},{id:"blabel",label:"Button label (blank = emoji only)",style:"Short",val:panel.buttonLabel||""}]},
       description: {cid:`tpm_modal_desc:${idx}`,        title:"Panel description",
                     fields:[{id:"desc",label:"Description (markdown — blank to clear)",style:"Paragraph",val:panel.description||""}]},
       style:       {cid:`tpm_modal_style:${idx}`,       title:"Button emoji & colour",
-                    fields:[{id:"emoji",label:"Emoji: unicode or <:name:id> — blank to remove",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Colour: Primary / Success / Danger / Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
+                    fields:[{id:"emoji",label:"Emoji: unicode/<:name:id> blank=remove",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Color: Primary/Success/Danger/Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
       categories:  {cid:`tpm_modal_cats:${idx}`,        title:"Ticket categories",
                     fields:[{id:"cats",label:'"🤝 Partners, 📝 Reports, ❓ Other"',style:"Paragraph",val:panel.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||""}]},
       roles:       {cid:`tpm_modal_roles:${idx}`,       title:"Support team roles",
@@ -15115,7 +15118,8 @@ client.on("interactionCreate", async (interaction) => {
     if (mtype==="name") {
       const n=gv("pname"); const b=gv("blabel");
       if (n) panel.name=n;
-      if (b) panel.buttonLabel=b; // blank keeps existing (Discord requires non-empty label)
+      // Always save buttonLabel — blank means emoji-only button (no text)
+      panel.buttonLabel = b;
     }
     // Allow clearing description by leaving blank
     if (mtype==="desc") { panel.description = gv("desc"); }
