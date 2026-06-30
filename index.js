@@ -15279,9 +15279,8 @@ client.on("interactionCreate", async (interaction) => {
     ticketActivity.set(ch.id, { creatorId:interaction.user.id, guildId, lastActivity:Date.now(), closing:false, ticketNum, panelIdx, openedAt:Date.now(), creatorMsgSent:false });
 
     const catLabel = category!=="default" ? `  ·  **${category}**` : "";
-    const supportMentions = (panel?.supportRoles||[]).map(r=>`<@&${r}>`).join(" ");
     await ch.send({
-      content:`${supportMentions ? supportMentions+" — " : ""}<@${interaction.user.id}> Welcome`,
+      content:`<@${interaction.user.id}> Welcome`,
       embeds:[{
         color:PINK,
         description:`Support will be with you shortly.\nTo close this ticket press the **Close** button below.`,
