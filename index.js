@@ -782,6 +782,57 @@ const client = new Client({
 // (bot intentionally uses many separate handlers for modularity)
 client.setMaxListeners(50);
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  CUSTOM EMOJI / INTERACTION-EDIT FIX (Discord platform bug)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Discord has a known, long-standing bug: when a message belonging to a button/
+// select-menu interaction is EDITED via interaction.update() (or deferUpdate() +
+// editReply()), any custom emoji (<:name:id>) in that edit renders as plain
+// "<:name:id>" / ":name:" text instead of the actual emoji image — even though
+// the exact same emoji renders correctly in a brand-new message (channel.send,
+// message.reply, interaction.reply, etc). Reported upstream:
+// https://github.com/discord/discord-api-docs/issues/6042
+//
+// Rather than patch every individual interaction.update() call across the file,
+// we patch the method once here so every current and future call is covered
+// automatically: custom emoji are stripped from the EDITED text only (so it
+// degrades gracefully to clean text instead of broken "<:name:id>" garbage).
+// Anywhere the emoji visual actually matters (e.g. ticket close/reopen/delete),
+// the code separately sends a brand-new message containing the emoji, which
+// always renders fine.
+{
+  const _stripCustomEmojiText = (s) =>
+    typeof s === "string" ? s.replace(/<a?:\w+:\d+>\s?/g, "").trimStart() : s;
+
+  const _stripCustomEmojiPayload = (payload) => {
+    if (!payload || typeof payload !== "object") return payload;
+    const out = { ...payload };
+    if (typeof out.content === "string") out.content = _stripCustomEmojiText(out.content);
+    if (Array.isArray(out.embeds)) {
+      out.embeds = out.embeds.map((e) => {
+        if (!e || typeof e !== "object") return e;
+        const ne = { ...e };
+        if (ne.title) ne.title = _stripCustomEmojiText(ne.title);
+        if (ne.description) ne.description = _stripCustomEmojiText(ne.description);
+        if (ne.footer?.text) ne.footer = { ...ne.footer, text: _stripCustomEmojiText(ne.footer.text) };
+        if (ne.author?.name) ne.author = { ...ne.author, name: _stripCustomEmojiText(ne.author.name) };
+        if (Array.isArray(ne.fields)) {
+          ne.fields = ne.fields.map((f) => f ? { ...f, name: _stripCustomEmojiText(f.name), value: _stripCustomEmojiText(f.value) } : f);
+        }
+        return ne;
+      });
+    }
+    return out;
+  };
+
+  client.on("interactionCreate", (interaction) => {
+    if (typeof interaction.update !== "function" || interaction.__emojiFixPatched) return;
+    interaction.__emojiFixPatched = true;
+    const origUpdate = interaction.update.bind(interaction);
+    interaction.update = (payload, ...rest) => origUpdate(_stripCustomEmojiPayload(payload), ...rest);
+  });
+}
+
 // ===== CONFIGURATION =====
 const OWNER_ID  = "1005237630113419315";          // primary owner
 const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828"]); // all owners
@@ -15271,12 +15322,18 @@ client.on("interactionCreate", async (interaction) => {
     const [,channelId,creatorId] = id.split(":");
     const activity = ticketActivity.get(channelId);
     const cfg2     = guildCfg(interaction.guild.id);
-    if (!activity) return interaction.update({embeds:[{color:PINK,description:"<:RUSH_warning:1521327864954355752> Already closed."}],components:[]}).catch(()=>{});
+    if (!activity) return interaction.update({embeds:[{color:PINK,description:"Already closed."}],components:[]}).catch(()=>{}).then(()=>interaction.channel.send({embeds:[{color:PINK,description:"<:RUSH_warning:1521327864954355752> Already closed."}]}).catch(()=>{}));
 
     const ticketNum = activity.ticketNum||"0000";
 
     // ── Acknowledge FIRST (before any slow API calls) ──
-    await interaction.update({embeds:[{color:0xFF4444,description:`<:RUSH_unlock:1491885459905839244> **Ticket closed by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
+    // NOTE: interaction.update() is an EDIT of the interaction message — Discord has a known
+    // bug where custom emoji in an EDITED interaction message render as plain "<:name:id>"
+    // text instead of the actual emoji image. So we ack with plain text here, then send the
+    // emoji version as a brand-new message right after (regular channel.send always renders
+    // custom emoji correctly, same as every other prefix command in this bot).
+    await interaction.update({embeds:[{color:0xFF4444,description:`**Ticket closed by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
+    await interaction.channel.send({embeds:[{color:0xFF4444,description:`<:RUSH_unlock:1491885459905839244> **Ticket closed by <@${interaction.user.id}>**`}]}).catch(()=>{});
 
     // Now do the slow operations safely
     for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
@@ -15301,7 +15358,7 @@ client.on("interactionCreate", async (interaction) => {
       const tCh = interaction.guild.channels.cache.get(tChId);
       if (tCh) {
         const buf = await _generateTranscript(interaction.channel).catch(()=>null);
-        const e   = {color:PINK,title:`<:RUSH_unlock:1491885459905839244> Ticket Closed — #${ticketNum}`,description:`Closed by <@${interaction.user.id}>`,timestamp:new Date().toISOString()};
+        const e   = {color:PINK,title:`Ticket Closed — #${ticketNum}`,description:`<:RUSH_unlock:1491885459905839244> Closed by <@${interaction.user.id}>`,timestamp:new Date().toISOString()};
         if (buf) await tCh.send({embeds:[e],files:[{attachment:buf,name:`transcript-${ticketNum}.txt`}]}).catch(()=>{});
         else     await tCh.send({embeds:[e]}).catch(()=>{});
       }
@@ -15330,7 +15387,8 @@ client.on("interactionCreate", async (interaction) => {
     if (!canAct) return interaction.reply({content:"<:steal:1521327958634135655> No permission.",flags:64});
 
     // ── Acknowledge FIRST ──
-    await interaction.update({embeds:[{color:PINK,description:`<:RUSH_unlock:1491885459905839244> **Reopening ticket…**`}],components:[]}).catch(()=>{});
+    await interaction.update({embeds:[{color:PINK,description:`**Reopening ticket…**`}],components:[]}).catch(()=>{});
+    await interaction.channel.send({embeds:[{color:PINK,description:`<:RUSH_unlock:1491885459905839244> **Reopening ticket…**`}]}).catch(()=>{});
 
     // Slow operations after ack
     if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true,UseExternalEmojis:true}).catch(()=>{});
@@ -15359,7 +15417,8 @@ client.on("interactionCreate", async (interaction) => {
     const canDelete = interaction.member.permissions.has(PermissionFlagsBits.Administrator)
       || supportRoles.some(r=>interaction.member.roles.cache.has(r));
     if (!canDelete) return interaction.reply({content:"<:steal:1521327958634135655> Only support staff can delete tickets.",flags:64});
-    await interaction.update({embeds:[{color:0xFF4444,description:"<:RUSH_trash_can:1491886201974820894> Deleting..."}],components:[]}).catch(()=>{});
+    await interaction.update({embeds:[{color:0xFF4444,description:"Deleting..."}],components:[]}).catch(()=>{});
+    await interaction.channel.send({embeds:[{color:0xFF4444,description:"<:RUSH_trash_can:1491886201974820894> Deleting..."}]}).catch(()=>{});
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
   }
 
