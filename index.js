@@ -4785,14 +4785,14 @@ client.on("messageCreate", async (message) => {
     if (!_isCreator && !_hasPerm && !_hasRole) return err(message, "you don't have permission to close this ticket");
     if (_cfg?.logChannelId) {
       const _logCh = message.guild.channels.cache.get(_cfg.logChannelId);
-      if (_logCh) _logCh.send({ embeds: [{ color: PINK, description: `<:RUSH_ticket:1491885995006623774> Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
+      if (_logCh) _logCh.send({ embeds: [{ color: PINK, description: `Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
     }
     ticketActivity.delete(message.channel.id);
     ticketWarnings.delete(message.channel.id);
     for (const [k, chId] of openTickets.entries()) {
       if (chId === message.channel.id) { openTickets.delete(k); break; }
     }
-    await message.channel.send({ embeds: [{ color: PINK, description: "<:RUSH_unlock:1491885459905839244> Closing ticket in 3 seconds..." }] });
+    await message.channel.send({ embeds: [{ color: PINK, description: "Closing ticket in 3 seconds..." }] });
     setTimeout(() => message.channel.delete().catch(() => {}), 3000);
     return;
   }
@@ -4848,14 +4848,14 @@ client.on("messageCreate", async (message) => {
 
       if (config?.logChannelId) {
         const logCh = message.guild.channels.cache.get(config.logChannelId);
-        if (logCh) logCh.send({ embeds: [{ color: PINK, description: `<:RUSH_ticket:1491885995006623774> Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
+        if (logCh) logCh.send({ embeds: [{ color: PINK, description: `Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
       }
       ticketActivity.delete(message.channel.id);
       ticketWarnings.delete(message.channel.id);
       for (const [key, chId] of openTickets.entries()) {
         if (chId === message.channel.id) { openTickets.delete(key); break; }
       }
-      await message.channel.send({ embeds: [{ color: PINK, description: "<:RUSH_unlock:1491885459905839244> Closing ticket in 3 seconds..." }] });
+      await message.channel.send({ embeds: [{ color: PINK, description: "Closing ticket in 3 seconds..." }] });
       setTimeout(() => message.channel.delete().catch(() => {}), 3000);
       return;
     }
