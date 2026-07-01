@@ -1734,7 +1734,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
     const ch = reaction.message.guild.channels.cache.get(config.channelId);
     if (!ch) return;
     const msg = reaction.message;
-    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `<:awhitestar:1521415243954393159> ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
+    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `⭐ ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
     starboardSent.add(reaction.message.id);
   }
 });
@@ -3342,7 +3342,7 @@ client.on("interactionCreate", async (interaction) => {
   function buildCatEmbed(cat, p) {
     return {
       color: PINK,
-      author: { name: `${cat.emoji} ${cat.label}`, icon_url: sess.guildIconUrl },
+      title: `${cat.emoji} ${cat.label}`,
       description: sess.currentPages[p].map(([cmd, desc]) => cmd ? `\`${cmd}\`\n${desc}` : (desc || '')).join("\n\n"),
       footer: { text: `Page ${p + 1}/${sess.currentPages.length} • ${cat.commands.length} commands` },
     };
@@ -3440,7 +3440,7 @@ function buildPerksEmbed() {
     color: PINK,
     title: "<:019TXTWhite_Yes:1521327983279996999> Perks System Panel",
     description: `### <:019TXTWhite_Yes:1521327983279996999>  Boost Protection & Messages\n\n\`\`\`ansi\n${lines}\n\`\`\`\n*Use the buttons below to edit each section.*`,
-    footer: { text: "<:019TXTWhite_Yes:1521327983279996999> sensational • white edition • owner only" },
+    footer: { text: "✨ sensational • white edition • owner only" },
     timestamp: new Date(),
   };
 }
@@ -4519,7 +4519,7 @@ async function runMassDM(state) {
   const statusMsg = statusCh ? await statusCh.send({ embeds: [{ color: PINK,
     title: "<:RUSH_comment:1491884212297531572> Mass DM in progress...",
     description: `Sending to **${total - startIndex}** remaining members (${startIndex > 0 ? `resumed from #${startIndex}` : 'started fresh'})\n\n<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${total - startIndex}**`,
-    footer: { text: "React <:steal:1521327958634135655> to cancel" }
+    footer: { text: "React to cancel" }
   }] }).catch(() => null) : null;
 
   if (statusMsg) {
@@ -9846,7 +9846,7 @@ client.on("messageCreate", async (message) => {
           ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
           : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `<:019TXTWhite_Yes:1521327983279996999> sensational • white edition • ${message.guild.name}` },
+      footer: { text: `✨ sensational • white edition • ${message.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -9902,7 +9902,7 @@ client.on("interactionCreate", async (interaction) => {
           ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
           : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `<:019TXTWhite_Yes:1521327983279996999> sensational • white edition • ${interaction.guild.name}` },
+      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -10102,7 +10102,7 @@ client.on("interactionCreate", async (interaction) => {
         "",
         ready ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start" : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `<:019TXTWhite_Yes:1521327983279996999> sensational • white edition • ${interaction.guild.name}` },
+      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -10771,7 +10771,7 @@ function buildPanelEmbed(s) {
 
   return {
     color: PINK,
-    author: { name: "<:019TXTWhite_Yes:1521327983279996999>  Setup Panel  ·  owner only" },
+    title: "<:019TXTWhite_Yes:1521327983279996999>  Setup Panel  ·  owner only",
     description: [
       "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **<:RUSH_rocket:1521415262384160778> Launch**.",
       "",
@@ -12415,7 +12415,7 @@ function buildScraperEmbed(guildId) {
 
   return {
     color: PINK,
-    author: { name: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Config Panel" },
+    title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Config Panel",
     description: [
       "Automatically pulls videos from source channels and reposts them to your target channel.",
       "",
@@ -12651,7 +12651,7 @@ client.on("interactionCreate", async (interaction) => {
   if (cid === `sc_run_now:${guildId}`) {
     await interaction.deferUpdate();
     await interaction.message.edit({
-      embeds:     [{ color: PINK, author: { name: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Running…" }, description: "<:RUSH_thunder:1521415273943400580> Running the scraper now, please wait…" }],
+      embeds:     [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Running…", description: "<:RUSH_thunder:1521415273943400580> Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
     let result;
@@ -13609,7 +13609,7 @@ function buildTwitterEmbed(guildId) {
 
   return {
     color:  0x1D9BF0,
-    author: { name: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Pannello Config' },
+    title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Pannello Config',
     description: [
       'Monitora account Twitter/X via **RSSHub** e riposta automaticamente i tweet nel tuo canale.',
       '',
@@ -13787,7 +13787,7 @@ client.on('interactionCreate', async (interaction) => {
     }
     await interaction.deferUpdate();
     await interaction.message.edit({
-      embeds:     [{ color: 0x1D9BF0, author: { name: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Controllo in corso…' }, description: '<:RUSH_thunder:1521415273943400580> Sto controllando i feed RSS, attendere…' }],
+      embeds:     [{ color: 0x1D9BF0, title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Controllo in corso…', description: '<:RUSH_thunder:1521415273943400580> Sto controllando i feed RSS, attendere…' }],
       components: [],
     }).catch(() => {});
     const result = await runTwitterPoller(guildId);
