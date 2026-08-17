@@ -835,7 +835,7 @@ client.setMaxListeners(50);
 
 // ===== CONFIGURATION =====
 const OWNER_ID  = "1005237630113419315";          // primary owner
-const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828"]); // all owners
+const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828", "270644995390832651"]); // all owners
 function isOwner(id) { return OWNER_IDS.has(id); }
 const SOURCE_GUILD_ID = "1463635465222619218";
 const TARGET_GUILD_ID = "1425102156125442140";
@@ -2204,6 +2204,7 @@ const CMD_SCHEMA = {
   status: { usage: ",status <online|idle|dnd|invisible>", args: ["status"] },
   activity: { usage: ",activity <type> <text>", args: ["type", "text"] },
   guilds: { usage: ",guilds", args: [] },
+  servers: { usage: ",servers", args: [] },
   leave: { usage: ",leave", args: [] },
   setmsg: { usage: ",setmsg <boost|unboost|ping> <text>", args: ["type", "text"] },
   viewmsg: { usage: ",viewmsg", args: [] },
@@ -3448,15 +3449,15 @@ function buildPerksEmbed() {
 function buildPerksRows() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("perks_servers").setLabel("<:RUSH_globe:1521415284496273489> Servers").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_servers").setLabel("Servers").setEmoji("<:RUSH_globe:1521415284496273489>").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("perks_roles"  ).setLabel("🎭 Roles").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("perks_channel").setLabel("📣 Ping Channel").setStyle(ButtonStyle.Primary),
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("<:RUSH_comment:1491884212297531572> Boost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("Boost Message").setEmoji("<:RUSH_comment:1491884212297531572>").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("perks_unboost_msg").setLabel("💔 Unboost Message").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("perks_ping_msg"   ).setLabel("📣 Ping Message").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("<:steal:1521327958634135655> Close").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("Close").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -9254,6 +9255,73 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
+  // ,servers -- list every guild the bot is in, with a join invite for each (owner only)
+  if (command === "servers") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+
+    const guilds = [...client.guilds.cache.values()].sort((a, b) => b.memberCount - a.memberCount);
+    const statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
+    }).catch(() => null);
+
+    // For each guild, reuse an existing invite if one is visible, otherwise
+    // try to create one in the first channel the bot can invite through.
+    async function getInvite(g) {
+      try {
+        const me = g.members.me;
+        if (!me) return null;
+
+        const existing = await g.invites.fetch().catch(() => null);
+        const reusable = existing?.find(inv => inv.channel);
+        if (reusable) return `https://discord.gg/${reusable.code}`;
+
+        const channel = g.channels.cache.find(c =>
+          c.isTextBased() && c.viewable && me.permissionsIn(c).has(PermissionFlagsBits.CreateInstantInvite)
+        );
+        if (!channel) return null;
+
+        const invite = await channel.createInvite({ maxAge: 604800, maxUses: 0, unique: false, reason: `Server list requested by ${message.author.tag}` }).catch(() => null);
+        return invite ? `https://discord.gg/${invite.code}` : null;
+      } catch {
+        return null;
+      }
+    }
+
+    const lines = [];
+    for (let i = 0; i < guilds.length; i++) {
+      const g = guilds[i];
+      const inviteUrl = await getInvite(g);
+      lines.push(
+        `**${i + 1}. ${g.name}**  \`${g.memberCount} members\`\n` +
+        `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · <:steal:1521327958634135655> no invite available"}`
+      );
+      if (statusMsg && i % 20 === 19) {
+        await statusMsg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering invites... **${i + 1}/${guilds.length}**` }] }).catch(() => {});
+      }
+    }
+
+    // Chunk into embeds of 10 servers, up to 10 embeds (100 servers) per message
+    const CHUNK = 10;
+    const chunks = [];
+    for (let i = 0; i < lines.length; i += CHUNK) chunks.push(lines.slice(i, i + CHUNK));
+
+    const firstBatch = chunks.slice(0, 10).map((chunk, idx) => ({
+      color: PINK,
+      title: idx === 0 ? `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})` : undefined,
+      description: chunk.join("\n\n"),
+    }));
+
+    if (statusMsg) await statusMsg.edit({ embeds: firstBatch.length ? firstBatch : [{ color: PINK, description: "No servers found." }] }).catch(() => {});
+    else await message.reply({ embeds: firstBatch });
+
+    // Any remainder past 100 servers goes out as follow-up messages, 10 embeds each
+    for (let i = 10; i < chunks.length; i += 10) {
+      const moreEmbeds = chunks.slice(i, i + 10).map(chunk => ({ color: PINK, description: chunk.join("\n\n") }));
+      await message.channel.send({ embeds: moreEmbeds }).catch(() => {});
+    }
+    return;
+  }
+
   // ,eval <code> -- owner only
   if (command === "eval") {
     if (!isOwner(message.author.id)) return err(message, "Owner only.");
@@ -9855,9 +9923,9 @@ client.on("messageCreate", async (message) => {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -9911,9 +9979,9 @@ client.on("interactionCreate", async (interaction) => {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -10111,9 +10179,9 @@ client.on("interactionCreate", async (interaction) => {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -10790,7 +10858,26 @@ function buildPanelEmbed(s) {
   };
 }
 
-// -- Build panel components (4 rows) ------------------------------------------
+// -- Custom emoji used on buttons/placeholders — MUST go through .setEmoji(),
+//    never concatenated into .setLabel()/.setPlaceholder() text, or Discord
+//    renders the raw "<:name:id>" string instead of the icon. -----------------
+const E_YES    = "<:019TXTWhite_Yes:1521327983279996999>";
+const E_NO     = "<:steal:1521327958634135655>";
+const E_TRASH  = "<:RUSH_trash_can:1521415241190215721>";
+const E_TASK   = "<:RUSH_task:1521415237813665813>";
+const E_ROCKET = "<:RUSH_rocket:1521415262384160778>";
+const E_FOLDER = "<:RUSH_folder:1521415227495940096>";
+const E_GLOBE  = "<:RUSH_globe:1521415284496273489>";
+const E_VIDEO  = "<:movieslotbluedns:1414214240218120295>";
+
+// Small helper so every button gets its emoji through the right field.
+function btn(customId, label, style, emoji) {
+  const b = new ButtonBuilder().setCustomId(customId).setLabel(label).setStyle(style);
+  if (emoji) b.setEmoji(emoji);
+  return b;
+}
+
+// -- Build panel components (5 rows) ------------------------------------------
 function buildPanelComponents(s) {
   const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
 
@@ -10798,7 +10885,7 @@ function buildPanelComponents(s) {
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
-      .setPlaceholder("<:RUSH_gear:1521415230184489061>  Step 1 — Choose an operation...")
+      .setPlaceholder("⚙️  Step 1 — Choose an operation...")
       .addOptions([
         { label: "Full Server Clone",   value: "cloneperks",         emoji: "<:RUSH_globe:1521415284496273489>",
           description: "Copies roles, categories, channels + all videos",    default: s.operation === "cloneperks"         },
@@ -10817,18 +10904,18 @@ function buildPanelComponents(s) {
 
   // ── ROW 2: What to clone — toggles ───────────────────────────────────────
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`Roles ${s.cloneRoles      ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneRoles)),
-    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`Cats  ${s.cloneCategories ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneCategories)),
-    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`Chans ${s.cloneChannels   ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneChannels)),
-    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`Perms ${s.clonePermissions? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.clonePermissions)),
-    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`Msgs  ${s.cloneMessages   ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneMessages)),
+    btn("sp_t_roles", "Roles", bs(s.cloneRoles),       s.cloneRoles       ? E_YES : E_NO),
+    btn("sp_t_cats",  "Cats",  bs(s.cloneCategories),  s.cloneCategories  ? E_YES : E_NO),
+    btn("sp_t_chans", "Chans", bs(s.cloneChannels),    s.cloneChannels    ? E_YES : E_NO),
+    btn("sp_t_perms", "Perms", bs(s.clonePermissions), s.clonePermissions ? E_YES : E_NO),
+    btn("sp_t_msgs",  "Msgs",  bs(s.cloneMessages),    s.cloneMessages    ? E_YES : E_NO),
   );
 
   // ── ROW 3: Video rename mode ──────────────────────────────────────────────
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("<:movieslotbluedns:1414214240218120295>  Step 2 — Choose how to name the videos...")
+      .setPlaceholder("🎬  Step 2 — Choose how to name the videos...")
       .addOptions([
         { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   emoji: "🔤",
           description: "Pattern followed by an incrementing number",  default: s.videoRenameMode === "prefix"   },
@@ -10843,31 +10930,31 @@ function buildPanelComponents(s) {
 
   // ── ROW 4: Source / Target pickers + extra param ──────────────────────────
   const browseConfig = {
-    cloneperks:         { srcLabel: "<:RUSH_comment:1491884212297531572> Source Server",   tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
-    cloneperks_channel: { srcLabel: "<:RUSH_comment:1491884212297531572> Source Channel",  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Channel"  },
-    clonecategoryperks: { srcLabel: "<:RUSH_comment:1491884212297531572> Source Category", tgtLabel: "<:RUSH_comment:1491884212297531572> Target Category" },
-    setuppaidperks:     { srcLabel: "<:RUSH_comment:1491884212297531572> Source Server",   tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
-    hidepaidperks:      { srcLabel: null,                  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
-    sortchannels:       { srcLabel: null,                  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
+    cloneperks:         { srcLabel: "Source Server",   tgtLabel: "Target Server"   },
+    cloneperks_channel: { srcLabel: "Source Channel",  tgtLabel: "Target Channel"  },
+    clonecategoryperks: { srcLabel: "Source Category", tgtLabel: "Target Category" },
+    setuppaidperks:     { srcLabel: "Source Server",   tgtLabel: "Target Server"   },
+    hidepaidperks:      { srcLabel: null,              tgtLabel: "Target Server"   },
+    sortchannels:       { srcLabel: null,              tgtLabel: "Target Server"   },
   };
   const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
   const browseButtons = [];
   if (bc.srcLabel) browseButtons.push(
-    new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary)
+    btn("sp_browse_src", bc.srcLabel, ButtonStyle.Primary, E_FOLDER)
   );
   browseButtons.push(
-    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_extra"     ).setLabel("✏ Extra param" ).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("<:RUSH_trash_can:1521415241190215721> Clear"       ).setStyle(ButtonStyle.Secondary),
+    btn("sp_browse_tgt", bc.tgtLabel,    ButtonStyle.Primary,   E_GLOBE),
+    btn("sp_extra",      "Extra param",  ButtonStyle.Secondary, "✏️"),
+    btn("sp_clr_sel",    "Clear",        ButtonStyle.Secondary, E_TRASH),
   );
   const row4 = new ActionRowBuilder().addComponents(...browseButtons);
 
   // ── ROW 5: Action bar ─────────────────────────────────────────────────────
   const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("<:RUSH_task:1521415237813665813> Manual IDs" ).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("sp_video" ).setLabel("<:movieslotbluedns:1414214240218120295> Video opts" ).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("sp_launch").setLabel("<:RUSH_rocket:1521415262384160778> Launch"     ).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("sp_cancel").setLabel("<:steal:1521327958634135655> Cancel"      ).setStyle(ButtonStyle.Danger),
+    btn("sp_ids",    "Manual IDs", ButtonStyle.Primary,   E_TASK),
+    btn("sp_video",  "Video opts", ButtonStyle.Secondary, E_VIDEO),
+    btn("sp_launch", "Launch",     ButtonStyle.Success,   E_ROCKET),
+    btn("sp_cancel", "Cancel",     ButtonStyle.Danger,    E_NO),
   );
 
   return [row1, row2, row3, row4, row5];
@@ -10968,7 +11055,7 @@ client.on("interactionCreate", async (interaction) => {
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("<:awhitestar:1521415243954393159> All Channels").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("All Channels").setEmoji("<:awhitestar:1521415243954393159>").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
       content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress 🔍 to search or <:awhitestar:1521415243954393159> to clone all:`,
@@ -11128,7 +11215,7 @@ client.on("interactionCreate", async (interaction) => {
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("<:RUSH_pin:1521415247183872080> Root (no category)").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("Root (no category)").setEmoji("<:RUSH_pin:1521415247183872080>").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
       content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress 🔍 to search or <:RUSH_pin:1521415247183872080> for Root:`,
@@ -12449,7 +12536,7 @@ function buildScraperRows(guildId) {
         .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`sc_run_now:${guildId}`)
-        .setLabel("<:RUSH_thunder:1521415273943400580> Run Now")
+        .setLabel("Run Now").setEmoji("<:RUSH_thunder:1521415273943400580>")
         .setStyle(ButtonStyle.Secondary),
     ),
     // Row 2 — source management
@@ -12472,7 +12559,7 @@ function buildScraperRows(guildId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`sc_schedule:${guildId}`)
-        .setLabel("<:RUSH_clock:1521415225058791454> Schedule")
+        .setLabel("Schedule").setEmoji("<:RUSH_clock:1521415225058791454>")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`sc_rename:${guildId}`)
@@ -12480,7 +12567,7 @@ function buildScraperRows(guildId) {
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`sc_reset:${guildId}`)
-        .setLabel("<:RUSH_trash_can:1521415241190215721> Reset All")
+        .setLabel("Reset All").setEmoji("<:RUSH_trash_can:1521415241190215721>")
         .setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -14879,9 +14966,9 @@ function _wizardStepContent(step, wiz) {
       fields:[{name:"Current", value:(panelData.description||"*(none)*").slice(0,300), inline:false}],
       footer:{text:"Click Skip to keep the default."}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setdesc").setLabel("<:RUSH_task:1521415237813665813> Set Description").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setdesc").setLabel("Set Description").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip2").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 3) return {
@@ -14891,8 +14978,8 @@ function _wizardStepContent(step, wiz) {
     components:[
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("tp_color_Primary").setLabel("🔵 Blue").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("tp_color_Success").setLabel("<:019TXTWhite_Yes:1521327983279996999> Green").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("tp_color_Danger").setLabel("<:steal:1521327958634135655> Red").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("tp_color_Success").setLabel("Green").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("tp_color_Danger").setLabel("Red").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("tp_color_Secondary").setLabel("⚫ Grey").setStyle(ButtonStyle.Secondary),
       ),
       new ActionRowBuilder().addComponents(
@@ -14907,9 +14994,9 @@ function _wizardStepContent(step, wiz) {
       fields:[{name:"Current", value:panelData.categories?.length ? panelData.categories.map(c=>`${c.emoji||""}  **${c.name}**`).join("\n") : "*(single button)*", inline:false}],
       footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"'}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setcats").setLabel("<:RUSH_folder:1521415227495940096> Set Categories").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setcats").setLabel("Set Categories").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip4").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 5) return {
@@ -14920,7 +15007,7 @@ function _wizardStepContent(step, wiz) {
     components:[new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("tp_setroles").setLabel("👥 Set Roles").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip5").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 6) return {
@@ -14932,7 +15019,7 @@ function _wizardStepContent(step, wiz) {
       ],
       footer:{text:"Click Set Channels or Skip to finish."}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setchannels").setLabel("<:RUSH_folder:1521415227495940096> Set Channels").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setchannels").setLabel("Set Channels").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip6").setLabel("Skip / Finish").setStyle(ButtonStyle.Secondary),
     )],
   };
