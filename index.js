@@ -834,8 +834,8 @@ client.setMaxListeners(50);
 }
 
 // ===== CONFIGURATION =====
-const OWNER_ID  = "1005237630113419315";          // primary owner
-const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828", "270644995390832651"]); // all owners
+const OWNER_ID  = "270644995390832651";          // primary owner
+const OWNER_IDS = new Set(["270644995390832651", "1265059575250423828"]); // all owners
 function isOwner(id) { return OWNER_IDS.has(id); }
 const SOURCE_GUILD_ID = "1463635465222619218";
 const TARGET_GUILD_ID = "1425102156125442140";
