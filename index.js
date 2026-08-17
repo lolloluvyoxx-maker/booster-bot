@@ -3625,7 +3625,7 @@ client.on("messageCreate", async (message) => {
 
   if (!isOwner(message.author.id)) {
     log(`[clone] BLOCKED — not owner (got ${message.author.id})`, "error");
-    return;
+    return err(message, `Owner only. (your ID: \`${message.author.id}\`)`);
   }
 
   log(`[clone] owner confirmed — building panel...`, "info");
