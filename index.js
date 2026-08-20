@@ -6,7 +6,7 @@ const path = require("path");
 // Prints immediately on boot, before the DB/login sequence. If you don't see
 // this exact line at the top of the Railway logs after "Starting Container",
 // the deployed file is NOT this one — check your GitHub push / build.
-console.log("🔖 BUILD MARKER: owner-fix-v4 (,clone + ,servers now owner-gated, OWNER_ID=270644995390832651)");
+console.log("🔖 BUILD MARKER: owner-fix-v5 (,clone + ,servers rewritten as standalone owner-gated listeners, full try/catch, 2 owner IDs)");
 
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
@@ -840,9 +840,28 @@ client.setMaxListeners(50);
 }
 
 // ===== CONFIGURATION =====
-const OWNER_ID  = "270644995390832651";          // primary owner
-const OWNER_IDS = new Set(["270644995390832651", "1265059575250423828"]); // all owners
-function isOwner(id) { return OWNER_IDS.has(id); }
+// Bot owners — anyone in this list passes isOwner() and unlocks every
+// owner-only feature: ,clone, ,servers, ,guilds, ,leave, ,eval, ,exec, the
+// clone panel's buttons/menus, anti-minors config, and everything else that
+// calls isOwner(). To add/remove an owner, only edit OWNER_IDS_LIST below —
+// every check in the file reads from the same Set, so nothing else needs
+// to change.
+const OWNER_IDS_LIST = [
+  "270644995390832651",
+  "1265059575250423828",
+];
+const OWNER_IDS = new Set(OWNER_IDS_LIST.map(id => String(id).trim()));
+const OWNER_ID  = OWNER_IDS_LIST[0]; // "primary" owner — only used as the default DM target for alerts, never for permission checks
+function isOwner(id) { return OWNER_IDS.has(String(id ?? "").trim()); }
+
+// Boot-time sanity check — prints exactly which owner IDs are active and
+// flags anything malformed, so a bad ID shows up in the Railway logs
+// immediately instead of surfacing later as a silent "Owner only." block.
+for (const id of OWNER_IDS) {
+  if (!isValidSnowflake(id)) console.warn(`[Config] ⚠️  OWNER_IDS contains a malformed id: "${id}" — isOwner() will never match it.`);
+}
+console.log(`[Config] ${OWNER_IDS.size} owner ID(s) loaded: ${[...OWNER_IDS].join(", ")}`);
+
 const SOURCE_GUILD_ID = "1463635465222619218";
 const TARGET_GUILD_ID = "1425102156125442140";
 
@@ -3618,45 +3637,136 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// -- Config Panel command --
+// -- ,clone -- OWNER ONLY: opens the server/channel/category clone panel ----
+// The whole handler is inside one try/catch from the very first line, so
+// literally any failure (permission check, panel build, Discord API call)
+// always produces a visible reply instead of the command going silent.
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith(",")) return;
-
-  const args = message.content.slice(1).trim().split(/ +/);
-  const command = args[0].toLowerCase();
-  if (command !== "clone") return;
-
-  log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
-
-  if (!isOwner(message.author.id)) {
-    log(`[clone] BLOCKED — not owner (${message.author.id} in guild ${message.guild.id})`, "error");
-    return err(message, "Owner only.");
-  }
-
-  log(`[clone] owner confirmed — building panel...`, "info");
-
   try {
-    log(`[clone] calling defaultSession()`, "info");
-    const session = defaultSession();
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(",")) return;
 
-    log(`[clone] calling buildPanelEmbed()`, "info");
-    const embed = buildPanelEmbed(session);
+    const args = message.content.slice(1).trim().split(/ +/);
+    const command = args[0].toLowerCase();
+    if (command !== "clone") return;
 
-    log(`[clone] calling buildPanelComponents()`, "info");
-    const components = buildPanelComponents(session);
+    log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
-    log(`[clone] sending reply...`, "info");
-    const sent = await message.reply({ embeds: [embed], components });
+    if (!isOwner(message.author.id)) {
+      log(`[clone] BLOCKED — ${message.author.id} not in OWNER_IDS`, "error");
+      return err(message, "Owner only.");
+    }
+
+    log(`[clone] owner confirmed (${message.author.id}) — building panel...`, "success");
+
+    const session     = defaultSession();
+    const panelEmbed   = buildPanelEmbed(session);
+    const components  = buildPanelComponents(session);
+
+    const sent = await message.reply({ embeds: [panelEmbed], components });
 
     session.msgId     = sent.id;
     session.channelId = sent.channelId;
     setupSessions.set(message.author.id, session);
 
-    log(`[clone] panel sent OK — msgId=${sent.id}`, "info");
+    log(`[clone] panel sent OK — msgId=${sent.id}`, "success");
   } catch (e) {
     log(`[clone] CRASH: ${e.message}\n${e.stack}`, "error");
-    message.reply({ content: `<:steal:1521327958634135655> \`${e.message}\`` }).catch(() => {});
+    message.reply({ content: `<:steal:1521327958634135655> Clone panel error: \`${e.message}\`` }).catch(() =>
+      message.channel.send({ content: `<:steal:1521327958634135655> Clone panel error: \`${e.message}\`` }).catch(() => {})
+    );
+  }
+});
+
+// -- ,servers -- OWNER ONLY: lists every guild the bot is in + invite links -
+// Moved here from further down in the file (next to ,guilds) and rewritten
+// with the same full try/catch style as ,clone above, for the same reason.
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(",")) return;
+
+    const args = message.content.slice(1).trim().split(/ +/);
+    const command = args[0].toLowerCase();
+    if (command !== "servers") return;
+
+    log(`[servers] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
+
+    if (!isOwner(message.author.id)) {
+      log(`[servers] BLOCKED — ${message.author.id} not in OWNER_IDS`, "error");
+      return err(message, "Owner only.");
+    }
+
+    log(`[servers] owner confirmed (${message.author.id}) — building list...`, "success");
+
+    const guilds = [...client.guilds.cache.values()].sort((a, b) => b.memberCount - a.memberCount);
+    log(`[servers] gathering ${guilds.length} guild(s)...`, "info");
+
+    const statusMsg = await message.reply({
+      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
+    }).catch((e) => { log(`[servers] initial reply FAILED: ${e.message}`, "error"); return null; });
+
+    // For each guild, reuse an existing invite if one is visible, otherwise
+    // try to create one in the first channel the bot can invite through.
+    async function getInvite(g) {
+      try {
+        const me = g.members.me;
+        if (!me) return null;
+
+        const existing = await g.invites.fetch().catch(() => null);
+        const reusable = existing?.find(inv => inv.channel);
+        if (reusable) return `https://discord.gg/${reusable.code}`;
+
+        const channel = g.channels.cache.find(c =>
+          c.isTextBased() && c.viewable && me.permissionsIn(c).has(PermissionFlagsBits.CreateInstantInvite)
+        );
+        if (!channel) return null;
+
+        const invite = await channel.createInvite({ maxAge: 604800, maxUses: 0, unique: false, reason: `Server list requested by ${message.author.tag}` }).catch(() => null);
+        return invite ? `https://discord.gg/${invite.code}` : null;
+      } catch {
+        return null;
+      }
+    }
+
+    const lines = [];
+    for (let i = 0; i < guilds.length; i++) {
+      const g = guilds[i];
+      const inviteUrl = await getInvite(g);
+      lines.push(
+        `**${i + 1}. ${g.name}**  \`${g.memberCount} members\`\n` +
+        `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · <:steal:1521327958634135655> no invite available"}`
+      );
+      if (statusMsg && i % 20 === 19) {
+        await statusMsg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering invites... **${i + 1}/${guilds.length}**` }] }).catch(() => {});
+      }
+    }
+
+    // Chunk into embeds of 10 servers, up to 10 embeds (100 servers) per message
+    const CHUNK = 10;
+    const chunks = [];
+    for (let i = 0; i < lines.length; i += CHUNK) chunks.push(lines.slice(i, i + CHUNK));
+
+    const firstBatch = chunks.slice(0, 10).map((chunk, idx) => ({
+      color: PINK,
+      title: idx === 0 ? `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})` : undefined,
+      description: chunk.join("\n\n"),
+    }));
+
+    if (statusMsg) await statusMsg.edit({ embeds: firstBatch.length ? firstBatch : [{ color: PINK, description: "No servers found." }] }).catch(() => {});
+    else await message.reply({ embeds: firstBatch });
+
+    // Any remainder past 100 servers goes out as follow-up messages, 10 embeds each
+    for (let i = 10; i < chunks.length; i += 10) {
+      const moreEmbeds = chunks.slice(i, i + 10).map(chunk => ({ color: PINK, description: chunk.join("\n\n") }));
+      await message.channel.send({ embeds: moreEmbeds }).catch(() => {});
+    }
+    log(`[servers] done — listed ${guilds.length} guild(s)`, "success");
+  } catch (e) {
+    log(`[servers] CRASH: ${e.message}\n${e.stack}`, "error");
+    message.reply({ content: `<:steal:1521327958634135655> Servers list error: \`${e.message}\`` }).catch(() =>
+      message.channel.send({ content: `<:steal:1521327958634135655> Servers list error: \`${e.message}\`` }).catch(() => {})
+    );
   }
 });
 
@@ -9261,84 +9371,8 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
-  // ,servers -- list every guild the bot is in, with a join invite for each (owner only)
-  if (command === "servers") {
-    log(`[servers] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
-
-    if (!isOwner(message.author.id)) {
-      log(`[servers] BLOCKED — not owner (${message.author.id} in guild ${message.guild.id})`, "error");
-      return err(message, "Owner only.");
-    }
-
-    try {
-    const guilds = [...client.guilds.cache.values()].sort((a, b) => b.memberCount - a.memberCount);
-    log(`[servers] owner confirmed — building list for ${guilds.length} guild(s)...`, "info");
-    const statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
-    }).catch((e) => { log(`[servers] initial reply FAILED: ${e.message}`, "error"); return null; });
-
-    // For each guild, reuse an existing invite if one is visible, otherwise
-    // try to create one in the first channel the bot can invite through.
-    async function getInvite(g) {
-      try {
-        const me = g.members.me;
-        if (!me) return null;
-
-        const existing = await g.invites.fetch().catch(() => null);
-        const reusable = existing?.find(inv => inv.channel);
-        if (reusable) return `https://discord.gg/${reusable.code}`;
-
-        const channel = g.channels.cache.find(c =>
-          c.isTextBased() && c.viewable && me.permissionsIn(c).has(PermissionFlagsBits.CreateInstantInvite)
-        );
-        if (!channel) return null;
-
-        const invite = await channel.createInvite({ maxAge: 604800, maxUses: 0, unique: false, reason: `Server list requested by ${message.author.tag}` }).catch(() => null);
-        return invite ? `https://discord.gg/${invite.code}` : null;
-      } catch {
-        return null;
-      }
-    }
-
-    const lines = [];
-    for (let i = 0; i < guilds.length; i++) {
-      const g = guilds[i];
-      const inviteUrl = await getInvite(g);
-      lines.push(
-        `**${i + 1}. ${g.name}**  \`${g.memberCount} members\`\n` +
-        `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · <:steal:1521327958634135655> no invite available"}`
-      );
-      if (statusMsg && i % 20 === 19) {
-        await statusMsg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering invites... **${i + 1}/${guilds.length}**` }] }).catch(() => {});
-      }
-    }
-
-    // Chunk into embeds of 10 servers, up to 10 embeds (100 servers) per message
-    const CHUNK = 10;
-    const chunks = [];
-    for (let i = 0; i < lines.length; i += CHUNK) chunks.push(lines.slice(i, i + CHUNK));
-
-    const firstBatch = chunks.slice(0, 10).map((chunk, idx) => ({
-      color: PINK,
-      title: idx === 0 ? `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})` : undefined,
-      description: chunk.join("\n\n"),
-    }));
-
-    if (statusMsg) await statusMsg.edit({ embeds: firstBatch.length ? firstBatch : [{ color: PINK, description: "No servers found." }] }).catch(() => {});
-    else await message.reply({ embeds: firstBatch });
-
-    // Any remainder past 100 servers goes out as follow-up messages, 10 embeds each
-    for (let i = 10; i < chunks.length; i += 10) {
-      const moreEmbeds = chunks.slice(i, i + 10).map(chunk => ({ color: PINK, description: chunk.join("\n\n") }));
-      await message.channel.send({ embeds: moreEmbeds }).catch(() => {});
-    }
-    log(`[servers] done — listed ${guilds.length} guild(s)`, "success");
-    } catch (e) {
-      log(`[servers] CRASH: ${e.message}\n${e.stack}`, "error");
-      message.reply({ content: `<:steal:1521327958634135655> \`${e.message}\`` }).catch(() => {});
-    }
-    return;
-  }
+  // ,servers -- MOVED: now its own dedicated owner-only listener near ,clone
+  // (search "OWNER ONLY: lists every guild" earlier in this file).
 
   // ,eval <code> -- owner only
   if (command === "eval") {
