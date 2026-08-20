@@ -6,7 +6,7 @@ const path = require("path");
 // Prints immediately on boot, before the DB/login sequence. If you don't see
 // this exact line at the top of the Railway logs after "Starting Container",
 // the deployed file is NOT this one — check your GitHub push / build.
-console.log("🔖 BUILD MARKER: owner-fix-v3 (,servers command + OWNER_ID=270644995390832651)");
+console.log("🔖 BUILD MARKER: owner-fix-v4 (,clone + ,servers now owner-gated, OWNER_ID=270644995390832651)");
 
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
@@ -3629,9 +3629,9 @@ client.on("messageCreate", async (message) => {
 
   log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
-  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    log(`[clone] BLOCKED — not admin (${message.author.id} in guild ${message.guild.id})`, "error");
-    return err(message, "You need **Administrator** permission in this server to use this command.");
+  if (!isOwner(message.author.id)) {
+    log(`[clone] BLOCKED — not owner (${message.author.id} in guild ${message.guild.id})`, "error");
+    return err(message, "Owner only.");
   }
 
   log(`[clone] owner confirmed — building panel...`, "info");
@@ -9261,13 +9261,13 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
-  // ,servers -- list every guild the bot is in, with a join invite for each (admin only)
+  // ,servers -- list every guild the bot is in, with a join invite for each (owner only)
   if (command === "servers") {
     log(`[servers] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      log(`[servers] BLOCKED — not admin (${message.author.id} in guild ${message.guild.id})`, "error");
-      return err(message, "You need **Administrator** permission in this server to use this command.");
+    if (!isOwner(message.author.id)) {
+      log(`[servers] BLOCKED — not owner (${message.author.id} in guild ${message.guild.id})`, "error");
+      return err(message, "Owner only.");
     }
 
     try {
