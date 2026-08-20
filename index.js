@@ -2,6 +2,12 @@ const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, Button
 const fs = require("fs");
 const path = require("path");
 
+// ── BUILD MARKER ─────────────────────────────────────────────────────────────
+// Prints immediately on boot, before the DB/login sequence. If you don't see
+// this exact line at the top of the Railway logs after "Starting Container",
+// the deployed file is NOT this one — check your GitHub push / build.
+console.log("🔖 BUILD MARKER: owner-fix-v3 (,servers command + OWNER_ID=270644995390832651)");
+
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
 // ===================================================
@@ -3623,9 +3629,9 @@ client.on("messageCreate", async (message) => {
 
   log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
-  if (!isOwner(message.author.id)) {
-    log(`[clone] BLOCKED — not owner (got ${message.author.id})`, "error");
-    return err(message, `Owner only. (your ID: \`${message.author.id}\`)`);
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    log(`[clone] BLOCKED — not admin (${message.author.id} in guild ${message.guild.id})`, "error");
+    return err(message, "You need **Administrator** permission in this server to use this command.");
   }
 
   log(`[clone] owner confirmed — building panel...`, "info");
@@ -9255,14 +9261,21 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
   }
 
-  // ,servers -- list every guild the bot is in, with a join invite for each (owner only)
+  // ,servers -- list every guild the bot is in, with a join invite for each (admin only)
   if (command === "servers") {
-    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    log(`[servers] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
 
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      log(`[servers] BLOCKED — not admin (${message.author.id} in guild ${message.guild.id})`, "error");
+      return err(message, "You need **Administrator** permission in this server to use this command.");
+    }
+
+    try {
     const guilds = [...client.guilds.cache.values()].sort((a, b) => b.memberCount - a.memberCount);
+    log(`[servers] owner confirmed — building list for ${guilds.length} guild(s)...`, "info");
     const statusMsg = await message.reply({
       embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
-    }).catch(() => null);
+    }).catch((e) => { log(`[servers] initial reply FAILED: ${e.message}`, "error"); return null; });
 
     // For each guild, reuse an existing invite if one is visible, otherwise
     // try to create one in the first channel the bot can invite through.
@@ -9318,6 +9331,11 @@ client.on("messageCreate", async (message) => {
     for (let i = 10; i < chunks.length; i += 10) {
       const moreEmbeds = chunks.slice(i, i + 10).map(chunk => ({ color: PINK, description: chunk.join("\n\n") }));
       await message.channel.send({ embeds: moreEmbeds }).catch(() => {});
+    }
+    log(`[servers] done — listed ${guilds.length} guild(s)`, "success");
+    } catch (e) {
+      log(`[servers] CRASH: ${e.message}\n${e.stack}`, "error");
+      message.reply({ content: `<:steal:1521327958634135655> \`${e.message}\`` }).catch(() => {});
     }
     return;
   }
