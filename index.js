@@ -11620,9 +11620,28 @@ client.on("interactionCreate", async (interaction) => {
 // -- Unified execution engine --------------------------------------------------
 async function executeSetupOperation(s, statusMsg, updateStatus) {
 
-  const MAX_FILE_BYTES = 24 * 1024 * 1024; // 24 MB — safe Discord limit
+  // MAX_FILE_BYTES starts as a conservative fallback and gets set per-operation once the
+  // real target guild is known — see applyGuildFileLimit() below. Discord's non-boosted
+  // base has moved around over the years (8→25→10→20MB at various points), so BOT_BASE_MAX_BYTES
+  // is deliberately conservative and overridable via env if you know your exact case.
+  // Boost-tier bumps are well-documented and stable: Level 2 = 50MB, Level 3 = 100MB,
+  // Level 1 = no change from base.
+  const BOT_BASE_MAX_BYTES = Number(process.env.BOT_BASE_MAX_BYTES) || 10 * 1024 * 1024;
+  let MAX_FILE_BYTES = BOT_BASE_MAX_BYTES;
   const VIDEO_RE = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
   const MEDIA_RE = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i;
+
+  // ── Recompute MAX_FILE_BYTES for the guild we're actually uploading into ────
+  // Call this once the target guild is resolved in each operation, before any
+  // downloadFresh/uploadRefs calls — downloadFresh reads MAX_FILE_BYTES live via
+  // closure, so reassigning it here is picked up by every call after this point.
+  function applyGuildFileLimit(guild) {
+    const tier = guild?.premiumTier;
+    if (tier === 3) MAX_FILE_BYTES = 100 * 1024 * 1024;
+    else if (tier === 2) MAX_FILE_BYTES = 50 * 1024 * 1024;
+    else MAX_FILE_BYTES = BOT_BASE_MAX_BYTES; // tier 0/1 — boost level 1 doesn't raise the file limit
+    log(`[setup] target guild boost tier ${tier ?? '?'} → bot upload ceiling ${(MAX_FILE_BYTES / 1024 / 1024).toFixed(0)}MB`, 'info');
+  }
 
   // ── REST helper ─────────────────────────────────────────────────────────────
   async function discordREST(path) {
@@ -12106,6 +12125,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     ]);
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
+    applyGuildFileLimit(targetGuild);
 
     // Filter channels by selection if set
     let filteredChannels = rawChannels;
@@ -12199,6 +12219,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       dstCh = await tg.channels.create(opts).catch(() => null);
       if (!dstCh) throw new Error('Could not create destination channel');
     }
+    applyGuildFileLimit(dstCh.guild);
 
     await updateStatus(`Scanning **#${srcChName}** for media...`);
     const refs = await scanChannelMedia(srcChId);
@@ -12284,6 +12305,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     ]);
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
+    applyGuildFileLimit(targetGuild);
 
     // Resolve source category
     let srcCat;
@@ -12390,6 +12412,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     ]);
     await targetGuild.roles.fetch();
     await targetGuild.channels.fetch();
+    applyGuildFileLimit(targetGuild);
 
     await updateStatus('[1/3] Cloning roles...');
     const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
