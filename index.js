@@ -791,8 +791,9 @@ async function loadBanStatsFromAuditLogs(guild) {
 // Use one account, don't hammer it in parallel with the bot, and know the real risk
 // is that personal account getting banned, not just the bot.
 let _SelfBotLib = null;
+let _selfBotLoadError = null;
 try { _SelfBotLib = require('discord.js-selfbot-v13'); }
-catch (_) { /* not installed — relay stays disabled, does not crash the bot */ }
+catch (e) { _selfBotLoadError = e; /* relay stays disabled below, does not crash the bot — but we keep the real error to log it */ }
 
 let userClient = null;
 let userClientReady = false;
@@ -804,7 +805,7 @@ async function initUserRelay() {
     return;
   }
   if (!_SelfBotLib) {
-    log('[UserRelay] USER_TOKEN is set but discord.js-selfbot-v13 is not installed. Run: npm install discord.js-selfbot-v13', 'error');
+    log(`[UserRelay] USER_TOKEN is set but discord.js-selfbot-v13 failed to load: ${_selfBotLoadError?.code ?? ''} ${_selfBotLoadError?.message ?? 'unknown error'}. Run: npm install discord.js-selfbot-v13`, 'error');
     return;
   }
   try {
@@ -817,7 +818,7 @@ async function initUserRelay() {
     userClient.on('error', (e) => log(`[UserRelay] error: ${e.message}`, 'error'));
     await userClient.login(process.env.USER_TOKEN);
   } catch (e) {
-    log(`[UserRelay] login failed: ${e.message}`, 'error');
+    log(`[UserRelay] login failed: ${e.stack ?? e.message}`, 'error');
     userClient = null;
     userClientReady = false;
   }
