@@ -10831,16 +10831,23 @@ function defaultSession() {
 
 // -- Build panel embed — clean, help-style design ----------------------------
 function buildPanelEmbed(s) {
-  const pad = n => String(n).padStart(s.videoPadZeros, "0");
+  // Defensive clamp — padStart() throws "RangeError: Invalid string length"
+  // if given a huge/Infinity target length. videoPadZeros is only ever meant
+  // to be 1-4, but this guarantees it *at the point of use* regardless of
+  // how it got set, so a bad value can never crash every button that
+  // re-renders this panel (toggles, selects, Clear all call this function).
+  const safePadLen  = Math.min(4, Math.max(1, Number.isFinite(s.videoPadZeros) ? Math.trunc(s.videoPadZeros) : 2));
+  const safeCounter = Number.isFinite(s.videoCounterStart) ? s.videoCounterStart : 1;
+  const pad = n => String(Number.isFinite(n) ? n : 0).padStart(safePadLen, "0");
   const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
-  const p1  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
-            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
+  const p1  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(safeCounter)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(safeCounter)}${ext}`
             : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-            :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
-  const p2  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
-            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
+            :                                     `${pad(safeCounter)}_${s.videoPattern}${ext}`;
+  const p2  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(safeCounter+1)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(safeCounter+1)}${ext}`
             : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
-            :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
+            :                                     `${pad(safeCounter+1)}_${s.videoPattern}${ext}`;
 
   const srcOk = s.sourceId.length > 5;
   const dstOk = s.targetId.length > 5;
@@ -11012,6 +11019,19 @@ function buildPanelComponents(s) {
   return [row1, row2, row3, row4, row5];
 }
 
+// -- Safely re-render the panel after a toggle/select/clear action. Used by
+//    every button that edits state and immediately redraws the same message,
+//    so a rendering bug reports exactly what failed instead of silently
+//    falling through to the generic "Error: ..." catch-all. ------------------
+async function safeRenderUpdate(interaction, s) {
+  try {
+    return await interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  } catch (e) {
+    log(`[clone panel] render failed: ${e.message}`, "error");
+    return interaction.reply({ content: `<:steal:1521327958634135655> Failed to refresh panel: \`${e.message}\``, flags: 64 }).catch(() => {});
+  }
+}
+
 // -- Interaction handler for the Config Panel ----------------------------------
 client.on("interactionCreate", async (interaction) => {
   try {
@@ -11031,14 +11051,14 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isStringSelectMenu() && id === "sp_op") {
     if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired. Type `,clone` again.", flags: 64 });
     s.operation = interaction.values[0];
-    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+    return safeRenderUpdate(interaction, s);
   }
 
   // -- Select: video rename mode --
   if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
     if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
     s.videoRenameMode = interaction.values[0];
-    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+    return safeRenderUpdate(interaction, s);
   }
 
   // -- Toggle buttons --
@@ -11052,7 +11072,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && toggleMap[id]) {
     if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
     s[toggleMap[id]] = !s[toggleMap[id]];
-    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+    return safeRenderUpdate(interaction, s);
   }
 
   // -- Button: browse source server + channels --
@@ -11360,7 +11380,7 @@ client.on("interactionCreate", async (interaction) => {
     s.selectedSrcName  = "";
     s.selectedTgtCatId = "";
     s.selectedTgtName  = "";
-    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+    return safeRenderUpdate(interaction, s);
   }
 
   // -- Button: open IDs modal --
@@ -11453,6 +11473,45 @@ client.on("interactionCreate", async (interaction) => {
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Video options updated!", flags: 64 });
+  }
+
+  // -- Button: open extra param modal --
+  // (This button existed with no handler at all — clicking it did nothing.
+  //  Meaning depends on the selected operation: category name to clone
+  //  (clonecategoryperks), how many channels to hide (hidepaidperks), or
+  //  pipe-separated category names (sortchannels) — see executeSetupOperation.)
+  if (interaction.isButton() && id === "sp_extra") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const hints = {
+      clonecategoryperks: { label: "Source category name to clone",     placeholder: "e.g. exclusive, vip, premium..." },
+      sortchannels:       { label: "Categories, separated by |",        placeholder: "Category1 | Category2 | Category3" },
+      hidepaidperks:      { label: "How many channels to hide (max 200)", placeholder: "20" },
+    };
+    const hint  = hints[s.operation] ?? { label: "Extra parameter (used by some operations)", placeholder: "optional" };
+    const modal = new ModalBuilder()
+      .setCustomId("sp_modal_extra")
+      .setTitle("✏️ Extra Parameter")
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("extra_value").setLabel(hint.label.slice(0, 45))
+            .setStyle(TextInputStyle.Short).setPlaceholder(hint.placeholder).setRequired(false)
+            .setValue(s.extraParam ?? "")
+        ),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: extra param --
+  if (interaction.isModalSubmit() && id === "sp_modal_extra") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.extraParam = interaction.fields.getTextInputValue("extra_value").trim();
+    try {
+      const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Extra parameter updated!", flags: 64 });
   }
 
   // -- Button: cancel --
@@ -11662,8 +11721,9 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
   // ── Generate renamed filename ────────────────────────────────────────────────
   function makeVideoName(index, origExt) {
-    const pad = n => String(n).padStart(s.videoPadZeros, '0');
-    const num = s.videoCounterStart + index;
+    const safePadLen = Math.min(4, Math.max(1, Number.isFinite(s.videoPadZeros) ? Math.trunc(s.videoPadZeros) : 2));
+    const pad = n => String(Number.isFinite(n) ? n : 0).padStart(safePadLen, '0');
+    const num = (Number.isFinite(s.videoCounterStart) ? s.videoCounterStart : 1) + index;
     const ext = s.videoExtension === 'keep' ? origExt : `.${s.videoExtension}`;
     switch (s.videoRenameMode) {
       case 'prefix':   return `${s.videoPattern}${pad(num)}${ext}`;
