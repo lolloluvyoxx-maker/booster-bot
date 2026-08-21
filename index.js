@@ -771,6 +771,58 @@ async function loadBanStatsFromAuditLogs(guild) {
   return stats;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  USER-ACCOUNT RELAY — optional 2nd login for files too big for the bot
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bot accounts can't hold a Nitro subscription, so the bot's own upload ceiling is
+// MAX_FILE_BYTES (set inside executeSetupOperation). If USER_TOKEN is set in env,
+// this logs a second, personal account in alongside the bot. When the ,clone engine
+// hits a file too big for the bot, it tries this account first (higher ceiling —
+// e.g. 500MB with full Nitro) before falling back to just posting a link.
+//
+// Requires: npm install discord.js-selfbot-v13
+// (official discord.js does not support logging in with a personal user token —
+// this is a separate, unofficial package for that specifically)
+//
+// Fully optional and fails safe: no USER_TOKEN, or the package not installed →
+// this whole block is a no-op and ,clone behaves exactly as before (link fallback).
+//
+// Reminder: automating a normal user account is against Discord's Terms of Service.
+// Use one account, don't hammer it in parallel with the bot, and know the real risk
+// is that personal account getting banned, not just the bot.
+let _SelfBotLib = null;
+try { _SelfBotLib = require('discord.js-selfbot-v13'); }
+catch (_) { /* not installed — relay stays disabled, does not crash the bot */ }
+
+let userClient = null;
+let userClientReady = false;
+const USER_MAX_FILE_BYTES = Number(process.env.USER_MAX_FILE_BYTES) || 500 * 1024 * 1024; // 500MB default — full Nitro ceiling; lower via env if your account isn't full Nitro
+
+async function initUserRelay() {
+  if (!process.env.USER_TOKEN) {
+    log('[UserRelay] USER_TOKEN not set — big-file relay disabled, clone will link oversized files instead', 'info');
+    return;
+  }
+  if (!_SelfBotLib) {
+    log('[UserRelay] USER_TOKEN is set but discord.js-selfbot-v13 is not installed. Run: npm install discord.js-selfbot-v13', 'error');
+    return;
+  }
+  try {
+    userClient = new _SelfBotLib.Client();
+    userClient.on('ready', () => {
+      userClientReady = true;
+      log(`[UserRelay] connected as ${userClient.user?.tag ?? 'unknown account'}`, 'success');
+    });
+    userClient.on('disconnect', () => { userClientReady = false; });
+    userClient.on('error', (e) => log(`[UserRelay] error: ${e.message}`, 'error'));
+    await userClient.login(process.env.USER_TOKEN);
+  } catch (e) {
+    log(`[UserRelay] login failed: ${e.message}`, 'error');
+    userClient = null;
+    userClientReady = false;
+  }
+}
+
 process.setMaxListeners(20);
 const client = new Client({
   intents: [
@@ -1122,6 +1174,10 @@ client.once("clientReady", async () => {
   // 1. Connect to Railway PostgreSQL and load all persisted data
   await initDB();
   await loadAllData();
+
+  // 1b. Log in the optional personal-account relay for oversized clone files
+  // (fire-and-forget — no-op if USER_TOKEN isn't set, never blocks startup)
+  initUserRelay();
 
   // 2. Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
@@ -11734,16 +11790,16 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     }
   }
 
-  // ── Download a file ref — re-fetches message for fresh URL (attachments) or uses directUrl (links) ─
-  // Returns: AttachmentBuilder, OR throws { fallbackUrl } if the file is too big (send link instead)
-  async function downloadFresh(ref, vidIndex) {
-    const { AttachmentBuilder } = require('discord.js');
-
+  // ── Download a file ref into a raw buffer — re-fetches message for fresh URL (attachments)
+  // or uses directUrl (links). Parameterized on maxBytes so both the bot's own upload path
+  // AND the user-account relay path (higher ceiling) can share this exact logic.
+  // Returns: { buffer, name }, OR throws { fallbackUrl, tooBig } if the file exceeds maxBytes.
+  async function downloadFreshBuffer(ref, vidIndex, maxBytes) {
     let url;
 
     if (ref.type === 'attachment') {
       // Standard attachment — re-fetch message to get fresh CDN URL
-      if (ref.size > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: null, tooBig: true });
+      if (ref.size > maxBytes) throw Object.assign(new Error('too_large'), { fallbackUrl: null, tooBig: true });
       const fresh = await getFreshUrl(ref.channelId, ref.messageId, ref.filename);
       url = fresh.url;
     } else if (ref.type === 'attachment_link') {
@@ -11771,17 +11827,63 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       const head = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
       headSize   = parseInt(head.headers.get('content-length') ?? '0') || 0;
     } catch { /* ignore HEAD failures */ }
-    if (headSize > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+    if (headSize > maxBytes) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
 
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fallbackUrl: url });
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+    if (buf.length > maxBytes) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
 
     const extMatch = ref.filename.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
     const origExt  = extMatch ? extMatch[0].toLowerCase() : '.mp4';
     const name     = makeVideoName(vidIndex, origExt);
-    return new AttachmentBuilder(buf, { name });
+    return { buffer: buf, name };
+  }
+
+  // ── Download a file ref — bot-side ceiling (MAX_FILE_BYTES), ready-to-send AttachmentBuilder ──
+  // Returns: AttachmentBuilder, OR throws { fallbackUrl, tooBig } if the file is too big for the bot.
+  async function downloadFresh(ref, vidIndex) {
+    const { AttachmentBuilder } = require('discord.js');
+    const { buffer, name } = await downloadFreshBuffer(ref, vidIndex, MAX_FILE_BYTES);
+    return new AttachmentBuilder(buffer, { name });
+  }
+
+  // ── Relay a file that's too big for the bot through the personal account (userClient) ──
+  // Only does anything if USER_TOKEN is configured and connected; otherwise a fast no-op so
+  // callers just fall through to the existing link fallback. Never throws — always resolves
+  // to { sent:true } or { sent:false, reason }, so it can never leave a clone run half-done.
+  async function sendViaUserAccount(ref, vidIndex, targetChannelId) {
+    if (!userClientReady || !userClient) return { sent: false, reason: 'relay_not_connected' };
+
+    let payload;
+    try {
+      payload = await downloadFreshBuffer(ref, vidIndex, USER_MAX_FILE_BYTES);
+    } catch (e) {
+      return { sent: false, reason: e.tooBig ? 'too_large_for_relay_too' : e.message };
+    }
+
+    try {
+      const ch = userClient.channels.cache.get(targetChannelId)
+        ?? await userClient.channels.fetch(targetChannelId).catch(() => null);
+      if (!ch) return { sent: false, reason: 'relay_account_cannot_see_channel' };
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          // Plain { attachment, name } shape — accepted by both discord.js and the
+          // selfbot fork's send(), so this doesn't depend on which builder class the
+          // installed selfbot package exposes.
+          await ch.send({ files: [{ attachment: payload.buffer, name: payload.name }] });
+          return { sent: true };
+        } catch (e) {
+          const isRL = e.code === 429 || e.message?.includes('rate limit');
+          if (isRL && attempt < 2) await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+          else return { sent: false, reason: e.message };
+        }
+      }
+      return { sent: false, reason: 'relay_retries_exhausted' };
+    } catch (e) {
+      return { sent: false, reason: e.message };
+    }
   }
 
   // ── Rate-limit-safe channel creation ────────────────────────────────────────
@@ -11923,24 +12025,34 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   }
 
   // ── Upload a list of media refs into a target channel ───────────────────────
-  // If a file is too large: sends the direct URL as a message instead (fallback)
-  // Returns { uploaded, failed, linked }
+  // If a file is too large for the bot: tries the personal-account relay first,
+  // then falls back to sending the direct URL as a message.
+  // Returns { uploaded, failed, linked, viaAccount }
   async function uploadRefs(refs, targetChannel, startVidIndex = 0, batchSize = 1) {
-    let uploaded = 0, failed = 0, linked = 0, vidIndex = startVidIndex;
+    let uploaded = 0, failed = 0, linked = 0, viaAccount = 0, vidIndex = startVidIndex;
     for (let i = 0; i < refs.length; i += batchSize) {
       const batch = refs.slice(i, i + batchSize);
       const attachments = [];
       const fallbackUrls = [];
 
       for (const ref of batch) {
+        const thisIdx = vidIndex;
         try {
           const att = await downloadFresh(ref, vidIndex++);
           attachments.push(att);
         } catch (e) {
-          if (e.tooBig && e.fallbackUrl) {
-            // Too large — send URL directly instead of uploading
-            fallbackUrls.push(e.fallbackUrl);
-            log(`[setup] too large, will link: ${ref.filename}`, 'info');
+          if (e.tooBig) {
+            const relay = await sendViaUserAccount(ref, thisIdx, targetChannel.id);
+            if (relay.sent) {
+              viaAccount++;
+            } else if (e.fallbackUrl) {
+              // Too large for bot + relay (or relay not connected) — send URL directly instead
+              fallbackUrls.push(e.fallbackUrl);
+              log(`[setup] too large (relay: ${relay.reason}), will link: ${ref.filename}`, 'info');
+            } else {
+              log(`[setup] too large, no fallback URL available: ${ref.filename}`, 'error');
+              failed++;
+            }
           } else {
             log(`[setup] download ${ref.filename}: ${e.message}`, 'error');
             failed++;
@@ -11979,7 +12091,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
       await new Promise(r => setTimeout(r, 800));
     }
-    return { uploaded, failed, linked };
+    return { uploaded, failed, linked, viaAccount };
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -12031,8 +12143,8 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
         const refs = await scanChannelMedia(srcId);
         if (refs.length === 0) continue;
         await updateStatus(`Copying **${refs.length}** files from **#${newCh.name}**...`);
-        const { uploaded } = await uploadRefs(refs, newCh, filesCopied, 1);
-        filesCopied += uploaded;
+        const { uploaded, viaAccount } = await uploadRefs(refs, newCh, filesCopied, 1);
+        filesCopied += uploaded + viaAccount;
       }
     }
 
@@ -12098,9 +12210,10 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await updateStatus(`Found **${refs.length}** files. Uploading to **#${dstCh.name}**...`);
 
-    let uploaded = 0, failed = 0, linked = 0, vidIndex = 0;
+    let uploaded = 0, failed = 0, linked = 0, viaAccount = 0, vidIndex = 0;
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i];
+      const thisIdx = vidIndex;
       try {
         const att = await downloadFresh(ref, vidIndex++);
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -12115,9 +12228,16 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           }
         }
       } catch (e) {
-        if (e.tooBig && e.fallbackUrl) {
-          try { await dstCh.send({ content: e.fallbackUrl }); linked++; }
-          catch { failed++; }
+        if (e.tooBig) {
+          const relay = await sendViaUserAccount(ref, thisIdx, dstCh.id);
+          if (relay.sent) {
+            viaAccount++;
+          } else if (e.fallbackUrl) {
+            try { await dstCh.send({ content: e.fallbackUrl }); linked++; }
+            catch { failed++; }
+          } else {
+            failed++;
+          }
         } else {
           failed++;
           log(`[setup] ch-clone ${ref.filename}: ${e.message}`, 'error');
@@ -12126,7 +12246,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
       if ((i + 1) % 5 === 0 || i === refs.length - 1) {
         const pct = Math.round(((i + 1) / refs.length) * 100);
-        await updateStatus(`Uploading... <:019TXTWhite_Yes:1521327983279996999> **${uploaded}** sent  <:RUSH_link:1521415290687066212> **${linked}** linked  <:steal:1521327958634135655> **${failed}** failed  (${pct}%)`);
+        await updateStatus(`Uploading... <:019TXTWhite_Yes:1521327983279996999> **${uploaded}** sent  👤 **${viaAccount}** via account  <:RUSH_link:1521415290687066212> **${linked}** linked  <:steal:1521327958634135655> **${failed}** failed  (${pct}%)`);
       }
       await new Promise(r => setTimeout(r, 700));
     }
@@ -12135,13 +12255,14 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       embeds: [{
         color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Channel Clone Complete',
         fields: [
-          { name: 'Source',    value: `#${srcChName} (\`${srcChId}\`)`,   inline: true },
-          { name: 'Target',    value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
-          { name: '\u200b',    value: '\u200b',                            inline: true },
-          { name: 'Scanned',   value: `${refs.length}`,   inline: true },
-          { name: 'Uploaded',  value: `${uploaded}`,      inline: true },
-          { name: 'Linked',    value: `${linked}`,        inline: true },
-          { name: 'Failed',    value: `${failed}`,        inline: true },
+          { name: 'Source',      value: `#${srcChName} (\`${srcChId}\`)`,   inline: true },
+          { name: 'Target',      value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
+          { name: '\u200b',      value: '\u200b',                            inline: true },
+          { name: 'Scanned',     value: `${refs.length}`,   inline: true },
+          { name: 'Uploaded',    value: `${uploaded}`,      inline: true },
+          { name: 'Via account', value: `${viaAccount}`,    inline: true },
+          { name: 'Linked',      value: `${linked}`,        inline: true },
+          { name: 'Failed',      value: `${failed}`,        inline: true },
         ],
         footer: { text: `pattern: ${s.videoPattern} (${s.videoRenameMode})` },
         timestamp: new Date(),
@@ -12227,17 +12348,17 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
           if (refs.length > 0) {
             await updateStatus(`<:RUSH_comment:1491884212297531572> Uploading **${refs.length}** videos → **#${newCh.name}**...`);
-            const { uploaded, linked: linkedCount } = await uploadRefs(refs, newCh, globalVidIndex, 2);
+            const { uploaded, linked: linkedCount, viaAccount } = await uploadRefs(refs, newCh, globalVidIndex, 2);
             globalVidIndex    += refs.length;
-            sentPerChannel.set(newCh.name, { uploaded, linked: linkedCount });
-            totalVideosSent   += uploaded + linkedCount;
+            sentPerChannel.set(newCh.name, { uploaded, linked: linkedCount, viaAccount });
+            totalVideosSent   += uploaded + linkedCount + viaAccount;
           }
         }
       } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, 'error'); }
     }
 
     const channelSummary = [...sentPerChannel.entries()]
-      .map(([name, counts]) => `#${name}: ${counts.uploaded} uploaded${counts.linked ? ` + ${counts.linked} linked` : ''}`)
+      .map(([name, counts]) => `#${name}: ${counts.uploaded} uploaded${counts.viaAccount ? ` + ${counts.viaAccount} via account` : ''}${counts.linked ? ` + ${counts.linked} linked` : ''}`)
       .join('\n') || 'no videos found';
 
     await statusMsg?.edit({
@@ -12300,7 +12421,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     let excl2 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl2Name.toLowerCase() && [0,5].includes(c.type))
       ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: '[setup panel]' }).catch(() => null);
 
-    let sent1 = 0, sent2 = 0, linked1 = 0, linked2 = 0, vidIndex = 0;
+    let sent1 = 0, sent2 = 0, linked1 = 0, linked2 = 0, via1 = 0, via2 = 0, vidIndex = 0;
     for (let i = 0; i < allVideoRefs.length; i += 2) {
       const group  = allVideoRefs.slice(i, i + 2);
       const isSlot1 = Math.floor(i / 2) % 2 === 0;
@@ -12309,12 +12430,19 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       const attachments  = [];
       const fallbackUrls = [];
       for (const ref of group) {
+        const thisIdx = vidIndex;
         try {
           const att = await downloadFresh(ref, vidIndex++);
           attachments.push(att);
         } catch (e) {
-          if (e.tooBig && e.fallbackUrl) { fallbackUrls.push(e.fallbackUrl); }
-          else { log(`[setup] paidperks video ${ref.filename}: ${e.message}`, 'error'); }
+          if (e.tooBig) {
+            const relay = await sendViaUserAccount(ref, thisIdx, target.id);
+            if (relay.sent) { if (isSlot1) via1++; else via2++; }
+            else if (e.fallbackUrl) { fallbackUrls.push(e.fallbackUrl); }
+            else { log(`[setup] paidperks video ${ref.filename}: too large, no fallback URL`, 'error'); }
+          } else {
+            log(`[setup] paidperks video ${ref.filename}: ${e.message}`, 'error');
+          }
           vidIndex++;
         }
       }
@@ -12339,7 +12467,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       }
       await new Promise(r => setTimeout(r, 900));
       if ((i / 2 + 1) % 10 === 0) {
-        await updateStatus(`Distributing... <:019TXTWhite_Yes:1521327983279996999> **${sent1 + sent2}** uploaded  <:RUSH_link:1521415290687066212> **${linked1 + linked2}** linked`);
+        await updateStatus(`Distributing... <:019TXTWhite_Yes:1521327983279996999> **${sent1 + sent2}** uploaded  👤 **${via1 + via2}** via account  <:RUSH_link:1521415290687066212> **${linked1 + linked2}** linked`);
       }
     }
 
@@ -12351,8 +12479,8 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
           { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
           { name: 'Categories',    value: `${categoryMap.size}`, inline: true },
           { name: 'Channels',      value: `${channelCount}`,     inline: true },
-          { name: `#${excl1Name}`, value: `${sent1} uploaded${linked1 ? ` + ${linked1} linked` : ''}`, inline: true },
-          { name: `#${excl2Name}`, value: `${sent2} uploaded${linked2 ? ` + ${linked2} linked` : ''}`, inline: true },
+          { name: `#${excl1Name}`, value: `${sent1} uploaded${via1 ? ` + ${via1} via account` : ''}${linked1 ? ` + ${linked1} linked` : ''}`, inline: true },
+          { name: `#${excl2Name}`, value: `${sent2} uploaded${via2 ? ` + ${via2} via account` : ''}${linked2 ? ` + ${linked2} linked` : ''}`, inline: true },
           { name: 'Video pattern', value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
         ],
         footer: { text: 'use ,setup → Hide Channels to hide channels after setup' },
