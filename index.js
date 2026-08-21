@@ -3526,7 +3526,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Servers ──
   if (id === "perks_servers") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("<:019TXTWhite_Yes:1521327983279996999> Server IDs");
+    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("✅ Server IDs");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("source_id").setLabel("Source Server ID (where boosts happen)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.sourceGuildId)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("target_id").setLabel("Target / Vault Server ID").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.targetGuildId)),
@@ -3536,7 +3536,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Roles ──
   if (id === "perks_roles") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("<:019TXTWhite_Yes:1521327983279996999> Role IDs");
+    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("✅ Role IDs");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("discord_boost").setLabel("Discord Boost Role ID (auto-given by Discord)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.discordBoostRoleId)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("custom_boost").setLabel("Custom Boost Role ID (bot gives this)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.boostRoleId)),
@@ -3548,7 +3548,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Ping Channel ──
   if (id === "perks_channel") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("<:019TXTWhite_Yes:1521327983279996999> Ping Channel");
+    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("✅ Ping Channel");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_channel").setLabel("Channel ID for silent boost ping").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.pingChannelId)),
     );
@@ -3557,7 +3557,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Boost message ──
   if (id === "perks_boost_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Boost DM Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("✅ Boost DM Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("boost_msg").setLabel("Message sent to user when they boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.boost).setMaxLength(1800)),
     );
@@ -3566,7 +3566,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Unboost message ──
   if (id === "perks_unboost_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Unboost DM Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("✅ Unboost DM Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("unboost_msg").setLabel("Message sent when user removes boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.unboost).setMaxLength(1800)),
     );
@@ -3575,7 +3575,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Ping message ──
   if (id === "perks_ping_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Ping Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("✅ Ping Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_msg").setLabel("Message posted in ping channel. Use {user}").setStyle(TextInputStyle.Short).setRequired(true).setValue(customMessages.ping)),
     );
@@ -11139,7 +11139,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && id === "sp_btn_src_search") {
     if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`<:RUSH_folder:1521415227495940096> Search — ${s._srcGuildName ?? "source"}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`🔍 Search — ${(s._srcGuildName ?? "source").slice(0, 33)}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("src_search_query")
@@ -11299,7 +11299,7 @@ client.on("interactionCreate", async (interaction) => {
   if (interaction.isButton() && id === "sp_btn_tgt_search") {
     if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`<:RUSH_folder:1521415227495940096> Search — ${s._tgtGuildName ?? "target"}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`🔍 Search — ${(s._tgtGuildName ?? "target").slice(0, 33)}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("tgt_search_query")
@@ -11389,7 +11389,7 @@ client.on("interactionCreate", async (interaction) => {
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
-      .setTitle("<:019TXTWhite_Yes:1521327983279996999> Configure IDs & Parameters")
+      .setTitle("🆔 Configure IDs & Parameters")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
@@ -11416,7 +11416,7 @@ client.on("interactionCreate", async (interaction) => {
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
-      .setTitle("<:movieslotbluedns:1414214240218120295> Video & Rename Options")
+      .setTitle("🎬 Video & Rename Options")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
@@ -11429,7 +11429,7 @@ client.on("interactionCreate", async (interaction) => {
             .setValue(String(s.videoCounterStart)).setRequired(true)
         ),
         new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId("vid_pad").setLabel("Zero padding  (1 → 1  |  2 → 01  |  3 → 001)")
+          new TextInputBuilder().setCustomId("vid_pad").setLabel("Zero padding (1→1 | 2→01 | 3→001)")
             .setStyle(TextInputStyle.Short).setPlaceholder("2")
             .setValue(String(s.videoPadZeros)).setRequired(true)
         ),
