@@ -6,7 +6,7 @@ const path = require("path");
 // Prints immediately on boot, before the DB/login sequence. If you don't see
 // this exact line at the top of the Railway logs after "Starting Container",
 // the deployed file is NOT this one — check your GitHub push / build.
-console.log("🔖 BUILD MARKER: owner-fix-v5 (,clone + ,servers rewritten as standalone owner-gated listeners, full try/catch, 2 owner IDs)");
+console.log("🔖 BUILD MARKER: owner-fix-v6 (,servers now sources the guild list from client.guilds.fetch() REST call instead of the gateway cache, fixing undercounting; embeds are chunked by character length instead of a fixed 10-per-embed)");
 
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
@@ -3738,6 +3738,28 @@ client.on("messageCreate", async (message) => {
 // -- ,servers -- OWNER ONLY: lists every guild the bot is in + invite links -
 // Moved here from further down in the file (next to ,guilds) and rewritten
 // with the same full try/catch style as ,clone above, for the same reason.
+//
+// FIX (owner-fix-v6): two bugs were causing ,servers to under-report:
+//
+// 1) The list came from client.guilds.cache — the gateway cache, which can
+//    legitimately hold fewer guilds than the bot is actually in (e.g. right
+//    after a restart, while GUILD_CREATE events for some guilds are still
+//    streaming in — this bot also has the GuildMembers + GuildPresences
+//    intents on, which makes initial sync slower). client.guilds.cache.size
+//    is NOT guaranteed to equal the bot's real guild count at any given
+//    moment. client.guilds.fetch() (a REST call to GET /users/@me/guilds)
+//    IS authoritative — it always returns every guild the bot currently
+//    belongs to, straight from Discord, regardless of gateway sync state.
+//    ,servers now uses that as the source of truth.
+//
+// 2) The embeds were chunked at a fixed "10 servers per embed", with no
+//    regard for actual character count. Discord caps a single embed
+//    description at 4096 chars AND the sum of every embed in one message
+//    at 6000 chars. Once server names + invite links pushed a batch over
+//    either limit, the whole statusMsg.edit(...) call was rejected by the
+//    API — and since it was wrapped in .catch(() => {}), that failure was
+//    silently swallowed, leaving the list looking "cut off" with no error.
+//    Embeds are now packed dynamically by character length instead.
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot || !message.guild) return;
@@ -3755,26 +3777,59 @@ client.on("messageCreate", async (message) => {
     }
 
     log(`[servers] owner confirmed (${message.author.id}) — building list...`, "success");
-
-    const guilds = [...client.guilds.cache.values()].sort((a, b) => b.memberCount - a.memberCount);
-    log(`[servers] gathering ${guilds.length} guild(s)...`, "info");
+    log(`[servers] gateway cache currently reports ${client.guilds.cache.size} guild(s) — fetching the authoritative list via REST...`, "info");
 
     const statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
+      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Fetching server list...` }],
     }).catch((e) => { log(`[servers] initial reply FAILED: ${e.message}`, "error"); return null; });
+
+    // Authoritative guild list — REST call (GET /users/@me/guilds), NOT the
+    // gateway cache. This is guaranteed to return every guild the bot is
+    // currently in. Default limit is 200 per page, well above any realistic
+    // guild count for this bot, so one call is enough.
+    let oauthGuilds = null;
+    try {
+      oauthGuilds = await client.guilds.fetch();
+    } catch (e) {
+      log(`[servers] REST guild fetch FAILED (${e.message}) — falling back to gateway cache, list may be incomplete`, "error");
+    }
+
+    // OAuth2Guild (from the REST list) only carries id/name/etc, not member
+    // count or channels/invites — those need the full Guild object, which
+    // we pull from the gateway cache when available (needed for invites).
+    const guilds = oauthGuilds
+      ? [...oauthGuilds.values()].map(og => {
+          const cached = client.guilds.cache.get(og.id);
+          return { id: og.id, name: og.name, memberCount: cached?.memberCount ?? null, full: cached ?? null };
+        })
+      : [...client.guilds.cache.values()].map(g => ({ id: g.id, name: g.name, memberCount: g.memberCount, full: g }));
+
+    guilds.sort((a, b) => (b.memberCount ?? -1) - (a.memberCount ?? -1));
+
+    log(`[servers] gathering ${guilds.length} guild(s) (gateway cache had ${client.guilds.cache.size})...`, "info");
+    if (statusMsg) {
+      await statusMsg.edit({
+        embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
+      }).catch(() => {});
+    }
 
     // For each guild, reuse an existing invite if one is visible, otherwise
     // try to create one in the first channel the bot can invite through.
+    // Requires the full Guild object (gateway cache); if we only have the
+    // REST-only stub, invites are skipped for that guild but it still gets
+    // listed — no guild is ever dropped just because an invite failed.
     async function getInvite(g) {
+      if (!g.full) return null;
       try {
-        const me = g.members.me;
+        const full = g.full;
+        const me = full.members.me;
         if (!me) return null;
 
-        const existing = await g.invites.fetch().catch(() => null);
+        const existing = await full.invites.fetch().catch(() => null);
         const reusable = existing?.find(inv => inv.channel);
         if (reusable) return `https://discord.gg/${reusable.code}`;
 
-        const channel = g.channels.cache.find(c =>
+        const channel = full.channels.cache.find(c =>
           c.isTextBased() && c.viewable && me.permissionsIn(c).has(PermissionFlagsBits.CreateInstantInvite)
         );
         if (!channel) return null;
@@ -3790,8 +3845,9 @@ client.on("messageCreate", async (message) => {
     for (let i = 0; i < guilds.length; i++) {
       const g = guilds[i];
       const inviteUrl = await getInvite(g);
+      const memberTxt = typeof g.memberCount === "number" ? `${g.memberCount} members` : "member count unknown";
       lines.push(
-        `**${i + 1}. ${g.name}**  \`${g.memberCount} members\`\n` +
+        `**${i + 1}. ${g.name}**  \`${memberTxt}\`\n` +
         `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · <:steal:1521327958634135655> no invite available"}`
       );
       if (statusMsg && i % 20 === 19) {
@@ -3799,26 +3855,58 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    // Chunk into embeds of 10 servers, up to 10 embeds (100 servers) per message
-    const CHUNK = 10;
-    const chunks = [];
-    for (let i = 0; i < lines.length; i += CHUNK) chunks.push(lines.slice(i, i + CHUNK));
+    // Pack embeds by actual character length instead of a fixed line count,
+    // so we never exceed Discord's real per-embed (4096) or per-message-total
+    // (6000) limits — those numbers below stay comfortably under both.
+    const DESC_LIMIT = 3900;
+    const MSG_TOTAL_LIMIT = 5700;
+    const MAX_EMBEDS_PER_MSG = 10;
 
-    const firstBatch = chunks.slice(0, 10).map((chunk, idx) => ({
-      color: PINK,
-      title: idx === 0 ? `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})` : undefined,
-      description: chunk.join("\n\n"),
-    }));
-
-    if (statusMsg) await statusMsg.edit({ embeds: firstBatch.length ? firstBatch : [{ color: PINK, description: "No servers found." }] }).catch(() => {});
-    else await message.reply({ embeds: firstBatch });
-
-    // Any remainder past 100 servers goes out as follow-up messages, 10 embeds each
-    for (let i = 10; i < chunks.length; i += 10) {
-      const moreEmbeds = chunks.slice(i, i + 10).map(chunk => ({ color: PINK, description: chunk.join("\n\n") }));
-      await message.channel.send({ embeds: moreEmbeds }).catch(() => {});
+    const embeds = [];
+    let curLines = [], curLen = 0;
+    const flushEmbed = () => {
+      if (!curLines.length) return;
+      embeds.push({ color: PINK, description: curLines.join("\n\n") });
+      curLines = []; curLen = 0;
+    };
+    for (const line of lines) {
+      const addLen = line.length + 2; // account for the joining "\n\n"
+      if (curLen + addLen > DESC_LIMIT) flushEmbed();
+      curLines.push(line);
+      curLen += addLen;
     }
-    log(`[servers] done — listed ${guilds.length} guild(s)`, "success");
+    flushEmbed();
+    if (embeds.length) embeds[0].title = `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})`;
+
+    // Group embeds into messages, respecting both the 10-embeds-per-message
+    // hard limit and the 6000-char total-per-message limit.
+    const messages = [];
+    let curMsg = [], curMsgLen = 0;
+    for (const em of embeds) {
+      const emLen = (em.title?.length ?? 0) + em.description.length;
+      if (curMsg.length >= MAX_EMBEDS_PER_MSG || curMsgLen + emLen > MSG_TOTAL_LIMIT) {
+        messages.push(curMsg);
+        curMsg = []; curMsgLen = 0;
+      }
+      curMsg.push(em);
+      curMsgLen += emLen;
+    }
+    if (curMsg.length) messages.push(curMsg);
+    if (!messages.length) messages.push([{ color: PINK, description: "No servers found." }]);
+
+    const firstOk = statusMsg
+      ? await statusMsg.edit({ embeds: messages[0] }).then(() => true).catch((e) => { log(`[servers] final edit FAILED: ${e.message}`, "error"); return false; })
+      : await message.reply({ embeds: messages[0] }).then(() => true).catch((e) => { log(`[servers] final reply FAILED: ${e.message}`, "error"); return false; });
+
+    if (!firstOk) {
+      await message.channel.send({ content: `<:steal:1521327958634135655> Discord rejected the server list embeds — check the logs (this used to fail silently).` }).catch(() => {});
+    }
+
+    for (let i = 1; i < messages.length; i++) {
+      await message.channel.send({ embeds: messages[i] }).catch((e) => log(`[servers] follow-up message ${i} FAILED: ${e.message}`, "error"));
+    }
+
+    log(`[servers] done — listed ${lines.length}/${guilds.length} guild(s) across ${embeds.length} embed(s) in ${messages.length} message(s)`, "success");
   } catch (e) {
     log(`[servers] CRASH: ${e.message}\n${e.stack}`, "error");
     message.reply({ content: `<:steal:1521327958634135655> Servers list error: \`${e.message}\`` }).catch(() =>
