@@ -1,0 +1,15680 @@
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const fs = require("fs");
+const path = require("path");
+
+// ===================================================
+// ===== PERSISTENCE SYSTEM (Discord-backed) =========
+// ===================================================
+// Saves config to a Discord channel so it survives Railway restarts
+// [DB] const CONFIG_CHANNEL_ID = "1482107392463474921";  // migrated to Railway PostgreSQL
+// [DB] const CONFIG_MESSAGE_TAG = "SENSATIONAL_CONFIG_V1";  // migrated to Railway PostgreSQL
+// [DB] let _configMessageId = null; // cached message ID  // migrated to Railway PostgreSQL
+
+// Serializer -- handles Map and Set
+function serialize(data) {
+  return JSON.stringify(data, (key, value) => {
+    if (value instanceof Set) return { __type: "Set", values: [...value] };
+    if (value instanceof Map) return { __type: "Map", entries: [...value.entries()] };
+    return value;
+  });
+}
+
+function deserialize(raw) {
+  return JSON.parse(raw, (key, value) => {
+    if (value?.__type === "Set") return new Set(value.values || []);
+    if (value?.__type === "Map") return new Map(value.entries || []);
+    return value;
+  });
+}
+
+// Discord snowflakes are 15-20 digit numeric strings
+function isValidSnowflake(id) {
+  return typeof id === 'string' && /^\d{15,20}$/.test(id);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██████  ██████      ██████  ███████ ██████  ███████ ██ ███████ ████████
+// ██   ██ ██   ██     ██   ██ ██      ██   ██ ██      ██ ██         ██
+// ██   ██ ██████      ██████  █████   ██████  ███████ ██ ███████    ██
+// ██   ██ ██   ██     ██      ██      ██   ██      ██ ██      ██    ██
+// ██████  ██████      ██      ███████ ██   ██ ███████ ██ ███████    ██
+// RAILWAY POSTGRESQL — single source of truth for all bot data
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const pg = require('pg');
+let _db = null; // pg.Pool instance
+
+async function initDB() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[DB] <:RUSH_warning:1521415214799654985> DATABASE_URL not set — running without persistence');
+    return false;
+  }
+  try {
+    _db = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30000,
+    });
+    // Health-check
+    await _db.query('SELECT 1');
+    // Create table
+    await _db.query(`
+      CREATE TABLE IF NOT EXISTS bot_kv (
+        key        TEXT        PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> Railway PostgreSQL connected & table ready');
+    return true;
+  } catch (e) {
+    console.error('[DB] <:steal:1521327958634135655> Connection failed:', e.message);
+    _db = null;
+    return false;
+  }
+}
+
+async function dbGet(key) {
+  if (!_db) return null;
+  try {
+    const r = await _db.query('SELECT value FROM bot_kv WHERE key=$1', [key]);
+    return r.rows[0] ? deserialize(r.rows[0].value) : null;
+  } catch (e) {
+    console.error(`[DB] get(${key}): ${e.message}`);
+    return null;
+  }
+}
+
+async function dbSet(key, value) {
+  if (!_db) return;
+  try {
+    await _db.query(
+      `INSERT INTO bot_kv(key,value,updated_at) VALUES($1,$2,NOW())
+       ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+      [key, serialize(value)]
+    );
+  } catch (e) {
+    console.error(`[DB] set(${key}): ${e.message}`);
+  }
+}
+
+// Debounce: rapid consecutive writes are batched into a single DB write
+const _saveQueue = new Map(); // key => { timer, dataFn }
+function scheduleSave(key, dataFn, ms = 3000) {
+  if (_saveQueue.has(key)) clearTimeout(_saveQueue.get(key).timer);
+  const timer = setTimeout(async () => {
+    _saveQueue.delete(key);
+    try { await dbSet(key, dataFn()); }
+    catch (e) { console.error(`[DB] scheduleSave(${key}): ${e.message}`); }
+  }, ms);
+  _saveQueue.set(key, { timer, dataFn });
+}
+
+// Flush ALL pending saves immediately — called on SIGTERM/SIGINT
+async function flushAllSaves() {
+  const pending = [..._saveQueue.entries()];
+  _saveQueue.clear();
+  for (const [key, { timer, dataFn }] of pending) {
+    clearTimeout(timer);
+    try { await dbSet(key, dataFn()); }
+    catch (e) { console.error(`[DB] flush(${key}): ${e.message}`); }
+  }
+}
+
+// Graceful shutdown — never lose data when Railway recycles the container
+process.on('SIGTERM', async () => {
+  console.log('[Bot] SIGTERM — flushing all pending saves...');
+  await flushAllSaves();
+  if (_db) await _db.end().catch(() => {});
+  process.exit(0);
+});
+process.on('SIGINT', async () => {
+  console.log('[Bot] SIGINT — flushing all pending saves...');
+  await flushAllSaves();
+  if (_db) await _db.end().catch(() => {});
+  process.exit(0);
+});
+
+// ── DB bucket keys ────────────────────────────────────────────────────────────
+const DB = {
+  GUILD_CFG:  'guild_configs',  // all per-guild config Maps
+  WARNS:      'warns',          // warnings per user per guild
+  XP:         'xp',            // XP / leveling data
+  GIVEAWAYS:  'giveaways',     // active giveaways
+  STICKY:     'sticky',        // sticky messages
+  REMINDERS:  'reminders',     // user reminders
+  BIRTHDAYS:  'birthdays',     // birthday data
+  MODSTATS:   'modstats',      // ban/kick/mute stats per mod
+  BOOSTER:    'booster_state', // booster protection state
+  MASSDM:     'massdm',        // active massDM job
+  BOT_CFG:    'bot_config',    // global bot config (perks, messages)
+  CASES:      'cases',         // mod cases
+  ECONOMY:    'economy',       // economy balances
+  AFK:        'afk',           // AFK users
+  POLLS:      'polls',         // poll data
+  TODOS:      'todos',         // todo lists
+  TAGS:       'tags',          // server tags
+  HIGHLIGHTS: 'highlights',    // word highlights
+  TEMPBANS:   'temp_bans',     // temp bans
+  STATS:      'server_stats',  // server join/leave/ban stats
+  MUTE_HIST:  'mute_history',  // mute history per user
+  CH_PERMS:      'channel_perms',   // saved channel permission snapshots
+  SCRAPER_CFG:   'scraper_cfg',      // video scraper config
+  SCRAPER_CURSOR:'scraper_cursor',   // last message ID per source (dedup cursor)
+  TWITTER_CFG:   'twitter_cfg',      // twitter repost config
+  TWITTER_CURSOR:'twitter_cursor',   // last tweet ID per account (dedup cursor)
+};
+
+// ── Build the full guild config snapshot ─────────────────────────────────────
+// ── General per-guild config store (new features: whitelist, risky roles, etc.) ─
+const _generalCfg = new Map(); // guildId → plain object
+function guildCfg(guildId) {
+  if (!_generalCfg.has(guildId)) _generalCfg.set(guildId, {});
+  return _generalCfg.get(guildId);
+}
+
+function buildConfigSnapshot() {
+  return {
+    perksSystemConfig: { ...perksSystemConfig },
+    customMessages:    { ...customMessages },
+    antiMinorsConfig, antinukeConfig, antiraidConfig,
+    autoroles, welcomeConfig, goodbyeConfig, pingOnJoinConfig,
+    embedColors, ticketConfig, filterConfig, modlogChannel,
+    levelingEnabled, moderationEnabled, moderationCustom, vanityLock, muteRole, birthdayChannel,
+    logEvents, reactionRoles, customCommands, disabledCommands,
+    aliases, reactionTriggers, counters, automodExempt,
+    warnThresholds, userTimezones, confessions, appealConfig,
+    medicConfig, fakePerms, pingRoles, starboardConfig,
+    bumpReminder, joinToCreate, boosterRoles, ignoreList,
+    blacklistWords, autoResponders,
+    _generalCfg, ketoConfig,
+  };
+}
+
+// ── Convenience save triggers (call these wherever data changes) ──────────────
+function saveAllConfigs()    { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot); }
+// Security data must survive container restarts — flush to DB instantly (no debounce)
+function saveSecurityNow()  { scheduleSave(DB.GUILD_CFG,  buildConfigSnapshot, 0); }
+function saveWarns()       { scheduleSave(DB.WARNS,      () => warns,          1500); }
+function saveXP()          { scheduleSave(DB.XP,         () => xpData,         8000); }
+function saveGiveaways()   { scheduleSave(DB.GIVEAWAYS,  () => giveaways); }
+function saveSticky()      { scheduleSave(DB.STICKY,     () => stickyMessages); }
+function saveReminders()   { scheduleSave(DB.REMINDERS,  () => remindersData); }
+function saveBirthdays()   { scheduleSave(DB.BIRTHDAYS,  () => birthdayData); }
+function saveModStats()    { scheduleSave(DB.MODSTATS,   () => banStats,       2000); }
+function saveBooster()     { scheduleSave(DB.BOOSTER,    () => ({ manuallyRemoved: manuallyRemovedBoosterRole, hidden: hiddenPaidPerksChannels, recent: recentBoosters })); }
+function saveMassDM()      { scheduleSave(DB.MASSDM,     () => activeMassDM); }
+function saveBotCfg()      { scheduleSave(DB.BOT_CFG,    () => ({ perksSystemConfig, customMessages })); }
+function saveCases()       { scheduleSave(DB.CASES,      () => ({ cases, caseCounter })); }
+function saveEconomy()     { scheduleSave(DB.ECONOMY,    () => economy,        5000); }
+function saveAFK()         { scheduleSave(DB.AFK,        () => afkUsers); }
+function savePolls()       { scheduleSave(DB.POLLS,      () => pollData); }
+function saveTodos()       { scheduleSave(DB.TODOS,      () => todoLists); }
+function saveTags()        { scheduleSave(DB.TAGS,       () => tagData); }
+function saveHighlights()  { scheduleSave(DB.HIGHLIGHTS, () => highlights); }
+function saveTempBans()    { scheduleSave(DB.TEMPBANS,   () => tempBans); }
+function saveStats()       { scheduleSave(DB.STATS,      () => serverStats); }
+function saveMuteHist()    { scheduleSave(DB.MUTE_HIST,  () => muteHistory); }
+function saveChPerms()        { scheduleSave(DB.CH_PERMS,       () => channelPerms); }
+function saveTwitterCfg()     { scheduleSave(DB.TWITTER_CFG,    () => twitterRepostCfg, 2000); }
+function saveTwitterCursors() { scheduleSave(DB.TWITTER_CURSOR, () => twitterCursors,   3000); }
+
+// ── Load ALL data from DB on startup ─────────────────────────────────────────
+async function loadAllData() {
+  console.log('[DB] Loading all data from Railway PostgreSQL...');
+
+  const keys    = Object.values(DB);
+  const results = await Promise.all(keys.map(k => dbGet(k)));
+  const d       = Object.fromEntries(keys.map((k, i) => [k, results[i]]));
+
+  // Helper: restore a Map from saved data
+  function rm(saved, target, transform) {
+    if (!saved || !(saved instanceof Map)) return;
+    target.clear();
+    saved.forEach((v, k) => target.set(k, transform ? transform(v) : v));
+  }
+
+  // Helper: ensure certain fields are proper Sets (not plain arrays after deserialize)
+  function fixSetFields(obj, ...fields) {
+    if (!obj || typeof obj !== 'object') return obj;
+    for (const f of fields) {
+      if (obj[f] !== undefined && !(obj[f] instanceof Set))
+        obj[f] = new Set(Array.isArray(obj[f]) ? obj[f] : []);
+    }
+    return obj;
+  }
+
+  // ── Guild configs ──────────────────────────────────────────────────────────
+  const cfg = d[DB.GUILD_CFG];
+  if (cfg) {
+    if (cfg.antiMinorsConfig instanceof Map)  { antiMinorsConfig.clear();  cfg.antiMinorsConfig.forEach((v,k) => antiMinorsConfig.set(k, fixSetFields(v,'channels','requireAttach','whitelist'))); }
+    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => antinukeConfig.set(k, fixSetFields(v, 'whitelist'))); }
+    if (cfg.antiraidConfig instanceof Map)    { antiraidConfig.clear();    cfg.antiraidConfig.forEach((v,k)   => antiraidConfig.set(k, v)); }
+    if (cfg.autoroles instanceof Map)         { autoroles.clear();         cfg.autoroles.forEach((v,k)        => autoroles.set(k, v)); }
+    if (cfg.welcomeConfig instanceof Map)     { welcomeConfig.clear();     cfg.welcomeConfig.forEach((v,k)    => welcomeConfig.set(k, v)); }
+    if (cfg.goodbyeConfig instanceof Map)     { goodbyeConfig.clear();     cfg.goodbyeConfig.forEach((v,k)    => goodbyeConfig.set(k, v)); }
+    if (cfg.pingOnJoinConfig instanceof Map)  { pingOnJoinConfig.clear();  cfg.pingOnJoinConfig.forEach((v,k) => pingOnJoinConfig.set(k, v)); }
+    if (cfg.embedColors instanceof Map)       { embedColors.clear();       cfg.embedColors.forEach((v,k)      => embedColors.set(k, v)); }
+    if (cfg.ticketConfig instanceof Map)      { ticketConfig.clear();      cfg.ticketConfig.forEach((v,k)     => ticketConfig.set(k, v)); }
+    if (cfg.filterConfig instanceof Map)      { filterConfig.clear();      cfg.filterConfig.forEach((v,k)     => filterConfig.set(k, fixSetFields(v,'channels','whitelist'))); }
+    if (cfg.modlogChannel instanceof Map)     { modlogChannel.clear();     cfg.modlogChannel.forEach((v,k)    => modlogChannel.set(k, v)); }
+    if (cfg.levelingEnabled instanceof Map)   { levelingEnabled.clear();   cfg.levelingEnabled.forEach((v,k)  => levelingEnabled.set(k, v)); }
+    if (cfg.moderationEnabled instanceof Map) { moderationEnabled.clear(); cfg.moderationEnabled.forEach((v,k) => moderationEnabled.set(k, v)); }
+    if (cfg.moderationCustom  instanceof Map) {
+      moderationCustom.clear();
+      cfg.moderationCustom.forEach((v, k) => {
+        moderationCustom.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []));
+      });
+    }
+    if (cfg.vanityLock instanceof Map)        { vanityLock.clear();        cfg.vanityLock.forEach((v,k)       => vanityLock.set(k, v)); }
+    if (cfg.muteRole instanceof Map)          { muteRole.clear();          cfg.muteRole.forEach((v,k)         => muteRole.set(k, v)); }
+    if (cfg.birthdayChannel instanceof Map)   { birthdayChannel.clear();   cfg.birthdayChannel.forEach((v,k)  => birthdayChannel.set(k, v)); }
+    if (cfg.logEvents instanceof Map)         { logEvents.clear();         cfg.logEvents.forEach((v,k)        => logEvents.set(k, v)); }
+    if (cfg.reactionRoles instanceof Map)     { reactionRoles.clear();     cfg.reactionRoles.forEach((v,k)    => reactionRoles.set(k, v)); }
+    if (cfg.customCommands instanceof Map)    { customCommands.clear();    cfg.customCommands.forEach((v,k)   => customCommands.set(k, v)); }
+    if (cfg.disabledCommands instanceof Map)  { disabledCommands.clear();  cfg.disabledCommands.forEach((v,k) => disabledCommands.set(k, v)); }
+    if (cfg.aliases instanceof Map)           { aliases.clear();           cfg.aliases.forEach((v,k)          => aliases.set(k, v)); }
+    if (cfg.reactionTriggers instanceof Map)  { reactionTriggers.clear();  cfg.reactionTriggers.forEach((v,k) => reactionTriggers.set(k, v)); }
+    if (cfg.counters instanceof Map)          { counters.clear();          cfg.counters.forEach((v,k)         => counters.set(k, v)); }
+    if (cfg.automodExempt instanceof Map)     { automodExempt.clear();     cfg.automodExempt.forEach((v,k)    => automodExempt.set(k, fixSetFields(v,'roles','channels'))); }
+    if (cfg.warnThresholds instanceof Map)    { warnThresholds.clear();    cfg.warnThresholds.forEach((v,k)   => warnThresholds.set(k, v)); }
+    if (cfg.userTimezones instanceof Map)     { userTimezones.clear();     cfg.userTimezones.forEach((v,k)    => userTimezones.set(k, v)); }
+    if (cfg.confessions instanceof Map)       { confessions.clear();       cfg.confessions.forEach((v,k)      => confessions.set(k, v)); }
+    if (cfg.appealConfig instanceof Map)      { appealConfig.clear();      cfg.appealConfig.forEach((v,k)     => appealConfig.set(k, v)); }
+    if (cfg.medicConfig instanceof Map)       { medicConfig.clear();       cfg.medicConfig.forEach((v,k)      => medicConfig.set(k, v)); }
+    if (cfg.fakePerms instanceof Map)         { fakePerms.clear();         cfg.fakePerms.forEach((v,k)        => fakePerms.set(k, v)); }
+    if (cfg.pingRoles instanceof Map)         { pingRoles.clear();         cfg.pingRoles.forEach((v,k)        => pingRoles.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.starboardConfig instanceof Map)   { starboardConfig.clear();   cfg.starboardConfig.forEach((v,k)  => starboardConfig.set(k, v)); }
+    if (cfg.bumpReminder instanceof Map)      { bumpReminder.clear();      cfg.bumpReminder.forEach((v,k)     => bumpReminder.set(k, v)); }
+    if (cfg.joinToCreate instanceof Map)      { joinToCreate.clear();      cfg.joinToCreate.forEach((v,k)     => joinToCreate.set(k, v)); }
+    if (cfg.boosterRoles instanceof Map)      { boosterRoles.clear();      cfg.boosterRoles.forEach((v,k)     => boosterRoles.set(k, v)); }
+    if (cfg.ignoreList instanceof Map)        { ignoreList.clear();        cfg.ignoreList.forEach((v,k)       => ignoreList.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.blacklistWords instanceof Map)    { blacklistWords.clear();    cfg.blacklistWords.forEach((v,k)   => blacklistWords.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : []))); }
+    if (cfg.autoResponders instanceof Map)    { autoResponders.clear();    cfg.autoResponders.forEach((v,k)   => autoResponders.set(k, v)); }
+    if (cfg._generalCfg instanceof Map) {
+      _generalCfg.clear();
+      cfg._generalCfg.forEach((v, k) => {
+        if (!v || typeof v !== 'object') v = {};
+        // ── Ticket panels ────────────────────────────────────────────────────
+        if (!Array.isArray(v.ticketPanels)) v.ticketPanels = [];
+        v.ticketPanels = v.ticketPanels.map(p => ({
+          name:               p.name               ?? "Support",
+          description:        p.description        ?? "",
+          buttonLabel:        p.buttonLabel         ?? "",
+          buttonEmoji:        p.buttonEmoji         ?? "",
+          buttonColor:        p.buttonColor         ?? "Success",
+          supportRoles:       Array.isArray(p.supportRoles)  ? p.supportRoles  : [],
+          categories:         Array.isArray(p.categories)    ? p.categories    : [],
+          categoryId:         p.categoryId          ?? null,
+          transcriptChannelId:p.transcriptChannelId ?? null,
+          panelChannelId:     p.panelChannelId      ?? null,
+          createdAt:          p.createdAt           ?? Date.now(),
+        }));
+        // ── Security V2 ──────────────────────────────────────────────────────
+        if (!Array.isArray(v.riskyPerms)) v.riskyPerms = [];
+        if (!v.riskyRoles || typeof v.riskyRoles !== 'object')
+          v.riskyRoles = { roles: [], action: "strip" };
+        if (!Array.isArray(v.riskyRoles.roles)) v.riskyRoles.roles = [];
+        if (!v.securityWhitelist || typeof v.securityWhitelist !== 'object')
+          v.securityWhitelist = { users: [], roles: [], channels: [] };
+        if (!Array.isArray(v.securityWhitelist.users))    v.securityWhitelist.users    = [];
+        if (!Array.isArray(v.securityWhitelist.roles))    v.securityWhitelist.roles    = [];
+        if (!Array.isArray(v.securityWhitelist.channels)) v.securityWhitelist.channels = [];
+        if (!v.actionLimits      || typeof v.actionLimits      !== 'object') v.actionLimits      = {};
+        if (!v.actionPunishments || typeof v.actionPunishments !== 'object') v.actionPunishments = {};
+        _generalCfg.set(k, v);
+      });
+      const secGuilds = [..._generalCfg.entries()].filter(([,v]) => v.riskyPerms?.length || v.riskyRoles?.roles?.length || Object.keys(v.actionLimits||{}).length);
+      console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> _generalCfg restored (${_generalCfg.size} guilds; ${secGuilds.length} with active Security V2 config)`);
+    }
+    if (cfg.ketoConfig instanceof Map)        { ketoConfig.clear();        cfg.ketoConfig.forEach((v,k)       => {
+      if (v.channelIds && !(v.channelIds instanceof Set)) v.channelIds = new Set(Array.isArray(v.channelIds) ? v.channelIds : []);
+      ketoConfig.set(k, v);
+    }); }
+    if (cfg.perksSystemConfig && typeof cfg.perksSystemConfig === 'object') {
+      const saved = cfg.perksSystemConfig;
+      const valid = {};
+      for (const [k, v] of Object.entries(saved)) {
+        if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
+          console.warn(`[DB] <:RUSH_warning:1521415214799654985> guild_configs: skipping invalid ${k}: "${v}"`);
+          continue;
+        }
+        valid[k] = v;
+      }
+      Object.assign(perksSystemConfig, valid);
+    }
+    if (cfg.customMessages    && typeof cfg.customMessages    === 'object') Object.assign(customMessages, cfg.customMessages);
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> guild_configs restored');
+  }
+
+  // ── Warnings ───────────────────────────────────────────────────────────────
+  if (d[DB.WARNS] instanceof Map) {
+    warns.clear();
+    d[DB.WARNS].forEach((v, k) => warns.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> warns restored (${warns.size} guilds)`);
+  }
+
+  // ── XP / Leveling ──────────────────────────────────────────────────────────
+  if (d[DB.XP] instanceof Map) {
+    xpData.clear();
+    d[DB.XP].forEach((v, k) => xpData.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> xp restored (${xpData.size} guilds)`);
+  }
+
+  // ── Giveaways ──────────────────────────────────────────────────────────────
+  if (d[DB.GIVEAWAYS] instanceof Map) {
+    giveaways.clear();
+    d[DB.GIVEAWAYS].forEach((v, k) => giveaways.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> giveaways restored (${giveaways.size} active)`);
+  }
+
+  // ── Sticky messages ────────────────────────────────────────────────────────
+  if (d[DB.STICKY] instanceof Map) {
+    stickyMessages.clear();
+    d[DB.STICKY].forEach((v, k) => stickyMessages.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> sticky restored (${stickyMessages.size})`);
+  }
+
+  // ── Reminders ──────────────────────────────────────────────────────────────
+  if (d[DB.REMINDERS] instanceof Map) {
+    remindersData.clear();
+    d[DB.REMINDERS].forEach((v, k) => remindersData.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> reminders restored (${remindersData.size} users)`);
+  }
+
+  // ── Birthdays ──────────────────────────────────────────────────────────────
+  if (d[DB.BIRTHDAYS] instanceof Map) {
+    birthdayData.clear();
+    d[DB.BIRTHDAYS].forEach((v, k) => birthdayData.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> birthdays restored (${birthdayData.size})`);
+  }
+
+  // ── Mod stats ──────────────────────────────────────────────────────────────
+  if (d[DB.MODSTATS] && typeof d[DB.MODSTATS] === 'object') {
+    Object.assign(banStats, d[DB.MODSTATS]);
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> modstats restored');
+  }
+
+  // ── Booster state ──────────────────────────────────────────────────────────
+  if (d[DB.BOOSTER]) {
+    const bs = d[DB.BOOSTER];
+    if (bs.manuallyRemoved instanceof Set) {
+      manuallyRemovedBoosterRole.clear();
+      bs.manuallyRemoved.forEach(id => manuallyRemovedBoosterRole.add(id));
+    }
+    if (bs.hidden instanceof Set) {
+      hiddenPaidPerksChannels.clear();
+      bs.hidden.forEach(id => hiddenPaidPerksChannels.add(id));
+    }
+    if (bs.recent instanceof Set) {
+      recentBoosters.clear();
+      bs.recent.forEach(id => recentBoosters.add(id));
+    }
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> booster_state restored');
+  }
+
+  // ── Active massDM job ──────────────────────────────────────────────────────
+  if (d[DB.MASSDM] && typeof d[DB.MASSDM] === 'object') {
+    activeMassDM = d[DB.MASSDM];
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> massdm state restored — will resume');
+  }
+
+  // ── Global bot config ──────────────────────────────────────────────────────
+  if (d[DB.BOT_CFG]) {
+    if (d[DB.BOT_CFG].perksSystemConfig) {
+      const saved = d[DB.BOT_CFG].perksSystemConfig;
+      const valid = {};
+      for (const [k, v] of Object.entries(saved)) {
+        if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
+          console.warn(`[DB] <:RUSH_warning:1521415214799654985> Skipping invalid ${k}: "${v}" — not a valid Discord snowflake. Keeping hardcoded default.`);
+          continue;
+        }
+        valid[k] = v;
+      }
+      Object.assign(perksSystemConfig, valid);
+    }
+    if (d[DB.BOT_CFG].customMessages)    Object.assign(customMessages,    d[DB.BOT_CFG].customMessages);
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> bot_config restored');
+  }
+
+  // ── Mod cases ──────────────────────────────────────────────────────────────
+  if (d[DB.CASES]) {
+    if (d[DB.CASES].cases instanceof Map)       { cases.clear();       d[DB.CASES].cases.forEach((v,k)       => cases.set(k, v)); }
+    if (d[DB.CASES].caseCounter instanceof Map) { caseCounter.clear(); d[DB.CASES].caseCounter.forEach((v,k) => caseCounter.set(k, v)); }
+    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> cases restored');
+  }
+
+  // ── Economy ────────────────────────────────────────────────────────────────
+  if (d[DB.ECONOMY] instanceof Map) {
+    economy.clear();
+    d[DB.ECONOMY].forEach((v, k) => economy.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> economy restored (${economy.size} users)`);
+  }
+
+  // ── AFK ────────────────────────────────────────────────────────────────────
+  if (d[DB.AFK] instanceof Map) {
+    afkUsers.clear();
+    d[DB.AFK].forEach((v, k) => afkUsers.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> afk restored (${afkUsers.size})`);
+  }
+
+  // ── Polls ──────────────────────────────────────────────────────────────────
+  if (d[DB.POLLS] instanceof Map) {
+    pollData.clear();
+    d[DB.POLLS].forEach((v, k) => {
+      if (v?.votes && !(v.votes instanceof Map)) v.votes = new Map(Object.entries(v.votes));
+      pollData.set(k, v);
+    });
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> polls restored (${pollData.size})`);
+  }
+
+  // ── Todos ──────────────────────────────────────────────────────────────────
+  if (d[DB.TODOS] instanceof Map) {
+    todoLists.clear();
+    d[DB.TODOS].forEach((v, k) => todoLists.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> todos restored (${todoLists.size})`);
+  }
+
+  // ── Tags ───────────────────────────────────────────────────────────────────
+  if (d[DB.TAGS] instanceof Map) {
+    tagData.clear();
+    d[DB.TAGS].forEach((v, k) => tagData.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> tags restored (${tagData.size})`);
+  }
+
+  // ── Highlights ─────────────────────────────────────────────────────────────
+  if (d[DB.HIGHLIGHTS] instanceof Map) {
+    highlights.clear();
+    d[DB.HIGHLIGHTS].forEach((v, k) => highlights.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : [])));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> highlights restored (${highlights.size})`);
+  }
+
+  // ── Temp bans ──────────────────────────────────────────────────────────────
+  if (d[DB.TEMPBANS] instanceof Map) {
+    tempBans.clear();
+    d[DB.TEMPBANS].forEach((v, k) => tempBans.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> temp_bans restored (${tempBans.size})`);
+  }
+
+  // ── Server stats ───────────────────────────────────────────────────────────
+  if (d[DB.STATS] instanceof Map) {
+    serverStats.clear();
+    d[DB.STATS].forEach((v, k) => serverStats.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> server_stats restored (${serverStats.size} guilds)`);
+  }
+
+  // ── Mute history ───────────────────────────────────────────────────────────
+  if (d[DB.MUTE_HIST] instanceof Map) {
+    muteHistory.clear();
+    d[DB.MUTE_HIST].forEach((v, k) => muteHistory.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> mute_history restored (${muteHistory.size})`);
+  }
+
+  // ── Channel perms ──────────────────────────────────────────────────────────
+  if (d[DB.CH_PERMS] instanceof Map) {
+    channelPerms.clear();
+    d[DB.CH_PERMS].forEach((v, k) => channelPerms.set(k, v));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> channel_perms restored (${channelPerms.size})`);
+  }
+
+  // ── Video scraper config ────────────────────────────────────────────────
+  if (d[DB.SCRAPER_CFG] instanceof Map) {
+    videoScraperCfg.clear();
+    d[DB.SCRAPER_CFG].forEach((v, guildId) => {
+      videoScraperCfg.set(guildId, {
+        enabled: false, sources: [], targetChannelId: null,
+        schedule: { count: 5, intervalMs: 3_600_000, randomize: true },
+        renamePrefix: 'DISCORD.GG/GRINDR',
+        embedConfig: { color: 0xFFFFFF, title: '', description: '', footer: '' },
+        lastRunAt: null, lastRunResult: null, ...v,
+      });
+    });
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
+  }
+
+  // ── Scraper cursors — one snowflake per source channel ───────────────────
+  if (d[DB.SCRAPER_CURSOR] instanceof Map) {
+    scraperCursors.clear();
+    d[DB.SCRAPER_CURSOR].forEach((v, guildId) => {
+      scraperCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
+    });
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> scraper_cursor restored (${scraperCursors.size} guild(s))`);
+  }
+
+  // ── Twitter repost config ─────────────────────────────────────────────────
+  if (d[DB.TWITTER_CFG] instanceof Map) {
+    twitterRepostCfg.clear();
+    d[DB.TWITTER_CFG].forEach((v, guildId) => {
+      twitterRepostCfg.set(guildId, {
+        enabled: false, accounts: [], targetChannelId: null,
+        pollIntervalMs: 10 * 60_000, mediaOnly: false,
+        includeRetweets: false, includeReplies: false,
+        rsshubBase: 'https://rsshub.app',
+        lastRunAt: null, lastRunResult: null, ...v,
+      });
+    });
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> twitter_cfg restored (${twitterRepostCfg.size} guild(s))`);
+  }
+
+  // ── Twitter cursors — one tweet ID per monitored account ─────────────────
+  if (d[DB.TWITTER_CURSOR] instanceof Map) {
+    twitterCursors.clear();
+    d[DB.TWITTER_CURSOR].forEach((v, guildId) => {
+      twitterCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
+    });
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> twitter_cursor restored (${twitterCursors.size} guild(s))`);
+  }
+
+  // ── Re-start enabled scrapers ─────────────────────────────────────────────
+  for (const [guildId, cfg] of videoScraperCfg.entries()) {
+    if (cfg.enabled && cfg.targetChannelId && cfg.sources.length > 0) {
+      rescheduleScraperTimer(guildId);
+      console.log(`[Scraper] ▶ resumed for guild ${guildId}`);
+    }
+  }
+
+  // ── Re-start enabled Twitter pollers ─────────────────────────────────────
+  for (const [guildId, cfg] of twitterRepostCfg.entries()) {
+    if (cfg.enabled && cfg.targetChannelId && cfg.accounts.length > 0) {
+      rescheduleTwitterTimer(guildId);
+      console.log(`[Twitter] ▶ resumed for guild ${guildId}`);
+    }
+  }
+
+  console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> All data loaded from Railway PostgreSQL');
+}
+
+// ── Auto-save every 60 seconds (safety net — catches any missed save triggers) ─
+setInterval(async () => {
+  // Only save if not already queued (don't duplicate work)
+  if (!_saveQueue.has(DB.GUILD_CFG))  saveAllConfigs();
+  if (!_saveQueue.has(DB.WARNS))      saveWarns();
+  if (!_saveQueue.has(DB.XP))         saveXP();
+  if (!_saveQueue.has(DB.GIVEAWAYS))  saveGiveaways();
+  if (!_saveQueue.has(DB.STICKY))     saveSticky();
+  if (!_saveQueue.has(DB.REMINDERS))  saveReminders();
+  if (!_saveQueue.has(DB.BIRTHDAYS))  saveBirthdays();
+  if (!_saveQueue.has(DB.MODSTATS))   saveModStats();
+  if (!_saveQueue.has(DB.BOOSTER))    saveBooster();
+  if (!_saveQueue.has(DB.MASSDM))     saveMassDM();
+  if (!_saveQueue.has(DB.BOT_CFG))    saveBotCfg();
+  if (!_saveQueue.has(DB.CASES))      saveCases();
+  if (!_saveQueue.has(DB.ECONOMY))    saveEconomy();
+  if (!_saveQueue.has(DB.AFK))        saveAFK();
+  if (!_saveQueue.has(DB.POLLS))      savePolls();
+  if (!_saveQueue.has(DB.TODOS))      saveTodos();
+  if (!_saveQueue.has(DB.TAGS))       saveTags();
+  if (!_saveQueue.has(DB.HIGHLIGHTS)) saveHighlights();
+  if (!_saveQueue.has(DB.TEMPBANS))   saveTempBans();
+  if (!_saveQueue.has(DB.STATS))      saveStats();
+  if (!_saveQueue.has(DB.MUTE_HIST))  saveMuteHist();
+  if (!_saveQueue.has(DB.CH_PERMS))       saveChPerms();
+  if (!_saveQueue.has(DB.SCRAPER_CFG))    saveScraperCfg();
+  if (!_saveQueue.has(DB.SCRAPER_CURSOR)) saveScraperCursors();
+  if (!_saveQueue.has(DB.TWITTER_CFG))    saveTwitterCfg();
+  if (!_saveQueue.has(DB.TWITTER_CURSOR)) saveTwitterCursors();
+}, 60 * 1000);
+
+
+
+
+// ===================================================
+// ===== GREED-STYLE RESPONSE SYSTEM =================
+// ===================================================
+
+const PINK = 0xFFFFFF;  // White theme
+// Returns the embed color for a guild (falls back to PINK)
+function guildColor(guildId) { return embedColors.get(guildId) ?? PINK; }
+
+// <:019TXTWhite_Yes:1521327983279996999> Success response -- pink embed, no title, inline style
+function ok(message, text) {
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
+}
+
+// <:steal:1521327958634135655> Error response
+function err(message, text) {
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `<:steal:1521327958634135655> ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
+}
+
+// ℹ️ Info response
+function info(message, text) {
+  const color = guildColor(message.guild?.id);
+  const embed = { color, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} ${text}` };
+  return message.reply({ embeds: [embed] }).catch(() =>
+    message.channel.send({ embeds: [embed] }).catch(() => {})
+  );
+}
+
+// <:RUSH_list:1521415268000337961> Data embed with fields
+function embed(title, fields, color = PINK) {
+  return {
+    embeds: [{
+      color,
+      title,
+      fields,
+      footer: { text: "sensational • white edition" },
+      timestamp: new Date()
+    }]
+  };
+}
+
+// 🧹 Delete ALL messages from a userId across every text channel in a guild
+// Runs in background — fire and forget (pass statusMsg to get a summary edit)
+async function purgeUserMessages(guild, userId, statusMsg = null) {
+  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
+  const textChannels = [...guild.channels.cache.values()].filter(c => [0, 5].includes(c.type));
+  let totalDeleted = 0;
+  for (const ch of textChannels) {
+    try {
+      let before = undefined, hasMore = true;
+      while (hasMore) {
+        const fetched = await ch.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+        if (!fetched || fetched.size === 0) break;
+        const userMsgs = [...fetched.values()].filter(m => m.author.id === userId);
+        // Split into bulk-deletable (< 14 days) and old messages
+        const bulk = userMsgs.filter(m => Date.now() - m.createdTimestamp < TWO_WEEKS);
+        const old  = userMsgs.filter(m => Date.now() - m.createdTimestamp >= TWO_WEEKS);
+        if (bulk.length > 1) {
+          await ch.bulkDelete(bulk, true).catch(() => {});
+          totalDeleted += bulk.length;
+        } else if (bulk.length === 1) {
+          await bulk[0].delete().catch(() => {});
+          totalDeleted++;
+        }
+        for (const m of old) { await m.delete().catch(() => {}); totalDeleted++; await new Promise(r => setTimeout(r, 300)); }
+        before = fetched.last()?.id;
+        hasMore = fetched.size === 100;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch { /* skip channels we can't read */ }
+  }
+  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `<:RUSH_trash_can:1521415241190215721> Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
+  return totalDeleted;
+}
+
+// <:RUSH_unlock:1521415218037526641> Confirm button (for dangerous actions like nuke, unbanall, etc.)
+async function confirm(message, text, onConfirm) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("confirm_yes").setLabel("Approve").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("confirm_no").setLabel("Decline").setStyle(ButtonStyle.Danger)
+  );
+  const msg = await message.reply({
+    embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }],
+    components: [row]
+  });
+  const collector = msg.createMessageComponentCollector({ filter: () => true });
+  collector.on("collect", async i => {
+    try {
+      if (i.user.id !== message.author.id) {
+        return i.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+      }
+      if (i.customId === "confirm_yes") {
+        await i.update({ embeds: [{ color: PINK, description: "🌸 Executing..." }], components: [] });
+        await onConfirm();
+      } else {
+        await i.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Action cancelled." }], components: [] });
+      }
+    } catch (e) {
+      msg.edit({ components: [] }).catch(() => {});
+    }
+  });
+}
+
+// banStats[guildId][modId] = { tag, actions, bans, ignores }
+const banStats = {};
+
+async function loadBanStatsFromAuditLogs(guild) {
+  const stats = {};
+  try {
+    let before = undefined;
+    let fetched;
+
+    // Fetch all ban audit log entries (100 at a time)
+    do {
+      fetched = await guild.fetchAuditLogs({ type: 22, limit: 100, before });
+      if (fetched.entries.size === 0) break;
+
+      for (const entry of fetched.entries.values()) {
+        if (!entry.executor) continue;
+        const modId = entry.executor.id;
+        const modTag = entry.executor.username || entry.executor.username;
+
+        if (!stats[modId]) {
+          stats[modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+        }
+        stats[modId].username = modTag;
+        stats[modId].actions += 1;
+        stats[modId].bans += 1;
+      }
+
+      before = fetched.entries.last()?.id;
+    } while (fetched.entries.size === 100);
+
+  } catch (e) {
+    log(`Failed to load audit logs for ${guild.name}: ${e.message}`, "error");
+  }
+  return stats;
+}
+
+process.setMaxListeners(20);
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildModeration,
+  ],
+  partials: ["CHANNEL"]
+});
+// Raise listener limit to suppress MaxListenersExceededWarning
+// (bot intentionally uses many separate handlers for modularity)
+client.setMaxListeners(50);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  CUSTOM EMOJI / INTERACTION-EDIT FIX (Discord platform bug)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Discord has a known, long-standing bug: when a message belonging to a button/
+// select-menu interaction is EDITED via interaction.update() (or deferUpdate() +
+// editReply()), any custom emoji (<:name:id>) in that edit renders as plain
+// "<:name:id>" / ":name:" text instead of the actual emoji image — even though
+// the exact same emoji renders correctly in a brand-new message (channel.send,
+// message.reply, interaction.reply, etc). Reported upstream:
+// https://github.com/discord/discord-api-docs/issues/6042
+//
+// Rather than patch every individual interaction.update() call across the file,
+// we patch the method once here so every current and future call is covered
+// automatically: custom emoji are stripped from the EDITED text only (so it
+// degrades gracefully to clean text instead of broken "<:name:id>" garbage).
+// Anywhere the emoji visual actually matters (e.g. ticket close/reopen/delete),
+// the code separately sends a brand-new message containing the emoji, which
+// always renders fine.
+{
+  const _stripCustomEmojiText = (s) =>
+    typeof s === "string" ? s.replace(/<a?:\w+:\d+>\s?/g, "").trimStart() : s;
+
+  const _stripCustomEmojiPayload = (payload) => {
+    if (!payload || typeof payload !== "object") return payload;
+    const out = { ...payload };
+    if (typeof out.content === "string") out.content = _stripCustomEmojiText(out.content);
+    if (Array.isArray(out.embeds)) {
+      out.embeds = out.embeds.map((e) => {
+        if (!e || typeof e !== "object") return e;
+        const ne = { ...e };
+        if (ne.title) ne.title = _stripCustomEmojiText(ne.title);
+        if (ne.description) ne.description = _stripCustomEmojiText(ne.description);
+        if (ne.footer?.text) ne.footer = { ...ne.footer, text: _stripCustomEmojiText(ne.footer.text) };
+        if (ne.author?.name) ne.author = { ...ne.author, name: _stripCustomEmojiText(ne.author.name) };
+        if (Array.isArray(ne.fields)) {
+          ne.fields = ne.fields.map((f) => f ? { ...f, name: _stripCustomEmojiText(f.name), value: _stripCustomEmojiText(f.value) } : f);
+        }
+        return ne;
+      });
+    }
+    return out;
+  };
+
+  client.on("interactionCreate", (interaction) => {
+    if (typeof interaction.update !== "function" || interaction.__emojiFixPatched) return;
+    interaction.__emojiFixPatched = true;
+    const origUpdate = interaction.update.bind(interaction);
+    interaction.update = (payload, ...rest) => origUpdate(_stripCustomEmojiPayload(payload), ...rest);
+  });
+}
+
+// ===== CONFIGURATION =====
+const OWNER_ID  = "1005237630113419315";          // primary owner
+const OWNER_IDS = new Set(["1005237630113419315", "1265059575250423828"]); // all owners
+function isOwner(id) { return OWNER_IDS.has(id); }
+const SOURCE_GUILD_ID = "1463635465222619218";
+const TARGET_GUILD_ID = "1425102156125442140";
+
+// ===== PERKS SYSTEM CONFIG (editable via ,perks panel) =====
+const perksSystemConfig = {
+  sourceGuildId:      "1463635465222619218",
+  targetGuildId:      "1425102156125442140",
+  discordBoostRoleId: "1475164627808813158",
+  boostRoleId:        "1474900074185097358",
+  accessRoleId:       "1475167075789181122",
+  deniedRoleId:       "1426874194263805992",
+  pingChannelId:      "1475125441919455346",
+};
+
+// Backward-compat shorthands
+const DISCORD_BOOSTER_ROLE_ID = perksSystemConfig.discordBoostRoleId;
+const CUSTOM_BOOSTER_ROLE_ID  = perksSystemConfig.boostRoleId;
+const ACCESS_ROLE_ID          = perksSystemConfig.accessRoleId;
+const DENIED_ROLE_ID          = perksSystemConfig.deniedRoleId;
+const PERKS_CHANNEL_ID        = perksSystemConfig.pingChannelId;
+
+function isProtectedBooster(member) {
+  if (!member) return false;
+  return member.roles.cache.has(perksSystemConfig.discordBoostRoleId)
+      || member.roles.cache.has(perksSystemConfig.boostRoleId)
+      || !!member.premiumSince;
+}
+
+// Tracks which channels have been hidden via ,hidepaidperks (in-memory)
+const hiddenPaidPerksChannels = new Set();
+
+// ===== CUSTOM MESSAGES (in-memory, editable with !setmsg) =====
+const customMessages = {
+  boost:`<:SENSATIONAL:1475072755467550781>  {user}  Boosting grants you __access to our locked vault__  a space reserved for boosters. Inside, you’ll find all creator channels listed under *perks*.
+
+The *invite link* is private — **sharing it is forbidden** and will get you **blacklisted**. If you ever **remove your boost**, you’ll be **automatically removed** from the vault.
+
+[Ი𐑼](https://discord.com/channels/1463635465222619218/1475125441919455346)`,
+  unboost: `We regret that you’ve __withdrawn your boost__ {user} . From this point on, **your access** to our **exclusive server** will be __revoked__. If **boost again**, you’ll __regain entry__ without issue.`,
+  ping: `{user}`
+};
+
+// ===== VANITY CONFIG =====
+const VANITY_CODES = ["vanityteen", "jerkpit", "boytoy"];
+const CHECK_INTERVAL = 30 * 1000;
+const REQUIRED_404_COUNT = 5;
+
+// ===== TRACKERS =====
+const vanity404Counter = {};
+const vanityNotified = {};
+const recentBoosters = new Set();
+const manuallyRemovedBoosterRole = new Set(); // userIds who had CUSTOM_BOOSTER_ROLE manually removed
+
+VANITY_CODES.forEach(v => {
+  vanity404Counter[v] = 0;
+  vanityNotified[v] = false;
+});
+
+// ===== UTILITIES =====
+function utcTimestamp() {
+  return new Date().toISOString().replace("T", " ").substring(0, 19) + " UTC";
+}
+
+function log(message, type = "info") {
+  const timestamp = new Date().toLocaleTimeString();
+  const prefix = type === "error" ? "<:steal:1521327958634135655>" : type === "success" ? "<:019TXTWhite_Yes:1521327983279996999>" : "ℹ️";
+  console.log(`[${timestamp}] ${prefix} ${message}`);
+}
+
+// ===== FETCH WITH RETRY =====
+async function fetchMemberWithRetry(guild, userId, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const member = await guild.members.fetch(userId);
+      return member;
+    } catch (error) {
+      // 10007 = Unknown Member, 10013 = Unknown User — no point retrying
+      const code = error.code ?? error?.rawError?.code;
+      if (code === 10007 || code === 10013 || error.status === 404) return null;
+      if (i < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500 + (i * 500)));
+        log(`Retry ${i + 1}/${maxRetries} fetching member ${userId}...`, "info");
+      }
+    }
+  }
+  return null;
+}
+
+// ===== BOOST DETECTION =====
+function isBoosting(member) {
+  return member.roles.cache.has(perksSystemConfig.discordBoostRoleId)
+      || member.roles.cache.has(perksSystemConfig.boostRoleId)
+      || !!member.premiumSince;
+}
+
+async function giveCustomBoosterRole(member) {
+  try {
+    // Don't re-add if manually removed by owner/admin
+    if (manuallyRemovedBoosterRole.has(member.id)) return false;
+    if (!member.roles.cache.has(perksSystemConfig.boostRoleId)) {
+      await member.roles.add(perksSystemConfig.boostRoleId);
+      log(`Gave custom booster role to ${member.user.username}`, "success");
+      return true;
+    }
+  } catch (error) {
+    log(`Failed to give custom booster role: ${error.message}`, "error");
+  }
+  return false;
+}
+
+async function removeCustomBoosterRole(member) {
+  try {
+    if (member.roles.cache.has(perksSystemConfig.boostRoleId)) {
+      await member.roles.remove(perksSystemConfig.boostRoleId);
+      log(`Removed custom booster role from ${member.user.username}`, "success");
+      return true;
+    }
+  } catch (error) {
+    log(`Failed to remove custom booster role: ${error.message}`, "error");
+  }
+  return false;
+}
+
+// ===== DM ON BOOST/UNBOOST =====
+async function sendBoostDM(user, boosted) {
+  try {
+    const template = boosted ? customMessages.boost : customMessages.unboost;
+    const msg = template.replace("{user}", `<@${user.id}>`);
+    await user.send(msg);
+    log(`DM sent to ${user.username} (boosted: ${boosted})`, "success");
+  } catch (error) {
+    log(`Failed to send DM to ${user.username}: ${error.message}`, "error");
+  }
+}
+
+// ===== PING IN PERKS CHANNEL ON BOOST =====
+async function pingBoosterInPerksChannel(member) {
+  try {
+    const sourceGuild = await client.guilds.fetch(perksSystemConfig.sourceGuildId);
+    const channel = await sourceGuild.channels.fetch(perksSystemConfig.pingChannelId).catch(() => null);
+    if (!channel) {
+      log(`Perks channel not found: ${PERKS_CHANNEL_ID}`, "error");
+      return;
+    }
+    const pingText = customMessages.ping.replace("{user}", `<@${member.id}>`);
+    const msg = await channel.send(pingText);
+    setTimeout(() => { msg.delete().catch(() => {}); }, 5000);
+    log(`Pinged ${member.user.username} in perks channel`, "success");
+  } catch (error) {
+    log(`Failed to ping in perks channel: ${error.message}`, "error");
+  }
+}
+
+async function updateTargetServerAccess(userId, shouldHaveAccess) {
+  try {
+    const targetGuild = await client.guilds.fetch(perksSystemConfig.targetGuildId);
+    const targetMember = await fetchMemberWithRetry(targetGuild, userId);
+
+    if (!targetMember) {
+      log(`User ${userId} not found in target server`, "info");
+      return false;
+    }
+
+    if (shouldHaveAccess) {
+      await targetMember.roles.add(perksSystemConfig.accessRoleId);
+      await targetMember.roles.remove(perksSystemConfig.deniedRoleId).catch(() => {});
+      recentBoosters.add(userId);
+      log(`Granted access to ${targetMember.user.username}`, "success");
+    } else {
+      if (!recentBoosters.has(userId)) {
+        await targetMember.roles.remove(perksSystemConfig.accessRoleId).catch(() => {});
+        await targetMember.roles.add(perksSystemConfig.deniedRoleId);
+        log(`Denied access to ${targetMember.user.username}`, "success");
+      }
+    }
+
+    return true;
+  } catch (error) {
+    log(`Failed to update target server access: ${error.message}`, "error");
+    return false;
+  }
+}
+
+// ===== CHECK ALL MEMBERS FUNCTION =====
+async function checkAllTargetMembers() {
+  try {
+    log("Starting check of ALL members in target server...", "info");
+
+    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+    const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+
+    const targetMembers = await targetGuild.members.fetch();
+    log(`Found ${targetMembers.size} members in target server`, "info");
+
+    let updatedCount = 0;
+    let errorCount = 0;
+
+    for (const targetMember of targetMembers.values()) {
+      try {
+        if (targetMember.user.bot) continue;
+
+        const isRecentBooster = recentBoosters.has(targetMember.id);
+        const sourceMember = await fetchMemberWithRetry(sourceGuild, targetMember.id).catch(() => null);
+
+        if (sourceMember) {
+          const isBoostingMember = isBoosting(sourceMember);
+          const hasAccessRole = targetMember.roles.cache.has(ACCESS_ROLE_ID);
+          const hasDeniedRole = targetMember.roles.cache.has(DENIED_ROLE_ID);
+
+          // Role management handled by guildMemberUpdate only
+
+          if (isBoostingMember) {
+            if (!hasAccessRole || hasDeniedRole) {
+              await targetMember.roles.add(ACCESS_ROLE_ID);
+              await targetMember.roles.remove(DENIED_ROLE_ID).catch(() => {});
+              log(`Fixed: ${targetMember.user.username} - Added access role (boosting)`, "success");
+              updatedCount++;
+            }
+            recentBoosters.add(targetMember.id);
+          } else if (!isRecentBooster) {
+            if (hasAccessRole || !hasDeniedRole) {
+              await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+              await targetMember.roles.add(DENIED_ROLE_ID);
+              log(`Fixed: ${targetMember.user.username} - Added denied role (not boosting)`, "success");
+              updatedCount++;
+            }
+          }
+        } else if (!isRecentBooster) {
+          if (!targetMember.roles.cache.has(DENIED_ROLE_ID)) {
+            await targetMember.roles.add(DENIED_ROLE_ID);
+            await targetMember.roles.remove(ACCESS_ROLE_ID).catch(() => {});
+            log(`Fixed: ${targetMember.user.username} - Added denied role (not in source)`, "success");
+            updatedCount++;
+          }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+      } catch (memberError) {
+        errorCount++;
+        log(`Error processing ${targetMember.user.username}: ${memberError.message}`, "error");
+      }
+    }
+
+    log(`<:019TXTWhite_Yes:1521327983279996999> Check complete! Updated ${updatedCount} members, ${errorCount} errors`, "success");
+    return { updated: updatedCount, errors: errorCount, total: targetMembers.size };
+
+  } catch (error) {
+    log(`Failed to check all members: ${error.message}`, "error");
+    return { updated: 0, errors: 1, total: 0 };
+  }
+}
+
+// ===== BOT EVENTS =====
+client.once("clientReady", async () => {
+  log(`Logged in as ${client.user.username}`, "success");
+
+  // 1. Connect to Railway PostgreSQL and load all persisted data
+  await initDB();
+  await loadAllData();
+
+  // 2. Re-register any open tickets from before restart
+  setTimeout(() => rehydrateTickets(), 3000);
+
+  // 3. Resume mass DM if it was in progress before restart
+  setTimeout(() => resumeMassDMIfNeeded(), 5000);
+
+  try {
+    const sourceGuild = await client.guilds.fetch(perksSystemConfig.sourceGuildId);
+    const targetGuild = await client.guilds.fetch(perksSystemConfig.targetGuildId);
+
+    log(`Connected to: ${sourceGuild.name} and ${targetGuild.name}`);
+
+    // Load ban history from audit logs ONLY if modstats was empty in DB
+    // (avoids overwriting real DB data with incomplete audit log snapshots)
+    if (!banStats[sourceGuild.id] && !banStats[targetGuild.id]) {
+      (async () => {
+        for (const guild of [sourceGuild, targetGuild]) {
+          log(`Loading ban history from audit logs for ${guild.name}...`, "info");
+          banStats[guild.id] = await loadBanStatsFromAuditLogs(guild);
+          const total = Object.values(banStats[guild.id]).reduce((s, m) => s + m.bans, 0);
+          log(`Loaded ${total} historical bans for ${guild.name}`, "success");
+        }
+        saveModStats();
+      })();
+    }
+
+    log("Running initial member check...", "info");
+    await checkAllTargetMembers();
+
+  } catch (error) {
+    log(`Startup error: ${error.message}`, "error");
+  }
+
+  startVanityMonitor();
+
+  client.user.setPresence({
+    status: "online",
+    activities: [{
+      name: "/grindr",
+      type: ActivityType.Streaming,
+      url: "https://www.twitch.tv/sensational"
+    }]
+  });
+});
+
+// ===== MEMBER JOINS TARGET SERVER =====
+client.on("guildMemberAdd", async (member) => {
+  if (member.guild.id !== TARGET_GUILD_ID) return;
+
+  log(`${member.user.username} joined TARGET server`, "info");
+
+  try {
+    const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const sourceMember = await fetchMemberWithRetry(sourceGuild, member.id).catch(() => null);
+
+    if (sourceMember && isBoosting(sourceMember)) {
+      log(`${member.user.username} IS boosting!`, "success");
+      recentBoosters.add(member.id);
+      await updateTargetServerAccess(member.id, true);
+      // Role management handled by guildMemberUpdate only
+    } else {
+      log(`${member.user.username} is NOT boosting`, "info");
+      await updateTargetServerAccess(member.id, false);
+    }
+  } catch (error) {
+    log(`Error processing join: ${error.message}`, "error");
+    try {
+      await member.roles.add(DENIED_ROLE_ID);
+    } catch (roleError) {
+      log(`Failed to add denied role: ${roleError.message}`, "error");
+    }
+  }
+});
+
+// ===== BOOST STATUS CHANGES =====
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  if (newMember.guild.id !== SOURCE_GUILD_ID) return;
+
+  // Detect manual removal of CUSTOM_BOOSTER_ROLE
+  const hadCustomRole = oldMember.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID);
+  const hasCustomRole = newMember.roles.cache.has(CUSTOM_BOOSTER_ROLE_ID);
+  if (hadCustomRole && !hasCustomRole) {
+    manuallyRemovedBoosterRole.add(newMember.id);
+  saveBooster();
+    log(`Custom booster role manually removed from ${newMember.user.username} — will not re-add`, "info");
+  }
+  // If re-added manually, clear the flag
+  if (!hadCustomRole && hasCustomRole) {
+    manuallyRemovedBoosterRole.delete(newMember.id);
+  saveBooster();
+  }
+
+  // Detect role self-assignment with Administrator perms -> ban
+  const addedRoles = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+  for (const role of addedRoles.values()) {
+    if (role.permissions.has(PermissionFlagsBits.Administrator) && newMember.id !== newMember.guild.ownerId) {
+      // Someone assigned themselves an admin role -- ban immediately
+      log(`<:RUSH_warning:1521415214799654985> ${newMember.user.username} assigned themselves admin role: ${role.name}`, "error");
+      // Remove the role first
+      await newMember.roles.remove(role).catch(() => {});
+      // Ban them
+      await newMember.ban({ reason: `[AntiAbuse] Self-assigned Administrator role: ${role.name}` }).catch(() => {});
+      // DM the owner
+      const owner = await client.users.fetch(OWNER_ID).catch(() => null);
+      if (owner) {
+        owner.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Admin Role Self-Assignment Detected", description: `**${newMember.user.username}** (\`${newMember.id}\`) assigned themselves the role **${role.name}** which has **Administrator** permissions.
+
+They have been **automatically banned**.`, footer: { text: newMember.guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  const wasBoosting = isBoosting(oldMember);
+  const isNowBoosting = isBoosting(newMember);
+
+  if (wasBoosting === isNowBoosting) return;
+
+  log(`Boost change: ${newMember.user.username} - ${wasBoosting ? "Was" : "Not"} -> ${isNowBoosting ? "Now" : "Not"}`, "info");
+
+  try {
+    if (isNowBoosting) {
+      recentBoosters.add(newMember.id);
+      await giveCustomBoosterRole(newMember);
+      await sendBoostDM(newMember.user, true);
+      await pingBoosterInPerksChannel(newMember);
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 30000));
+
+      const refreshedMember = await newMember.guild.members.fetch(newMember.id).catch(() => null);
+      if (refreshedMember && !isBoosting(refreshedMember)) {
+        await removeCustomBoosterRole(refreshedMember);
+        await sendBoostDM(newMember.user, false);
+      }
+    }
+
+    await updateTargetServerAccess(newMember.id, isNowBoosting);
+  } catch (error) {
+    log(`Error updating boost: ${error.message}`, "error");
+  }
+});
+
+// ===== ADMIN COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (!isOwner(message.author.id)) return;
+  if (!message.content.startsWith("!")) return;
+
+  const args = message.content.slice(1).split(" ");
+  const command = args[0].toLowerCase();
+
+
+  // !setmsg boost/unboost/ping <text>
+  if (command === "setmsg") {
+    const type = args[1]?.toLowerCase();
+    if (!type || !["boost", "unboost", "ping"].includes(type)) {
+      return err(message, "usage: `,setmsg <boost|unboost|ping> <text>` — use `{user}` as placeholder.");
+
+    }
+    const text = args.slice(2).join(" ");
+    if (!text) return err(message, "Please write the message text after the type.");
+    customMessages[type] = text;
+    return ok(message, `**${type}** message updated! Preview: ${text.replace("{user}", "@"+message.author.username)}`);
+  }
+
+  // !viewmsg
+  if (command === "viewmsg") {
+    const embed = {
+      color: PINK,
+      title: "<:RUSH_comment:1491884212297531572> Current Messages",
+      fields: [
+        { name: "💜 Boost DM", value: customMessages.boost.substring(0, 1024) },
+        { name: "😔 Unboost DM", value: customMessages.unboost.substring(0, 1024) },
+        { name: "📣 Perks channel ping", value: customMessages.ping }
+      ],
+      footer: { text: "Edit with !setmsg boost/unboost/ping <text>" }
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // !resetvanity
+  if (command === "resetvanity") {
+    const arg = args[1];
+
+    if (!arg) {
+      return err(message, "missing required argument");
+
+    }
+
+    if (arg === "all") {
+      VANITY_CODES.forEach(v => {
+        vanity404Counter[v] = 0;
+        vanityNotified[v] = false;
+      });
+      return ok(message, "All vanity monitors reset.");
+    }
+
+    if (!VANITY_CODES.includes(arg)) {
+      return err(message, "Vanity not found.");
+    }
+
+    vanity404Counter[arg] = 0;
+    vanityNotified[arg] = false;
+    return ok(message, `Vanity **${arg}** reset.`);
+  }
+
+  // !checkall
+  if (command === "checkall") {
+    log(`Owner requested check of all members`, "info");
+    ok(message, "checking all members in target server...");
+
+    const result = await checkAllTargetMembers();
+
+    const embed = {
+      color: result.errors > 0 ? 0xff9900 : 0x00ff00,
+      title: "Member Check Complete",
+      fields: [
+        { name: "Total Members", value: `${result.total}`, inline: true },
+        { name: "Updated", value: `${result.updated}`, inline: true },
+        { name: "Errors", value: `${result.errors}`, inline: true }
+      ],
+      description: result.updated > 0 ?
+        `Fixed role assignments for ${result.updated} members` :
+        "All roles are already correct!",
+      timestamp: new Date()
+    };
+
+    message.reply({ embeds: [embed] });
+  }
+
+  // !fixuser
+  if (command === "fixuser") {
+    const userId = args[1] || message.mentions.users.first()?.id;
+
+    if (!userId) {
+      return err(message, "missing required argument");
+
+    }
+
+    try {
+      const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+      const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+
+      const sourceMember = await fetchMemberWithRetry(sourceGuild, userId).catch(() => null);
+      const targetMember = await fetchMemberWithRetry(targetGuild, userId).catch(() => null);
+
+      if (!targetMember) {
+        return err(message, "User not found in target server.");
+      }
+
+      let response = `**Fixing roles for ${targetMember.user.username}**\n`;
+
+      if (sourceMember) {
+        const boosting = isBoosting(sourceMember);
+        response += `Source server: ${boosting ? "<:019TXTWhite_Yes:1521327983279996999> Boosting" : "<:steal:1521327958634135655> Not boosting"}\n`;
+
+        if (boosting) {
+          // Role management handled by guildMemberUpdate only
+          response += `Custom role: <:019TXTWhite_Yes:1521327983279996999> Added\n`;
+          recentBoosters.add(userId);
+        } else {
+          // Role management handled by guildMemberUpdate only
+          response += `Custom role: <:019TXTWhite_Yes:1521327983279996999> Removed\n`;
+        }
+
+        await updateTargetServerAccess(userId, boosting);
+        response += `Target access: ${boosting ? "<:019TXTWhite_Yes:1521327983279996999> Granted" : "<:steal:1521327958634135655> Denied"}`;
+      } else {
+        response += `User not in source server\n`;
+        await updateTargetServerAccess(userId, false);
+        response += `Target access: <:steal:1521327958634135655> Denied`;
+      }
+
+      message.reply(response);
+    } catch (error) {
+      message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: ${error.message}` }] });
+    }
+  }
+
+  // !stats
+  if (command === "stats") {
+    try {
+      const sourceGuild = await client.guilds.fetch(SOURCE_GUILD_ID);
+      const targetGuild = await client.guilds.fetch(TARGET_GUILD_ID);
+
+      const sourceMembers = await sourceGuild.members.fetch();
+      const targetMembers = await targetGuild.members.fetch();
+
+      let boosters = 0;
+      sourceMembers.forEach(member => {
+        if (isBoosting(member)) boosters++;
+      });
+
+      let withAccess = 0;
+      let withDenied = 0;
+      targetMembers.forEach(member => {
+        if (member.roles.cache.has(ACCESS_ROLE_ID)) withAccess++;
+        if (member.roles.cache.has(DENIED_ROLE_ID)) withDenied++;
+      });
+
+      const embed = {
+        color: PINK,
+        title: "Bot Statistics",
+        fields: [
+          { name: "Source Server", value: `Members: ${sourceMembers.size}\nBoosters: ${boosters}`, inline: true },
+          { name: "Target Server", value: `Members: ${targetMembers.size}\nWith Access: ${withAccess}\nWith Denied: ${withDenied}`, inline: true },
+          { name: "Bot Uptime", value: `${Math.floor(process.uptime() / 60)} minutes`, inline: true }
+        ],
+        timestamp: new Date()
+      };
+
+      message.reply({ embeds: [embed] });
+    } catch (error) {
+      message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: ${error.message}` }] });
+    }
+  }
+});
+
+// ===== TRACK BANS (guildBanAdd) =====
+client.on("guildBanAdd", async (ban) => {
+  try {
+    const guild = ban.guild;
+    const auditLogs = await guild.fetchAuditLogs({ type: 22 /* BAN */, limit: 5 });
+    const entry = auditLogs.entries.find(e => e.target?.id === ban.user.id);
+    if (!entry) return;
+
+    const modId = entry.executor.id;
+    const modTag = entry.executor.username || entry.executor.username;
+    const guildId = guild.id;
+
+    if (!banStats[guildId]) banStats[guildId] = {};
+    if (!banStats[guildId][modId]) {
+      banStats[guildId][modId] = { tag: modTag, actions: 0, bans: 0, ignores: 0 };
+    }
+
+    banStats[guildId][modId].username = modTag;
+    banStats[guildId][modId].actions += 1;
+    banStats[guildId][modId].bans += 1;
+    saveModStats();
+    log(`Ban tracked: ${modTag} banned ${ban.user.username}`, "info");
+  } catch (error) {
+    log(`Failed to track ban: ${error.message}`, "error");
+  }
+});
+
+// ===== TRACK IGNORES (guildBanRemove = unban used as "ignore"/pardon) =====
+// If you want to track "ignores" as manual increments, use ,addignore <userId> command
+// Otherwise ignores = 0 by default unless explicitly tracked
+
+// ===== MODSTATS COMMAND =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (!message.content.startsWith(",modstats")) return;
+  if (!message.guild) return;
+  if (!message.member) return;
+
+  // Respect the per-guild custom block list set via ,moderation add
+  if (modGate(message, "modstats")) return;
+
+  // Send typing indicator while loading
+  await message.channel.sendTyping().catch(() => {});
+  // Load fresh from audit logs
+  const freshStats = await loadBanStatsFromAuditLogs(message.guild);
+  banStats[message.guild.id] = freshStats;
+
+  // Filter out bots
+  const members = await message.guild.members.fetch().catch(() => null);
+  const botIds = members ? new Set(members.filter(m => m.user.bot).map(m => m.id)) : new Set();
+
+  const allEntries = Object.entries(banStats[message.guild.id] || {})
+    .filter(([modId]) => !botIds.has(modId))
+    .sort((a, b) => b[1].bans - a[1].bans || b[1].actions - a[1].actions);
+
+  if (allEntries.length === 0) {
+    return info(message, "No moderation stats recorded yet.");
+  }
+
+  const PER_PAGE = 5;
+  const totalPages = Math.ceil(allEntries.length / PER_PAGE);
+  let page = 0;
+
+  function buildEmbed(p) {
+    const slice = allEntries.slice(p * PER_PAGE, p * PER_PAGE + PER_PAGE);
+    const lines = slice.map(([modId, data]) => {
+      const banPct = data.actions > 0 ? ((data.bans / data.actions) * 100).toFixed(1) : "0.0";
+      return `<@${modId}>\nactions: ${data.actions} | bans: ${data.bans} (${banPct}%) | ignores: ${data.ignores}`;
+    });
+    return {
+      color: PINK,
+      title: "<:RUSH_list:1521415268000337961> Mod Stats",
+      description: lines.join("\n\n"),
+      footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name}` },
+      timestamp: new Date()
+    };
+  }
+
+  function buildRow(p) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("modstats_prev")
+        .setLabel("◀")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(p === 0),
+      new ButtonBuilder()
+        .setCustomId("modstats_next")
+        .setLabel("▶")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(p >= totalPages - 1)
+    );
+  }
+
+  const msg = await message.channel.send({
+    embeds: [buildEmbed(page)],
+    components: totalPages > 1 ? [buildRow(page)] : []
+  });
+
+  if (totalPages <= 1) return;
+
+  const collector = msg.createMessageComponentCollector({ filter: () => true });
+
+  collector.on("collect", async i => {
+    try {
+      if (i.user.id !== message.author.id) {
+        return i.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+      }
+      if (i.customId === "modstats_prev" && page > 0) page--;
+      else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
+      await i.update({ embeds: [buildEmbed(page)], components: [buildRow(page)] });
+    } catch (e) {
+      msg.edit({ components: [] }).catch(() => {});
+    }
+  });
+});
+
+
+function startVanityMonitor() {
+  setInterval(async () => {
+    for (const vanity of VANITY_CODES) {
+      if (vanityNotified[vanity]) continue;
+
+      try {
+        const response = await fetch(`https://discord.com/api/v10/invites/${vanity}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        });
+
+        if (response.status === 404) {
+          vanity404Counter[vanity]++;
+        } else {
+          vanity404Counter[vanity] = 0;
+        }
+
+        if (vanity404Counter[vanity] >= REQUIRED_404_COUNT) {
+          vanityNotified[vanity] = true;
+
+          const owner = await client.users.fetch(OWNER_ID);
+          await owner.send(
+            `<:RUSH_warning:1521415214799654985> **VANITY AVAILABLE** <:RUSH_warning:1521415214799654985>\n\n` +
+            `Vanity: **discord.gg/${vanity}**\n` +
+            `Time: **${utcTimestamp()}**`
+          );
+
+          log(`Vanity ${vanity} available!`, "success");
+        }
+      } catch (error) {
+        // Silent fail
+      }
+    }
+  }, CHECK_INTERVAL);
+}
+
+// ===== CLEAR RECENT BOOSTERS CACHE =====
+setInterval(() => {
+  log(`Clearing recent boosters cache (${recentBoosters.size} entries)`, "info");
+  recentBoosters.clear();
+}, 10 * 60 * 1000);
+
+// ===== AUTO-CHECK SCHEDULER =====
+setInterval(async () => {
+  if (client.isReady()) {
+    log("Running scheduled check of all members...", "info");
+    await checkAllTargetMembers();
+  }
+}, 6 * 60 * 60 * 1000);
+
+// ===== IN-MEMORY STORAGE =====
+const warns = new Map();
+const xpData = new Map();
+const economy = new Map();
+const remindersData = new Map();
+const giveaways = new Map();
+const autoroles = new Map();
+const welcomeConfig = new Map();
+const goodbyeConfig = new Map();
+const starboardConfig = new Map();
+const starboardSent = new Set();
+const sniped = new Map();
+const setupSessions  = new Map(); // Config Panel sessions
+const helpSessions   = new Map(); // Help panel sessions (msgId -> session)
+const perksSessions  = new Map(); // Perks panel sessions (userId -> { msgId, channelId })
+const editSniped = new Map();
+const lastfmUsers = new Map();
+const afkUsers = new Map();
+const ticketConfig = new Map();
+const openTickets = new Map();
+// guildId → { channelId, message, deleteAfter, roles: [] }
+const pingOnJoinConfig = new Map();
+// guildId → hex color integer (default PINK)
+const embedColors = new Map();
+
+// ===== SNIPE EVENTS =====
+client.on("messageDelete", (message) => {
+  if (message.author?.bot || !message.content) return;
+  sniped.set(message.channel.id, {
+    content: message.content,
+    author: message.author?.username || "Unknown",
+    avatarURL: message.author?.displayAvatarURL(),
+    time: new Date()
+  });
+});
+client.on("messageUpdate", (oldMsg, newMsg) => {
+  if (oldMsg.author?.bot || !oldMsg.content || oldMsg.content === newMsg.content) return;
+  editSniped.set(oldMsg.channel.id, {
+    before: oldMsg.content,
+    after: newMsg.content,
+    author: oldMsg.author?.username || "Unknown",
+    avatarURL: oldMsg.author?.displayAvatarURL(),
+    time: new Date()
+  });
+});
+
+// ===== XP SYSTEM (disabled by default -- enable with ,leveling on) =====
+const levelingEnabled = new Map();
+
+// ===== MODERATION TOGGLE (on by default -- disable with ,moderation off) =====
+// When off, the commands ,warn ,ban ,afk ,timeout refuse to execute
+const moderationEnabled = new Map(); // guildId -> boolean (default true)
+const moderationCustom  = new Map(); // guildId -> Set<commandName> (extra commands to block)
+
+function getModerationCustom(guildId) {
+  if (!moderationCustom.has(guildId)) moderationCustom.set(guildId, new Set());
+  return moderationCustom.get(guildId);
+}
+
+// Returns true when moderation is ON (or not explicitly set — defaults to ON)
+function isModerationEnabled(guildId) {
+  const val = moderationEnabled.get(guildId);
+  return val === undefined ? true : val;
+}
+
+// Full set of commands blocked when ,moderation off
+const MOD_COMMANDS = new Set([
+  "ban","unban","kick","mute","unmute","timeout","untimeout",
+  "tempban","softban","hardban","hackban","massban","masskick",
+  "warn","clearwarns","delwarn","warnings","warnlist",
+  "jail","unjail","strip","purge","clear",
+  "lock","unlock","hide","unhide","lockall","unlockall",
+  "lockdown","unlockdown","slowmode","slowmodeall","nuke",
+  "nick","resetnick","dehoist","decancer",
+  "role","temprole","massrole","massnick","afk",
+]);
+
+function modGate(message, command) {
+  const guildId = message.guild.id;
+  const cmd = command ?? message.content.slice(1).trim().split(/ +/)[0].toLowerCase();
+  // Custom per-guild block list — silently dropped for everyone (even admins)
+  const custom = moderationCustom.get(guildId);
+  if (custom?.has(cmd)) return true;
+  // Server admins & owners always bypass the moderation toggle
+  if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return false;
+  // Per-guild moderation toggle — silently drop MOD_COMMANDS for non-admins
+  // (no reply sent — the command simply does not run)
+  if (!isModerationEnabled(guildId) && MOD_COMMANDS.has(cmd)) return true;
+  return false;
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
+  if (!levelingEnabled.get(message.guild.id)) return; // Only run if enabled
+  const key = `${message.guild.id}-${message.author.id}`;
+  const data = xpData.get(key) || { xp: 0, level: 0 };
+  data.xp += Math.floor(Math.random() * 10) + 5;
+  const needed = (data.level + 1) * 100;
+  if (data.xp >= needed) {
+    data.level += 1;
+    data.xp = 0;
+    message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} reached level **${data.level}**! <:RUSH_giveaway:1521415256772186132>` }] }).catch(() => {});
+  }
+  xpData.set(key, data);
+    saveXP();
+});
+
+// ===== WELCOME / GOODBYE / AUTOROLE =====
+client.on("guildMemberAdd", async (member) => {
+  if (member.guild.id === TARGET_GUILD_ID) return;
+  const roleId = autoroles.get(member.guild.id);
+  if (roleId) await member.roles.add(roleId).catch(() => {});
+  const wc = welcomeConfig.get(member.guild.id);
+  if (wc) {
+    const ch = member.guild.channels.cache.get(wc.channelId);
+    if (ch) ch.send(wc.message.replace("{user}", `<@${member.id}>`).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
+  }
+
+  // ── Ping On Join ──
+  // ── Ghost Ping on Join (multi-channel) ──
+  const poj = pingOnJoinConfig.get(member.guild.id);
+  if (poj?.enabled && poj.channels?.length) {
+    for (const chId of poj.channels) {
+      const pojCh = member.guild.channels.cache.get(chId);
+      if (!pojCh) continue;
+      // Ghost ping: send mention then immediately delete
+      const sent = await pojCh.send({ content: `<@${member.id}>` }).catch(() => null);
+      if (sent) sent.delete().catch(() => {});
+    }
+  }
+});
+client.on("guildMemberRemove", async (member) => {
+  const gc = goodbyeConfig.get(member.guild.id);
+  if (gc) {
+    const ch = member.guild.channels.cache.get(gc.channelId);
+    if (ch) ch.send(gc.message.replace("{user}", member.user.username).replace("{server}", member.guild.name).replace("{count}", member.guild.memberCount)).catch(() => {});
+  }
+});
+
+// ===== STARBOARD =====
+client.on("messageReactionAdd", async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch().catch(() => {});
+  if (reaction.emoji.id !== "1356027539906105417") return;
+  const config = starboardConfig.get(reaction.message.guild?.id);
+  if (!config || starboardSent.has(reaction.message.id)) return;
+  if (reaction.count >= config.threshold) {
+    const ch = reaction.message.guild.channels.cache.get(config.channelId);
+    if (!ch) return;
+    const msg = reaction.message;
+    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `⭐ ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
+    starboardSent.add(reaction.message.id);
+  }
+});
+
+// ===== AFK CHECK =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  // Remove AFK if user sends a message
+  if (afkUsers.has(`${message.guild.id}-${message.author.id}`)) {
+    afkUsers.delete(`${message.guild.id}-${message.author.id}`);
+    message.reply({ embeds: [{ color: PINK, description: `<a:009Cinnamoroll_Wave:1265534373873320047> ${message.author} **Welcome back**, your AFK has been removed.` }] }).catch(() => {});
+  }
+  // Notify if mentioning an AFK user
+  for (const mentioned of message.mentions.users.values()) {
+    const afk = afkUsers.get(`${message.guild.id}-${mentioned.id}`);
+    if (afk) message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${mentioned.username}** is currently AFK: **${afk}**` }] }).catch(() => {});
+  }
+});
+
+// ===== REMINDER CHECKER =====
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, rems] of remindersData.entries()) {
+    const remaining = rems.filter(r => {
+      if (r.time <= now) {
+        client.users.fetch(userId).then(u => u.send(`<:RUSH_clock:1521415225058791454> Reminder: **${r.text}**`)).catch(() => {});
+        return false;
+      }
+      return true;
+    });
+    if (remaining.length === 0) remindersData.delete(userId);
+    else remindersData.set(userId, remaining);
+    saveReminders();
+  }
+}, 10000);
+
+// ===== GIVEAWAY CHECKER =====
+setInterval(async () => {
+  const now = Date.now();
+  for (const [msgId, gw] of giveaways.entries()) {
+    if (gw.ended || gw.endTime > now) continue;
+    gw.ended = true;
+    giveaways.set(msgId, gw);
+  saveGiveaways();
+    try {
+      const guild = await client.guilds.fetch(gw.guildId);
+      const channel = await guild.channels.fetch(gw.channelId);
+      const msg = await channel.messages.fetch(msgId);
+      if (gw.entries.length === 0) {
+        await channel.send(`<:RUSH_giveaway:1521415256772186132> Giveaway ended! No valid entries for **${gw.prize}**.`);
+      } else {
+        const winner = gw.entries[Math.floor(Math.random() * gw.entries.length)];
+        await channel.send(`<:RUSH_giveaway:1521415256772186132> Congratulations <@${winner}>! You won **${gw.prize}**!`);
+        await msg.edit({ embeds: [{ color: PINK, title: "<:RUSH_giveaway:1521415256772186132> GIVEAWAY ENDED", description: `**Prize:** ${gw.prize}\n**Winner:** <@${winner}>` }] });
+      }
+    } catch {}
+  }
+}, 15000);
+
+// ===== GLOBAL COMMAND SCHEMA (usage + required args for ALL 450 commands) =====
+const CMD_SCHEMA = {
+  // Moderation
+  ban: { usage: ",ban <user> [reason]", args: ["user"] },
+  unban: { usage: ",unban <userId>", args: ["userId"] },
+  kick: { usage: ",kick <user> [reason]", args: ["user"] },
+  mute: { usage: ",mute <user> [mins] [reason]", args: ["user"] },
+  unmute: { usage: ",unmute <user>", args: ["user"] },
+  timeout: { usage: ",timeout <user> <time> [reason]", args: ["user", "time"] },
+  untimeout: { usage: ",untimeout <user>", args: ["user"] },
+  tempban: { usage: ",tempban <user> <mins> [reason]", args: ["user", "mins"] },
+  softban: { usage: ",softban <user> [reason]", args: ["user"] },
+  hardban: { usage: ",hardban <user> [reason]", args: ["user"] },
+  hb:      { usage: ",hb <user> [reason]", args: ["user"] },
+  hackban: { usage: ",hackban <userId> [reason]", args: ["userId"] },
+  massban: { usage: ",massban <id1|@user> <id2|@user> ...", args: ["id1"] },
+  mb:      { usage: ",mb <id1|@user> <id2|@user> ...", args: ["id1"] },
+  masskick: { usage: ",masskick @user1 @user2 ...", args: ["user"] },
+  warn: { usage: ",warn <user> <reason>", args: ["user", "reason"] },
+  warnings: { usage: ",warnings <user>", args: [] },
+  warns: { usage: ",warnings <user>", args: [] },
+  clearwarns: { usage: ",clearwarns <user>", args: ["user"] },
+  delwarn: { usage: ",delwarn <user> <number>", args: ["user", "number"] },
+  jail: { usage: ",jail <user> [reason]", args: ["user"] },
+  unjail: { usage: ",unjail <user>", args: ["user"] },
+  imute: { usage: ",imute <user>", args: ["user"] },
+  iunmute: { usage: ",iunmute <user>", args: ["user"] },
+  reactionmute: { usage: ",reactionmute <user>", args: ["user"] },
+  reactionunmute: { usage: ",reactionunmute <user>", args: ["user"] },
+  strip: { usage: ",strip <user>", args: ["user"] },
+  purge: { usage: ",purge <amount>", args: [] },
+  clear: { usage: ",clear <amount>", args: [] },
+  lock: { usage: ",lock [#channel]", args: [] },
+  unlock: { usage: ",unlock [#channel]", args: [] },
+  hide: { usage: ",hide [#channel]", args: [] },
+  unhide: { usage: ",unhide [#channel]", args: [] },
+  lockall: { usage: ",lockall", args: [] },
+  unlockall: { usage: ",unlockall", args: [] },
+  hideall: { usage: ",hideall", args: [] },
+  unhideall: { usage: ",unhideall", args: [] },
+  lockdown: { usage: ",lockdown [reason]", args: [] },
+  unlockdown: { usage: ",unlockdown", args: [] },
+  slowmode: { usage: ",slowmode <seconds>", args: ["seconds"] },
+  slowmodeall: { usage: ",slowmodeall <seconds>", args: ["seconds"] },
+  nick: { usage: ",nick <user> <nickname>", args: ["user"] },
+  nickname: { usage: ",nick <user> <nickname>", args: ["user"] },
+  resetnick: { usage: ",resetnick <user>", args: ["user"] },
+  resetallnicks: { usage: ",resetallnicks", args: [] },
+  dehoist: { usage: ",dehoist", args: [] },
+  dehoistall: { usage: ",dehoistall", args: [] },
+  decancer: { usage: ",decancer <user>", args: ["user"] },
+  nuke: { usage: ",nuke", args: [] },
+  role: { usage: ",role <add|remove> <user> <role>", args: ["action"] },
+  giverole: { usage: ",giverole <user> <role>", args: ["user", "role"] },
+  addrole: { usage: ",addrole <user> <role>", args: ["user", "role"] },
+  takerole: { usage: ",takerole <user> <role>", args: ["user", "role"] },
+  removerole: { usage: ",removerole <user> <role>", args: ["user", "role"] },
+  temprole: { usage: ",temprole <user> <role> <time>", args: ["user", "role", "time"] },
+  massrole: { usage: ",massrole <add|remove> <role>", args: ["action", "role"] },
+  massnick: { usage: ",massnick <nickname>", args: ["nickname"] },
+  banwave: { usage: ",banwave [reason]", args: [] },
+  prune: { usage: ",prune <days>", args: ["days"] },
+  prunedry: { usage: ",prunedry <days>", args: ["days"] },
+  note: { usage: ",note <user> <text>", args: ["user", "text"] },
+  notes: { usage: ",notes <user>", args: ["user"] },
+  clearnotes: { usage: ",clearnotes <user>", args: ["user"] },
+  move: { usage: ",move <user> #channel", args: ["user"] },
+  report: { usage: ",report <user> <reason>", args: ["user", "reason"] },
+  history: { usage: ",history <user>", args: ["user"] },
+  clearhistory: { usage: ",clearhistory <user>", args: ["user"] },
+  case: { usage: ",case <id>", args: ["id"] },
+  cases: { usage: ",cases <user>", args: [] },
+  editcase: { usage: ",editcase <id> <reason>", args: ["id", "reason"] },
+  deletecase: { usage: ",deletecase <id>", args: ["id"] },
+  modlogs: { usage: ",modlogs [user]", args: [] },
+  mutehistory: { usage: ",mutehistory <user>", args: ["user"] },
+  baninfo: { usage: ",baninfo <userId>", args: ["userId"] },
+  banreason: { usage: ",banreason <userId> <reason>", args: ["userId", "reason"] },
+  hackban2: { usage: ",hackban2 <id1> <id2> ...", args: ["id1"] },
+  modnick: { usage: ",modnick <user> <nick>", args: ["user", "nick"] },
+  // Info
+  userinfo: { usage: ",userinfo [user]", args: [] }, ui: { usage: ",userinfo [user]", args: [] },
+  serverinfo: { usage: ",serverinfo", args: [] }, si: { usage: ",serverinfo", args: [] },
+  avatar: { usage: ",avatar [user]", args: [] }, av: { usage: ",avatar [user]", args: [] },
+  banner: { usage: ",banner [user]", args: [] },
+  roleinfo: { usage: ",roleinfo <role>", args: [] }, ri: { usage: ",roleinfo <role>", args: [] },
+  channelinfo: { usage: ",channelinfo [#channel]", args: [] }, ci: { usage: ",channelinfo [#channel]", args: [] },
+  memberinfo: { usage: ",memberinfo [user]", args: [] }, mi: { usage: ",memberinfo [user]", args: [] },
+  whois: { usage: ",whois [user]", args: [] },
+  botinfo: { usage: ",botinfo", args: [] },
+  ping: { usage: ",ping", args: [] },
+  uptime: { usage: ",uptime", args: [] },
+  membercount: { usage: ",membercount", args: [] }, mc: { usage: ",membercount", args: [] },
+  bans: { usage: ",bans", args: [] },
+  banlist: { usage: ",banlist", args: [] },
+  inviteinfo: { usage: ",inviteinfo <code>", args: ["code"] },
+  invites: { usage: ",invites [user]", args: [] },
+  listinvites: { usage: ",listinvites", args: [] },
+  createinvite: { usage: ",createinvite [maxUses] [hours]", args: [] },
+  deleteinvite: { usage: ",deleteinvite <code>", args: ["code"] },
+  deleteallinvites: { usage: ",deleteallinvites", args: [] },
+  invitecheck: { usage: ",invitecheck", args: [] },
+  newmembers: { usage: ",newmembers [count]", args: [] },
+  oldmembers: { usage: ",oldmembers [count]", args: [] },
+  inrole: { usage: ",inrole <role>", args: [] },
+  boosters: { usage: ",boosters", args: [] }, boostinfo: { usage: ",boosters", args: [] },
+  serverstats: { usage: ",serverstats", args: [] },
+  servericon: { usage: ",servericon", args: [] }, sicon: { usage: ",servericon", args: [] },
+  serverbanner: { usage: ",serverbanner", args: [] },
+  boostgoal: { usage: ",boostgoal", args: [] },
+  serverfeatures: { usage: ",serverfeatures", args: [] },
+  serverrules: { usage: ",serverrules rule1 | rule2", args: ["rules"] },
+  identify: { usage: ",identify <userId>", args: ["userId"] }, lookup: { usage: ",identify <userId>", args: ["userId"] },
+  find: { usage: ",find <name>", args: ["name"] }, search: { usage: ",find <name>", args: ["name"] },
+  admins: { usage: ",admins", args: [] },
+  mods: { usage: ",mods", args: [] },
+  bots: { usage: ",bots", args: [] },
+  stafflist: { usage: ",stafflist", args: [] },
+  rolecount: { usage: ",rolecount <role>", args: [] },
+  snowflake: { usage: ",snowflake <id>", args: ["id"] },
+  discrim: { usage: ",discrim <0000>", args: ["discriminator"] },
+  permissions: { usage: ",permissions [user]", args: [] }, perms: { usage: ",permissions [user]", args: [] },
+  id: { usage: ",id [user/role/channel]", args: [] },
+  icon: { usage: ",icon [user]", args: [] },
+  shared: { usage: ",shared [userId]", args: [] },
+  joined: { usage: ",joined [user]", args: [] },
+  created: { usage: ",created [user]", args: [] },
+  mutual: { usage: ",mutual <user>", args: [] },
+  accountage: { usage: ",accountage [user]", args: [] },
+  serverage: { usage: ",serverage", args: [] },
+  memberpos: { usage: ",memberpos [user]", args: [] },
+  firstmessage: { usage: ",firstmessage [#channel]", args: [] },
+  // Config
+  setup: { usage: ",setup", args: [] },
+  setupmute: { usage: ",setupmute", args: [] },
+  autorole: { usage: ",autorole <@role|off>", args: [] },
+  welcome: { usage: ",welcome <#channel> <message>", args: [] },
+  goodbye: { usage: ",goodbye <#channel> <message>", args: [] },
+  starboard: { usage: ",starboard <#channel> [threshold]", args: [] },
+  bumpchannel: { usage: ",bumpchannel <#channel>", args: [] },
+  jointocreate: { usage: ",jointocreate <#vc>", args: [] }, jtc: { usage: ",jointocreate <#vc>", args: [] },
+  confessions: { usage: ",confessions <#channel|off>", args: [] },
+  confess: { usage: ",confess <message>", args: ["message"] },
+  modlog: { usage: ",modlog <#channel|off>", args: [] },
+  messagelog: { usage: ",messagelog <#channel|off>", args: [] },
+  joinlog: { usage: ",joinlog <#channel|off>", args: [] },
+  voicelog: { usage: ",voicelog <#channel|off>", args: [] },
+  log: { usage: ",log <event> <#channel|off>", args: [] },
+  logging: { usage: ",logging <#channel|off>", args: [] },
+  verification: { usage: ",verification <none|low|medium|high|highest>", args: ["level"] },
+  contentfilter: { usage: ",contentfilter <disabled|members|all>", args: ["level"] },
+  setname: { usage: ",setname <name>", args: ["name"] },
+  setdesc: { usage: ",setdesc <text>", args: [] }, setdescription: { usage: ",setdesc <text>", args: [] },
+  vanity: { usage: ",vanity", args: [] },
+  vanitylock: { usage: ",vanitylock <on|off|status>", args: [] },
+  vanitytransfer: { usage: ",vanitytransfer <code>", args: ["code"] },
+  muterole: { usage: ",muterole <@role>", args: [] },
+  pingrole: { usage: ",pingrole <@role>", args: [] },
+  rolecreate: { usage: ",rolecreate <name> [color]", args: ["name"] },
+  roledelete: { usage: ",roledelete <@role>", args: [] },
+  rolecolor: { usage: ",rolecolor <@role> <#hex>", args: [] },
+  rolehoist: { usage: ",rolehoist <@role>", args: [] },
+  rolemention: { usage: ",rolemention <@role>", args: [] },
+  roleicon: { usage: ",roleicon <@role> <emoji>", args: [] },
+  roleperms: { usage: ",roleperms <@role>", args: [] },
+  rolepos: { usage: ",rolepos <@role> <position>", args: [] },
+  roleall: { usage: ",roleall", args: [] }, roles: { usage: ",roles", args: [] }, rolelist: { usage: ",roles", args: [] },
+  channelcreate: { usage: ",channelcreate <name> [text|voice]", args: ["name"] },
+  channeldelete: { usage: ",channeldelete [#channel]", args: [] },
+  channelclone: { usage: ",channelclone [#channel]", args: [] },
+  channelpos: { usage: ",channelpos [#channel] <position>", args: [] },
+  categorycreate: { usage: ",categorycreate <name>", args: ["name"] },
+  ticket: { usage: ",ticket <setup|create|close|add|remove>", args: [] },
+  cc: { usage: ",cc <add|remove|list>", args: [] },
+  alias: { usage: ",alias <add|remove|list>", args: [] },
+  disable: { usage: ",disable <command>", args: ["command"] },
+  enable: { usage: ",enable <command>", args: ["command"] },
+  disabled: { usage: ",disabled", args: [] },
+  autorespond: { usage: ",ar <add|remove|list>", args: [] }, ar: { usage: ",ar <add|remove|list>", args: [] },
+  reactiontrigger: { usage: ",rt <add|remove|list>", args: [] }, rt: { usage: ",rt <add|remove|list>", args: [] },
+  reactionrole: { usage: ",rr <msgId> <emoji> <@role>", args: [] }, rr: { usage: ",rr <msgId> <emoji> <@role>", args: [] },
+  sticky: { usage: ",sticky <message|off>", args: [] },
+  counter: { usage: ",counter <create|delete|list>", args: [] },
+  warnthreshold: { usage: ",warnthreshold <count> <mute|kick|ban>", args: ["count", "action"] },
+  warnthresholds: { usage: ",warnthresholds", args: [] },
+  birthday: { usage: ",birthday <set|remove|channel|list|today>", args: [] },
+  fakeperm: { usage: ",fakeperm <add|remove|list> <@role> <perm>", args: [] },
+  ignore: { usage: ",ignore <@user>", args: [] },
+  unignore: { usage: ",unignore <@user>", args: [] },
+  ignorelist: { usage: ",ignorelist", args: [] },
+  staffrole: { usage: ",staffrole <@role>", args: [] },
+  blacklist: { usage: ",blacklist <add|remove|list|clear>", args: [] },
+  censor: { usage: ",censor <add|remove|list>", args: [] },
+  filter: { usage: ",filter <on|off|add|remove|list|...>", args: [] },
+  filterexempt: { usage: ",filterexempt <add|remove> <@role|#channel>", args: [] },
+  antilinks: { usage: ",antilinks", args: [] },
+  antiinvites: { usage: ",antiinvites", args: [] },
+  antispam: { usage: ",antispam", args: [] },
+  anticaps: { usage: ",anticaps", args: [] },
+  antinuke: { usage: ",antinuke <on|off|punishment|threshold|whitelist|status>", args: [] },
+  antiraid: { usage: ",antiraid <on|off|action|threshold|window|unlock|status>", args: [] },
+  bind: { usage: ",bind staff <@role>", args: [] },
+  whitelistcheck: { usage: ",whitelistcheck", args: [] },
+  modconfig: { usage: ",modconfig", args: [] },
+  // Security
+  vcmute: { usage: ",vcmute <user>", args: ["user"] },
+  vcunmute: { usage: ",vcunmute <user>", args: ["user"] },
+  vcdeafen: { usage: ",vcdeafen <user>", args: ["user"] },
+  vcundeafen: { usage: ",vcundeafen <user>", args: ["user"] },
+  vckick: { usage: ",vckick <user>", args: ["user"] },
+  vcmove: { usage: ",vcmove <user> #channel", args: ["user"] },
+  vcmuteall: { usage: ",vcmuteall", args: [] },
+  vcunmuteall: { usage: ",vcunmuteall", args: [] },
+  vclimit: { usage: ",vclimit #channel <limit>", args: [] },
+  vcname: { usage: ",vcname #channel <name>", args: [] },
+  vclock: { usage: ",vclock [#channel]", args: [] },
+  vcunlock: { usage: ",vcunlock [#channel]", args: [] },
+  vcrename: { usage: ",vcrename <name>", args: ["name"] },
+  vcinfo: { usage: ",vcinfo [#channel]", args: [] },
+  voicelist: { usage: ",voicelist", args: [] }, vc: { usage: ",voicelist", args: [] },
+  setbitrate: { usage: ",setbitrate #channel <kbps>", args: [] },
+  // Messaging
+  say: { usage: ",say <text>", args: ["text"] },
+  say2: { usage: ",say2 #channel <text>", args: [] },
+  embed: { usage: ",embed <title> | <description>", args: ["title"] },
+  announce: { usage: ",announce #channel <message>", args: [] },
+  dm: { usage: ",dm <user> <message>", args: ["user", "message"] },
+  topic: { usage: ",topic [text]", args: [] },
+  rename: { usage: ",rename [#channel] <name>", args: ["name"] },
+  pin: { usage: ",pin <messageId>", args: ["messageId"] },
+  unpin: { usage: ",unpin <messageId>", args: ["messageId"] },
+  pins: { usage: ",pins", args: [] },
+  movepin: { usage: ",movepin <messageId> #channel", args: ["messageId"] },
+  react: { usage: ",react <messageId> <emoji>", args: ["messageId", "emoji"] },
+  unreact: { usage: ",unreact <messageId>", args: ["messageId"] },
+  clearreactions: { usage: ",clearreactions <messageId>", args: ["messageId"] },
+  editbot: { usage: ",editbot <text>", args: ["text"] },
+  deletebot: { usage: ",deletebot", args: [] },
+  cleanup: { usage: ",cleanup", args: [] },
+  export: { usage: ",export", args: [] },
+  copycat: { usage: ",copycat <user> <message>", args: ["user", "message"] },
+  nsfw: { usage: ",nsfw", args: [] }, nsfwcheck: { usage: ",nsfwcheck", args: [] },
+  archive: { usage: ",archive", args: [] }, unarchive: { usage: ",unarchive", args: [] },
+  thread: { usage: ",thread <create|close|open|lock|unlock|rename|add|remove>", args: [] },
+  // Fun
+  coinflip: { usage: ",coinflip", args: [] }, cf: { usage: ",coinflip", args: [] }, toss: { usage: ",toss", args: [] },
+  "8ball": { usage: ",8ball <question>", args: ["question"] },
+  roll: { usage: ",roll [sides]", args: [] },
+  dice: { usage: ",dice <NdN>", args: [] },
+  choose: { usage: ",choose opt1 | opt2 | ...", args: [] },
+  decide: { usage: ",decide opt1 | opt2 | ...", args: [] },
+  number: { usage: ",number [min] [max]", args: [] },
+  yesno: { usage: ",yesno", args: [] },
+  poll: { usage: ",poll <question>", args: [] },
+  rps: { usage: ",rps <rock|paper|scissors>", args: ["choice"] },
+  tictactoe: { usage: ",ttt <@user>", args: [] }, ttt: { usage: ",ttt <@user>", args: [] },
+  slots: { usage: ",slots", args: [] },
+  numberguess: { usage: ",numberguess", args: [] }, guess: { usage: ",numberguess", args: [] },
+  ship: { usage: ",ship [@user1] [@user2]", args: [] },
+  rate: { usage: ",rate <thing>", args: ["thing"] },
+  pp: { usage: ",pp [user]", args: [] },
+  howgay: { usage: ",howgay [user]", args: [] },
+  howdumb: { usage: ",howdumb [user]", args: [] },
+  hack: { usage: ",hack <user>", args: ["user"] },
+  wanted: { usage: ",wanted [user]", args: [] },
+  wyr: { usage: ",wyr", args: [] },
+  nhie: { usage: ",nhie", args: [] }, neverhaveiever: { usage: ",nhie", args: [] },
+  tod: { usage: ",tod", args: [] }, truthordare: { usage: ",tod", args: [] },
+  compliment: { usage: ",compliment [user]", args: [] },
+  insult: { usage: ",insult [user]", args: [] },
+  meme: { usage: ",meme", args: [] },
+  joke: { usage: ",joke", args: [] },
+  fact: { usage: ",fact", args: [] },
+  quote: { usage: ",quote", args: [] },
+  catfact: { usage: ",catfact", args: [] }, dogfact: { usage: ",dogfact", args: [] },
+  cat: { usage: ",cat", args: [] }, dog: { usage: ",dog", args: [] },
+  fox: { usage: ",fox", args: [] }, duck: { usage: ",duck", args: [] }, panda: { usage: ",panda", args: [] },
+  team: { usage: ",team <size> @u1 @u2 ...", args: ["size"] },
+  shuffle: { usage: ",shuffle item1 | item2 | ...", args: ["items"] },
+  countdown: { usage: ",countdown <1-10>", args: ["number"] },
+  ascii: { usage: ",ascii <text>", args: ["text"] },
+  emojify: { usage: ",emojify <text>", args: ["text"] },
+  mock: { usage: ",mock <text>", args: ["text"] },
+  leet: { usage: ",leet <text>", args: ["text"] },
+  vaporwave: { usage: ",vaporwave <text>", args: ["text"] },
+  zalgo: { usage: ",zalgo <text>", args: ["text"] },
+  reverse: { usage: ",reverse <text>", args: ["text"] },
+  clap: { usage: ",clap <text>", args: ["text"] },
+  spoiler: { usage: ",spoiler <text>", args: ["text"] },
+  bold: { usage: ",bold <text>", args: ["text"] },
+  italic: { usage: ",italic <text>", args: ["text"] },
+  strikethrough: { usage: ",strikethrough <text>", args: ["text"] },
+  underline: { usage: ",underline <text>", args: ["text"] },
+  codeblock: { usage: ",codeblock <text>", args: ["text"] },
+  repeat: { usage: ",repeat <n> <text>", args: ["n", "text"] },
+  tinytext: { usage: ",tinytext <text>", args: ["text"] },
+  uppercase: { usage: ",uppercase <text>", args: ["text"] },
+  lowercase: { usage: ",lowercase <text>", args: ["text"] },
+  // Economy
+  balance: { usage: ",balance [user]", args: [] }, bal: { usage: ",balance [user]", args: [] },
+  daily: { usage: ",daily", args: [] },
+  weekly: { usage: ",weekly", args: [] },
+  monthly: { usage: ",monthly", args: [] },
+  work: { usage: ",work", args: [] },
+  crime: { usage: ",crime", args: [] },
+  rob: { usage: ",rob <user>", args: ["user"] },
+  pay: { usage: ",pay <user> <amount>", args: ["user", "amount"] },
+  bet: { usage: ",bet <amount>", args: ["amount"] },
+  blackjack: { usage: ",blackjack <amount>", args: ["amount"] }, bj: { usage: ",blackjack <amount>", args: ["amount"] },
+  richlist: { usage: ",richlist", args: [] },
+  give: { usage: ",give <user> <amount>", args: ["user", "amount"] },
+  take: { usage: ",take <user> <amount>", args: ["user", "amount"] },
+  setbal: { usage: ",setbal <user> <amount>", args: ["user", "amount"] },
+  resetbal: { usage: ",resetbal <user>", args: ["user"] },
+  shop: { usage: ",shop", args: [] },
+  // Leveling
+  rank: { usage: ",rank [user]", args: [] },
+  leaderboard: { usage: ",leaderboard", args: [] }, lb: { usage: ",leaderboard", args: [] },
+  setlevel: { usage: ",setlevel <user> <level>", args: ["user", "level"] },
+  resetxp: { usage: ",resetxp <user>", args: ["user"] },
+  // Utility
+  remind: { usage: ",remind <time> <text>", args: ["time", "text"] }, reminder: { usage: ",remind <time> <text>", args: ["time", "text"] },
+  reminders: { usage: ",reminders", args: [] },
+  afk: { usage: ",afk [reason]", args: [] },
+  afklist: { usage: ",afklist", args: [] },
+  removeafk: { usage: ",removeafk <user>", args: ["user"] },
+  todo: { usage: ",todo <add|done|remove|list|clear>", args: [] },
+  tag: { usage: ",tag <name|create|delete|list|edit|info>", args: [] },
+  highlight: { usage: ",hl <add|remove|list|clear>", args: [] }, hl: { usage: ",hl <add|remove|list|clear>", args: [] },
+  snipe: { usage: ",snipe", args: [] },
+  editsnipe: { usage: ",editsnipe", args: [] }, esnipe: { usage: ",editsnipe", args: [] },
+  clearsnipe: { usage: ",clearsnipe", args: [] },
+  weather: { usage: ",weather <city>", args: ["city"] },
+  math: { usage: ",math <expression>", args: ["expression"] }, calc: { usage: ",calc <expression>", args: ["expression"] },
+  urban: { usage: ",urban <word>", args: ["word"] },
+  define: { usage: ",define <word>", args: ["word"] },
+  translate: { usage: ",translate <lang> <text>", args: ["lang", "text"] },
+  qr: { usage: ",qr <text>", args: ["text"] },
+  color: { usage: ",color <#hex>", args: ["hex"] },
+  hex: { usage: ",hex <color>", args: ["color"] },
+  encode: { usage: ",encode <text>", args: ["text"] },
+  decode: { usage: ",decode <base64>", args: ["base64"] },
+  binary: { usage: ",binary <text>", args: ["text"] },
+  timestamp: { usage: ",timestamp [date]", args: [] },
+  charinfo: { usage: ",charinfo <text>", args: ["text"] },
+  google: { usage: ",google <query>", args: ["query"] },
+  youtube: { usage: ",youtube <query>", args: ["query"] }, yt: { usage: ",youtube <query>", args: ["query"] },
+  spotify: { usage: ",spotify <query>", args: ["query"] },
+  screenshot: { usage: ",screenshot <url>", args: ["url"] },
+  password: { usage: ",password [length]", args: [] },
+  token: { usage: ",token", args: [] },
+  invitebot: { usage: ",invitebot", args: [] },
+  support: { usage: ",support", args: [] },
+  source: { usage: ",source", args: [] },
+  shards: { usage: ",shards", args: [] },
+  news: { usage: ",news", args: [] },
+  // Last.fm
+  np: { usage: ",np [user]", args: [] }, nowplaying: { usage: ",np [user]", args: [] },
+  fm: { usage: ",fm <set|unset>", args: [] },
+  fmprofile: { usage: ",fmprofile [user]", args: [] }, fmp: { usage: ",fmprofile [user]", args: [] },
+  topartists: { usage: ",topartists", args: [] }, ta: { usage: ",topartists", args: [] },
+  toptracks: { usage: ",toptracks", args: [] }, tt: { usage: ",toptracks", args: [] },
+  topalbums: { usage: ",topalbums", args: [] }, tal: { usage: ",topalbums", args: [] },
+  // Booster roles
+  boosterrole: { usage: ",boosterrole <create|color|rename|delete|icon>", args: [] },
+  // Giveaway
+  gcreate: { usage: ",gcreate <time> <prize>", args: ["time", "prize"] }, gstart: { usage: ",gcreate <time> <prize>", args: ["time", "prize"] },
+  gend: { usage: ",gend <messageId>", args: ["messageId"] },
+  greroll: { usage: ",greroll <messageId>", args: ["messageId"] },
+  giveaway: { usage: ",giveaway <list>", args: [] },
+  // Webhook
+  webhook: { usage: ",webhook <create|delete|list>", args: [] },
+  // Emoji
+  emojis: { usage: ",emojis", args: [] },
+  emoji: { usage: ",emoji <add|remove|rename|list>", args: [] },
+  emojiinfo: { usage: ",emojiinfo <emoji>", args: [] },
+  stealemoji: { usage: ",stealemoji <emoji> <name>", args: [] },
+  deleteemoji: { usage: ",deleteemoji <emoji>", args: [] },
+  stickers: { usage: ",stickers", args: [] },
+  stickerinfo: { usage: ",stickerinfo <name>", args: [] },
+  jumbo: { usage: ",jumbo <emoji>", args: ["emoji"] },
+  // Misc
+  modstats: { usage: ",modstats", args: [] },
+  help: { usage: ",help", args: [] },
+  moderation: { usage: ",moderation <on|off|status>", args: [] },
+  config:     { usage: ",config", args: [] },
+  botperms: { usage: ",botperms", args: [] },
+  channellist: { usage: ",channellist", args: [] },
+  channel: { usage: ",channel list", args: [] },
+  serverage: { usage: ",serverage", args: [] },
+  joincount: { usage: ",joincount", args: [] },
+  boostcount: { usage: ",boostcount", args: [] },
+  onlinecount: { usage: ",onlinecount", args: [] },
+  userperms: { usage: ",userperms [user]", args: [] },
+  permissions2: { usage: ",permissions2 [user]", args: [] },
+  channelpermissions: { usage: ",channelpermissions [user] [#channel]", args: [] },
+  guildicon: { usage: ",guildicon", args: [] },
+  guildbanner: { usage: ",guildbanner", args: [] },
+  guildsplash: { usage: ",guildsplash", args: [] },
+  audit: { usage: ",audit", args: [] },
+  appeal: { usage: ",appeal <reason>", args: ["reason"] },
+  roleaddall: { usage: ",roleaddall <@role>", args: [] },
+  roleremoveall: { usage: ",roleremoveall <@role>", args: [] },
+  tempchannel: { usage: ",tempchannel <mins> <name>", args: ["mins"] },
+  staffrole: { usage: ",staffrole <@role>", args: [] },
+  // Owner
+  eval: { usage: ",eval <code>", args: ["code"] },
+  status: { usage: ",status <online|idle|dnd|invisible>", args: ["status"] },
+  activity: { usage: ",activity <type> <text>", args: ["type", "text"] },
+  guilds: { usage: ",guilds", args: [] },
+  leave: { usage: ",leave", args: [] },
+  setmsg: { usage: ",setmsg <boost|unboost|ping> <text>", args: ["type", "text"] },
+  viewmsg: { usage: ",viewmsg", args: [] },
+  resetvanity: { usage: ",resetvanity <name|all>", args: [] },
+  checkall: { usage: ",checkall", args: [] },
+  fixuser: { usage: ",fixuser <userId|@user>", args: [] },
+  stats: { usage: ",stats", args: [] },
+  inactive: { usage: ",inactive remove @role1 @role2 ...", args: [] },
+  addr: { usage: ",addr inactive @role-to-add | @required-role1 ...", args: [] },
+  s: { usage: ",s", args: [] },
+  cs: { usage: ",cs", args: [] },
+  es: { usage: ",es", args: [] },
+  tz: { usage: ",tz [user]", args: [] },
+  settz: { usage: ",settz <timezone>", args: ["timezone"] },
+  tzlist: { usage: ",tzlist", args: [] },
+};
+
+// Track which messages have already been replied to (prevents duplicate responses)
+
+// (global handler removed -- see per-handler arg checks below)
+
+// ===== 50 MOST USED COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+  if (!message.content.startsWith(",")) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  // Arg check — skip for moderation-gated commands so they can show
+  // the 'moderation disabled' error even when called without arguments
+  // Arg check — mod-gated commands bypass this so modGate() fires first
+  const _s = CMD_SCHEMA[command];
+  if (_s && _s.args.length > 0 && args.length === 1 && !MOD_COMMANDS.has(command)) {
+    return err(message, `missing required argument: **${_s.args[0]}**\nusage: \`${_s.usage}\``);
+  }
+
+  // Centralized moderation gate — blocks ALL mod commands when ,moderation off
+  if (modGate(message, command)) return;
+
+  // -- MODERATION ------------------------------------------
+
+  // ,ban <user> [reason]
+  if (command === "ban") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "You don't have permission to ban.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const reason = args.slice(2).join(" ") || "No reason provided";
+
+    // Block banning boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) {
+      return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
+    }
+
+    const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
+    addCase(message.guild.id, "ban", target.id, message.author.id, reason);
+    target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    purgeUserMessages(message.guild, target.id, banPurgeMsg);
+    return;
+  }
+
+  // ,unban <userId>
+  if (command === "unban") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const userId = args[1];
+    if (!userId) return err(message, "missing required argument: **userId**");
+
+    await message.guild.bans.remove(userId).catch(() => null);
+    return ok(message, `unbanned user **${userId}**`);
+  }
+
+  // ,kick <user> [reason]
+  if (command === "kick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const reason = args.slice(2).join(" ") || "No reason provided";
+    target.send({ embeds: [{ color: PINK, description: `👢 You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    const kickSuccess = await target.kick(reason).catch(() => null);
+    if (!kickSuccess) return err(message, `failed to kick **${target.user.username}** — check my role hierarchy`);
+    addCase(message.guild.id, 'kick', target.id, message.author.id, reason);
+    return ok(message, `kicked **${target.user.username}** | ${reason}`);
+  }
+
+  // ,mute <user> [duration in minutes] [reason]
+  if (command === "mute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const minutes = parseInt(args[2]) || 10;
+    const reason = args.slice(3).join(" ") || "No reason provided";
+    const muteResult = await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
+    if (!muteResult) return err(message, `failed to mute **${target.user.username}** — check my role hierarchy`);
+    target.send({ embeds: [{ color: PINK, description: `🔇 You have been muted in **${message.guild.name}** for **${minutes} minutes**\nReason: ${reason}` }] }).catch(() => {});
+    return ok(message, `muted **${target.user.username}** for **${minutes}min** | ${reason}`);
+  }
+
+  // ,unmute <user>
+  if (command === "unmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.timeout(null).catch(() => null);
+    return ok(message, `unmuted **${target.user.username}**`);
+  }
+
+  // ,purge <amount>
+  if (command === "purge" || command === "clear") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const amount = Math.min(parseInt(args[1]) || 10, 100);
+    const deleted = await message.channel.bulkDelete(amount + 1, true).catch(() => null);
+    const actualCount = deleted ? deleted.size - 1 : amount;
+    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${actualCount}** messages` }] });
+    setTimeout(() => msg.delete().catch(() => {}), 3000);
+  }
+
+  // ,slowmode <seconds>
+  if (command === "slowmode") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const seconds = parseInt(args[1]);
+    if (isNaN(seconds) && args[1] !== undefined) return err(message, 'invalid slowmode value');
+    const secs = isNaN(seconds) ? 0 : seconds;
+    await message.channel.setRateLimitPerUser(secs).catch(() => null);
+    return ok(message, secs === 0 ? 'slowmode disabled' : `slowmode set to **${secs}s**`);
+  }
+
+  // ,lock [channel]
+  if (command === "lock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => null);
+    return ok(message, `locked ${channel}`);
+  }
+
+  // ,unlock [channel]
+  if (command === "unlock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => null);
+    return ok(message, `unlocked ${channel}`);
+  }
+
+  // ,hide [channel]
+  if (command === "hide") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    await channel.permissionOverwrites.edit(message.guild.roles.everyone, { ViewChannel: false }).catch(() => null);
+    return ok(message, `hidden ${channel}`);
+  }
+
+  // ,unhide [channel]
+  if (command === "unhide") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    await channel.permissionOverwrites.edit(message.guild.roles.everyone, { ViewChannel: null }).catch(() => null);
+    return ok(message, `unhidden ${channel}`);
+  }
+
+  // ,hider @role -- removes ViewChannel perm for a role from ALL channels/categoriess/vcs
+  if (command === "hider") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,hider @role`");
+    await message.channel.sendTyping().catch(() => {});
+    const channels = message.guild.channels.cache;
+    let count = 0;
+    for (const ch of channels.values()) {
+      // Check if this channel has an explicit allow for ViewChannel for this role
+      const overwrite = ch.permissionOverwrites.cache.get(role.id);
+      if (overwrite && overwrite.allow.has(PermissionFlagsBits.ViewChannel)) {
+        await ch.permissionOverwrites.edit(role, { ViewChannel: null }).catch(() => {});
+        count++;
+      }
+    }
+    if (count === 0) return info(message, `**${role.name}** had no explicit ViewChannel permissions to remove`);
+    return ok(message, `removed ViewChannel from **${role.name}** in **${count}** channels`);
+  }
+
+  // ,unhider @role -- restores ViewChannel perm for a role in ALL channels (resets to default)
+  if (command === "unhider") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,unhider @role`");
+    await message.channel.sendTyping().catch(() => {});
+    const channels = message.guild.channels.cache;
+    let count = 0;
+    for (const ch of channels.values()) {
+      const overwrite = ch.permissionOverwrites.cache.get(role.id);
+      if (overwrite) {
+        await ch.permissionOverwrites.edit(role, { ViewChannel: null }).catch(() => {});
+        count++;
+      }
+    }
+    return ok(message, `reset ViewChannel for **${role.name}** in **${count}** channels`);
+  }
+
+  // ,warn <user> <reason>
+  if (command === "warn") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,warn <user> <reason>`");
+    const reason = args.slice(2).join(" ") || "No reason provided";
+    const key = `${message.guild.id}-${target.id}`;
+    const list = warns.get(key) || [];
+    list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
+    warns.set(key, list);
+    saveWarns();
+    target.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
+    return ok(message, `warned **${target.username}** (warn #${list.length}) | ${reason}`);
+  }
+
+  // ,nickname <user> <nick>
+  if (command === "nickname" || command === "nick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const nick = args.slice(2).join(" ") || null;
+    await target.setNickname(nick).catch(() => null);
+    return ok(message, `nickname ${nick ? `set to **${nick}**` : "removed"} for **${target.user.username}**`);
+  }
+
+  // -- ROLE MANAGEMENT ------------------------------------─
+
+  // ,role add <user> <role>
+  // ,role remove <user> <role>
+  if (command === "role") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const action = args[1]?.toLowerCase();
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[2]).catch(() => null);
+    const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(3).join(" ").toLowerCase());
+    if (!target || !role) return err(message, "missing required argument");
+
+    if (action === "add") {
+      await target.roles.add(role).catch(() => null);
+      return ok(message, `Added **${role.name}** to **${target.user.username}**`);
+    } else if (action === "remove") {
+      await target.roles.remove(role).catch(() => null);
+      return ok(message, `Removed **${role.name}** from **${target.user.username}**`);
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // -- INFO COMMANDS ----------------------------------------
+
+  // ,userinfo [user]
+  if (command === "userinfo" || command === "ui") {
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
+    const user = target.user;
+    const embed = {
+      color: target.displayColor || PINK,
+      title: `${user.username}`,
+      thumbnail: { url: user.displayAvatarURL({ size: 256 }) },
+      fields: [
+        { name: "ID", value: user.id, inline: true },
+        { name: "Nickname", value: target.nickname || "None", inline: true },
+        { name: "Joined Server", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true },
+        { name: "Account Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true },
+        { name: `Roles [${target.roles.cache.size - 1}]`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 10).join(", ") || "None" },
+      ],
+      footer: { text: `Boosting: ${target.premiumSince ? "Yes" : "No"}` }
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,serverinfo
+  if (command === "serverinfo" || command === "si") {
+    const g = message.guild;
+    const embed = {
+      color: PINK,
+      title: g.name,
+      thumbnail: { url: g.iconURL({ size: 256 }) },
+      fields: [
+        { name: "Owner", value: `<@${g.ownerId}>`, inline: true },
+        { name: "Members", value: `${g.memberCount}`, inline: true },
+        { name: "Channels", value: `${g.channels.cache.size}`, inline: true },
+        { name: "Roles", value: `${g.roles.cache.size}`, inline: true },
+        { name: "Boosts", value: `${g.premiumSubscriptionCount}`, inline: true },
+        { name: "Created", value: `<t:${Math.floor(g.createdTimestamp / 1000)}:R>`, inline: true },
+      ]
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,avatar [user]
+  if (command === "avatar" || command === "av") {
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null) || message.author;
+    const embed = {
+      color: PINK,
+      title: `${target.username}'s Avatar`,
+      image: { url: target.displayAvatarURL({ size: 1024 }) }
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,roleinfo <role>
+  if (command === "roleinfo" || command === "ri") {
+    const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
+    if (!role) return err(message, "missing required argument: **role**");
+    const embed = {
+      color: role.color || PINK,
+      title: role.name,
+      fields: [
+        { name: "ID", value: role.id, inline: true },
+        { name: "Color", value: role.hexColor, inline: true },
+        { name: "Members", value: `${role.members.size}`, inline: true },
+        { name: "Mentionable", value: `${role.mentionable}`, inline: true },
+        { name: "Hoisted", value: `${role.hoist}`, inline: true },
+        { name: "Created", value: `<t:${Math.floor(role.createdTimestamp / 1000)}:R>`, inline: true },
+      ]
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,channelinfo [channel]
+  if (command === "channelinfo" || command === "ci") {
+    const channel = message.mentions.channels.first() || message.channel;
+    const embed = {
+      color: PINK,
+      title: `#${channel.name}`,
+      fields: [
+        { name: "ID", value: channel.id, inline: true },
+        { name: "Type", value: `${channel.type}`, inline: true },
+        { name: "Created", value: `<t:${Math.floor(channel.createdTimestamp / 1000)}:R>`, inline: true },
+        { name: "Topic", value: channel.topic || "None" },
+      ]
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,botinfo
+  if (command === "botinfo") {
+    const embed = {
+      color: PINK,
+      title: client.user.username,
+      thumbnail: { url: client.user.displayAvatarURL() },
+      fields: [
+        { name: "Servers", value: `${client.guilds.cache.size}`, inline: true },
+        { name: "Uptime", value: `${Math.floor(process.uptime() / 60)} minutes`, inline: true },
+        { name: "Ping", value: `${client.ws.ping}ms`, inline: true },
+      ]
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,ping
+  if (command === "ping") {
+    return info(message, `Pong! **${client.ws.ping}ms**`);
+  }
+
+  // ,membercount
+  if (command === "membercount" || command === "mc") {
+    return info(message, `**${message.guild.memberCount}** members`);
+  }
+
+  // ,videocount [#channel]
+  // Counts videos across the server — attachments + CDN links + embed videos
+  if (command === "videocount" || command === "vc") {
+    const targetChannel = message.mentions.channels.first() || null;
+    const VIDEO_PAT = /\.(mp4|mov|webm|mkv|avi|gif)($|\?)/i;
+    const CDN_RE    = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+    const EXT_RE    = /https?:\/\/\S+\.(?:mp4|mov|webm|mkv|avi|gif)(?:[?#]\S*)?/gi;
+
+    // Count unique videos in a channel via REST (catches attachments + links + embeds)
+    async function countVideosInChannel(ch) {
+      if (!ch.isTextBased?.()) return 0;
+      const perms = ch.permissionsFor(message.guild.members.me);
+      if (!perms?.has(PermissionFlagsBits.ReadMessageHistory)) return 0;
+
+      let total = 0;
+      const seen = new Set();
+      let before;
+
+      while (true) {
+        const q    = before ? `?limit=100&before=${before}` : '?limit=100';
+        const batch = await fetch(`https://discord.com/api/v10/channels/${ch.id}/messages${q}`, {
+          headers: { Authorization: `Bot ${process.env.TOKEN}` }
+        }).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (!batch || batch.length === 0) break;
+
+        for (const msg of batch) {
+          // 1. Attachments
+          for (const att of (msg.attachments ?? [])) {
+            const fn  = att.filename ?? '';
+            const key = `att:${msg.id}:${fn}`;
+            if (VIDEO_PAT.test(fn) && !seen.has(key)) { seen.add(key); total++; }
+          }
+          // 2. Embed videos
+          for (const emb of (msg.embeds ?? [])) {
+            if (emb.video?.url) {
+              const key = `emb:${emb.video.url.split('?')[0]}`;
+              if (!seen.has(key)) { seen.add(key); total++; }
+            }
+          }
+          // 3. CDN + external links in content
+          const content = msg.content ?? '';
+          const links   = [...new Set([
+            ...(content.match(CDN_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')),
+            ...(content.match(EXT_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')),
+          ])];
+          for (const url of links) {
+            const clean = url.split('?')[0];
+            const key   = `link:${clean}`;
+            if (VIDEO_PAT.test(clean) && !seen.has(key)) { seen.add(key); total++; }
+          }
+        }
+
+        const last = batch[batch.length - 1]?.id;
+        if (!last || last === before || batch.length < 100) break;
+        before = last;
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return total;
+    }
+
+    // -- SINGLE CHANNEL --
+    if (targetChannel) {
+      const waitMsg = await message.reply({
+        embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Counting videos in <#${targetChannel.id}>...` }]
+      }).catch(() => null);
+      const count = await countVideosInChannel(targetChannel);
+      const embed = {
+        color: PINK, title: `<:movieslotbluedns:1414214240218120295> Video Count — #${targetChannel.name}`,
+        description: `Found **${count}** video${count !== 1 ? 's' : ''} in <#${targetChannel.id}>`,
+        footer: { text: 'sensational • white edition' }, timestamp: new Date(),
+      };
+      return waitMsg ? waitMsg.edit({ embeds: [embed] }) : message.reply({ embeds: [embed] });
+    }
+
+    // -- WHOLE SERVER --
+    const waitMsg = await message.reply({
+      embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning **all channels** for videos — this may take a while...` }]
+    }).catch(() => null);
+
+    const textChannels = message.guild.channels.cache.filter(ch => ch.isTextBased?.());
+    const results      = [];
+    let serverTotal    = 0;
+    let scanned        = 0;
+
+    for (const [, ch] of textChannels) {
+      const count = await countVideosInChannel(ch);
+      if (count > 0) results.push({ name: ch.name, id: ch.id, count });
+      serverTotal += count;
+      scanned++;
+      // Live update every 10 channels
+      if (scanned % 10 === 0 && waitMsg) {
+        await waitMsg.edit({
+          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning... **${scanned}/${textChannels.size}** channels checked — **${serverTotal}** videos found so far` }]
+        }).catch(() => {});
+      }
+    }
+
+    results.sort((a, b) => b.count - a.count);
+    const fields = results.slice(0, 24).map(r => ({
+      name: `# • ${r.name}`, value: `**${r.count}** videos`, inline: true,
+    }));
+    if (results.length > 24) fields.push({ name: `+ ${results.length - 24} more`, value: '(not shown)', inline: true });
+    if (fields.length === 0) fields.push({ name: 'No videos found', value: 'No videos detected in any channel.', inline: false });
+
+    const resultEmbed = {
+      color: PINK,
+      title: `<:movieslotbluedns:1414214240218120295> Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
+      description: `**Total: ${serverTotal}** videos across **${textChannels.size}** channels`,
+      fields,
+      footer: { text: 'sensational • white edition' },
+      timestamp: new Date(),
+    };
+    return waitMsg ? waitMsg.edit({ embeds: [resultEmbed] }) : message.reply({ embeds: [resultEmbed] });
+  }
+
+  // -- FUN COMMANDS ----------------------------------------─
+
+  // ,coinflip
+  if (command === "coinflip" || command === "cf") {
+    return info(message, `**${Math.random() < 0.5 ? "Heads" : "Tails"}!**`);
+  }
+
+  // ,8ball <question>
+  if (command === "8ball") {
+    const responses = ["Yes.", "No.", "Definitely.", "Absolutely not.", "Maybe.", "Ask again later.", "Without a doubt.", "Very doubtful.", "Signs point to yes.", "Don't count on it."];
+    return info(message, responses[Math.floor(Math.random() * responses.length)]);
+  }
+
+  // ,roll [sides]
+  if (command === "roll") {
+    const sides = parseInt(args[1]) || 6;
+    return info(message, `You rolled a **${Math.floor(Math.random() * sides) + 1}** (d${sides})`);
+  }
+
+  // ,choose <option1> | <option2> | ...
+  if (command === "choose") {
+    const options = args.slice(1).join(" ").split("|").map(o => o.trim()).filter(Boolean);
+    if (options.length < 2) return err(message, "missing required argument");
+
+    return info(message, `I choose: **${options[Math.floor(Math.random() * options.length)]}**`);
+  }
+
+  // ,poll <question>
+  if (command === "poll") {
+    const question = args.slice(1).join(" ");
+    if (!question) return err(message, "missing required argument");
+
+    const embed = { color: PINK, title: "<:RUSH_list:1521415268000337961> Poll", description: question, footer: { text: `Asked by ${message.author.username}` } };
+    const msg = await message.channel.send({ embeds: [embed] });
+    await msg.react("👍");
+    await msg.react("👎");
+    message.delete().catch(() => {});
+  }
+
+  // ,say <text>
+  if (command === "say") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    message.delete().catch(() => {});
+    return message.channel.send(text);
+  }
+
+  // ,embed <title> | <description>
+  if (command === "embed") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const parts = args.slice(1).join(" ").split("|");
+    const title = parts[0]?.trim();
+    const description = parts[1]?.trim();
+    if (!title) return err(message, "missing required argument");
+
+    message.delete().catch(() => {});
+    return message.channel.send({ embeds: [{ color: PINK, title, description }] });
+  }
+
+  // -- UTILITY ----------------------------------------------
+
+  // ,announce <#channel> <message>
+  if (command === "announce") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first();
+    if (!channel) return err(message, "missing required argument");
+
+    const text = args.slice(2).join(" ");
+    if (!text) return err(message, "Please provide a message.");
+    const sent = await channel.send({ embeds: [{ color: PINK, description: text, footer: { text: `announced by ${message.author.username}` }, timestamp: new Date() }] }).catch(() => null);
+    if (!sent) return err(message, `failed to send to ${channel}`);
+    return ok(message, `announced in ${channel}`);
+  }
+
+  // ,dm <user> <message>
+  if (command === "dm") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const text = args.slice(2).join(" ");
+    if (!text) return err(message, "Please provide a message.");
+    await target.send(`<:RUSH_comment:1491884212297531572> Message from **${message.guild.name}**:\n${text}`).catch(() => null);
+    return ok(message, `DM sent to **${target.username}**`);
+  }
+
+  // ,massdm @role <message> -- DMs all members WITH a specific role
+  if (command === "massdm") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+
+    const includeRole = message.mentions.roles.first();
+    if (!includeRole) return err(message, "missing required argument: **role**\nusage: `,massdm @role <message>` — DMs everyone who HAS this role.");
+
+    const dmText = args.slice(2).join(" ");
+    if (!dmText) return err(message, "missing required argument: **message**\nusage: `,massdm @role <message>`");
+
+    await message.channel.sendTyping().catch(() => {});
+    const allMembers = await message.guild.members.fetch().catch(() => null);
+    if (!allMembers) return err(message, "failed to fetch members");
+
+    const targets = [...allMembers.filter(m => !m.user.bot && m.roles.cache.has(includeRole.id)).values()];
+    if (targets.length === 0) return info(message, `no members found with **${includeRole.name}**`);
+
+    return confirm(message,
+      `This will DM **${targets.length}** members who have **${includeRole.name}**.\n\nMessage:\n> ${dmText.substring(0, 200)}${dmText.length > 200 ? '...' : ''}`,
+      async () => {
+        await runMassDM({
+          guildId: message.guild.id,
+          channelId: message.channel.id,
+          includeRoleId: includeRole.id,
+          dmText,
+          targetIds: targets.map(m => m.id),
+          startIndex: 0
+        });
+      }
+    );
+  }
+
+  // ,topic <text>
+  if (command === "topic") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const topic = args.slice(1).join(" ") || null;
+    await message.channel.setTopic(topic).catch(() => null);
+    return ok(message, `channel topic ${topic ? `set to: **${topic}**` : "cleared"}`);
+  }
+
+  // ,rename <#channel> <name>
+  if (command === "rename") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    const name = args.slice(message.mentions.channels.first() ? 2 : 1).join("-").toLowerCase();
+    if (!name) return err(message, "missing required argument");
+
+    await channel.setName(name).catch(() => null);
+    return ok(message, `Renamed channel to **${name}**`);
+  }
+
+  // ,nuke
+  if (command === "nuke") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    await confirm(message,
+      `Are you sure you want to **nuke** this channel?\n\nThis action is **irreversable** and will delete the channel!`,
+      async () => {
+        const channel = message.channel;
+        const newChannel = await channel.clone().catch(() => null);
+        if (newChannel) {
+          await newChannel.setPosition(channel.position);
+          await channel.delete().catch(() => null);
+          newChannel.send({ embeds: [{ color: PINK, description: "💥 Channel has been nuked." }] });
+        }
+      }
+    );
+  }
+
+  // ,setprefix -- note: this bot uses , hardcoded, just inform user
+  if (command === "setprefix") {
+    return info(message, "This bot uses `,` as a fixed prefix.");
+  }
+
+  // ,inviteinfo <invite code>
+  if (command === "inviteinfo") {
+    const code = args[1];
+    if (!code) return err(message, "missing required argument");
+
+    const invite = await client.fetchInvite(code).catch(() => null);
+    if (!invite) return err(message, "Invalid invite.");
+    const embed = {
+      color: PINK,
+      title: `Invite: ${code}`,
+      fields: [
+        { name: "Server", value: invite.guild?.name || "Unknown", inline: true },
+        { name: "Inviter", value: invite.inviter?.username || "Unknown", inline: true },
+        { name: "Uses", value: `${invite.uses ?? "?"}`, inline: true },
+        { name: "Channel", value: invite.channel?.name || "Unknown", inline: true },
+      ]
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,bans -- list all bans
+  if (command === "bans") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const bans = await message.guild.bans.fetch().catch(() => null);
+    if (!bans || bans.size === 0) return ok(message, "No banned users.");
+    const list = bans.map(b => `${b.user.username} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Banned Users (${bans.size})`, description: `\`\`\`${list}\`\`\`` }] });
+  }
+
+  // ,banlist (alias)
+  if (command === "banlist") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const bans = await message.guild.bans.fetch().catch(() => null);
+    if (!bans || bans.size === 0) return ok(message, "No banned users.");
+    const list = bans.map(b => `${b.user.username} — ${b.reason || "No reason"}`).slice(0, 20).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Banned Users (${bans.size})`, description: `\`\`\`${list}\`\`\`` }] });
+  }
+
+  // ,help
+  if (command === "help") {
+    const categoriess = {
+      moderation: {
+        label: "Moderation",
+        emoji: "<:RUSH_caution:1521415278355808297>",
+        description: "Ban, kick, mute, jail and more",
+        commands: [
+          [",ban <user> [reason]", "Ban a user from the server"],
+          [",unban <userId>", "Unban a user"],
+          [",kick <user> [reason]", "Kick a user"],
+          [",mute <user> [mins] [reason]", "Mute a user"],
+          [",unmute <user>", "Unmute a user"],
+          [",timeout <user> <time> [reason]", "Timeout a user (e.g. 10m, 1h)"],
+          [",untimeout <user>", "Remove timeout"],
+          [",tempban <user> <mins> [reason]", "Temporarily ban a user"],
+          [",softban <user> [reason]", "Ban then unban (clears messages)"],
+          [",hardban <user> [reason]", "Permanent ban with message deletion"],
+          [",hackban <userId> [reason]", "Ban a user not in the server"],
+          [",massban <id1> <id2> ...", "Ban multiple users at once"],
+          [",masskick @u1 @u2 ...", "Kick multiple users"],
+          [",warn <user> <reason>", "Warn a user"],
+          [",warnings <user>", "View user warnings"],
+          [",clearwarns <user>", "Clear all warnings"],
+          [",delwarn <user> <#>", "Delete a specific warning"],
+          [",jail <user> [reason]", "Jail a user"],
+          [",unjail <user>", "Unjail a user"],
+          [",imute <user>", "Image mute a user"],
+          [",iunmute <user>", "Remove image mute"],
+          [",reactionmute <user>", "Reaction mute a user"],
+          [",reactionunmute <user>", "Remove reaction mute"],
+          [",strip <user>", "Remove all roles from user"],
+          [",purge <amount>", "Delete messages"],
+          [",purge bots/images/links/user/contains ...", "Filtered purge"],
+          [",lock [#channel]", "Lock a channel"],
+          [",unlock [#channel]", "Unlock a channel"],
+          [",hide [#channel]", "Hide a channel"],
+          [",unhide [#channel]", "Unhide a channel"],
+          [",lockall", "Lock all channels"],
+          [",unlockall", "Unlock all channels"],
+          [",lockdown [reason]", "Full server lockdown"],
+          [",unlockdown", "Lift lockdown"],
+          [",slowmode <secs>", "Set slowmode"],
+          [",slowmodeall <secs>", "Set slowmode in all channels"],
+          [",nuke", "Clone and delete a channel"],
+          [",nick <user> <name>", "Change a user's nickname"],
+          [",resetnick <user>", "Reset nickname"],
+          [",dehoist", "Remove hoisted characters"],
+          [",decancer <user>", "Clean special chars from nick"],
+          [",role add/remove <user> <role>", "Add or remove a role"],
+          [",temprole <user> <role> <time>", "Give a role temporarily"],
+          [",massrole add/remove <role>", "Add/remove role from everyone"],
+          [",massnick <nick>", "Set nickname for everyone"],
+          [",banwave", "Ban all users who joined in last 5 min"],
+          [",prune <days>", "Kick inactive members"],
+          [",dehoist / ,dehoistall", "Dehoist member nicknames"],
+        ]
+      },
+      security: {
+        label: "Security",
+        emoji: "<:RUSH_unlock:1521415218037526641>",
+        description: "AntiNuke, AntiRaid, AutoMod",
+        commands: [
+          [",antinuke on/off", "Enable/disable AntiNuke"],
+          [",antinuke punishment <ban|kick|strip>", "Set punishment"],
+          [",antinuke threshold <n>", "Set action threshold"],
+          [",antinuke whitelist <user>", "Whitelist a user"],
+          [",antinuke status", "View AntiNuke config"],
+          [",antiraid on/off", "Enable/disable AntiRaid"],
+          [",antiraid action <ban|kick|mute>", "Set raid action"],
+          [",antiraid threshold <n>", "Set join threshold"],
+          [",antiraid window <secs>", "Set detection window"],
+          [",antiraid unlock", "Manually unlock server"],
+          [",antiraid status", "View AntiRaid config"],
+          [",vanitylock on/off/status", "Lock your vanity URL"],
+          [",vanitytransfer <code>", "Transfer a vanity URL"],
+          [",filter on/off", "Toggle AutoMod filter"],
+          [",filter add/remove <word>", "Add/remove banned word"],
+          [",filter links/invites/caps/spam/mentions", "Toggle filter types"],
+          [",filter status", "View filter config"],
+          [",blacklist add/remove/list/clear <word>", "Word blacklist"],
+          [",antilinks / ,antiinvites", "Toggle link/invite filter"],
+          [",antispam / ,anticaps", "Toggle spam/caps filter"],
+          [",filterexempt add/remove @role/#channel", "Exempt from filter"],
+          [",bind staff <role>", "Set a staff role"],
+          [",fakeperm add/remove/list <role> <perm>", "Fake permissions"],
+          [",ignore <user>", "Bot ignores all cmds from user"],
+          [",ignorelist", "List ignored users"],
+        ]
+      },
+      info: {
+        label: "Information",
+        emoji: "<:RUSH_list:1521415268000337961>",
+        description: "User, server, role info and more",
+        commands: [
+          [",userinfo [user]", "Detailed user information"],
+          [",serverinfo", "Server information"],
+          [",avatar [user]", "Get user avatar"],
+          [",banner [user]", "Get user banner"],
+          [",roleinfo <role>", "Role information"],
+          [",channelinfo [#channel]", "Channel information"],
+          [",botinfo", "Bot information"],
+          [",ping", "Bot latency"],
+          [",uptime", "Bot uptime"],
+          [",membercount", "Server member count"],
+          [",bans", "List all bans"],
+          [",baninfo <userId>", "Info on a ban"],
+          [",inviteinfo <code>", "Invite information"],
+          [",invites [user]", "User invite count"],
+          [",listinvites", "List all invites"],
+          [",createinvite [maxUses] [hours]", "Create invite"],
+          [",whois [user]", "Detailed member info"],
+          [",memberinfo [user]", "Member information"],
+          [",newmembers [n]", "Recently joined members"],
+          [",oldmembers [n]", "Oldest members"],
+          [",inrole <role>", "Members with a role"],
+          [",boosters", "List server boosters"],
+          [",servericon", "Server icon"],
+          [",serverbanner", "Server banner"],
+          [",serverstats", "Detailed server stats"],
+          [",onlinecount", "Online member counts"],
+          [",admins", "List server admins"],
+          [",mods", "List moderators"],
+          [",bots", "List bots"],
+          [",stafflist", "List all staff"],
+          [",find <query>", "Search members by name"],
+          [",rolecount <role>", "Members in a role"],
+          [",id [user/role/channel]", "Get a Discord ID"],
+          [",snowflake <id>", "Decode Discord snowflake"],
+          [",discrim <0000>", "Find users by discriminator"],
+          [",permissions [user]", "Check permissions"],
+          [",shared [userId]", "Mutual servers"],
+          [",joined [user]", "When user joined"],
+          [",created [user]", "Account creation date"],
+          [",accountage [user]", "Account age"],
+          [",serverage", "How old the server is"],
+          [",serverfeatures", "Server feature flags"],
+          [",boostgoal", "Boost tier progress"],
+          [",vanity", "Server vanity URL"],
+          [",modlogs [user]", "Recent mod actions"],
+          [",history <user>", "User mod history"],
+          [",cases <user>", "User mod cases"],
+          [",case <id>", "View a mod case"],
+          [",audit", "Recent audit log"],
+        ]
+      },
+      config: {
+        label: "Server Config",
+        emoji: "<:RUSH_gear:1521415230184489061>",
+        description: "Setup, welcome, roles, tickets...",
+        commands: [
+          [",setup", "Create jail/log channels & roles"],
+          [",setupmute", "Create muted roles"],
+          [",autorole <@role|off>", "Set autorole for new members"],
+          [",welcome #channel <msg>", "Set welcome message"],
+          [",goodbye #channel <msg>", "Set goodbye message"],
+          [",starboard #channel [threshold]", "Setup starboard"],
+          [",bumpchannel #channel", "Set bump reminder channel"],
+          [",jointocreate #vc", "Setup Join to Create VC"],
+          [",confessions #channel", "Setup confessions channel"],
+          [",modlog #channel", "Set mod log channel"],
+          [",messagelog #channel", "Log deleted/edited messages"],
+          [",joinlog #channel", "Log joins and leaves"],
+          [",voicelog #channel", "Log voice activity"],
+          [",log <event> #channel", "Configure specific log events"],
+          [",verification <level>", "Set verification level"],
+          [",contentfilter <level>", "Set content filter"],
+          [",setname <name>", "Rename the server"],
+          [",setdesc <text>", "Set server description"],
+          [",serverrules rule1 | rule2", "Post server rules"],
+          [",muterole <@role>", "Set custom mute role"],
+          [",pingrole <@role>", "Toggle role mentionable"],
+          [",rolecreate <name> [color]", "Create a role"],
+          [",roledelete <@role>", "Delete a role"],
+          [",rolecolor <@role> <hex>", "Change role color"],
+          [",rolehoist <@role>", "Toggle role hoist"],
+          [",rolemention <@role>", "Toggle role mentionable"],
+          [",rolepos <@role> <pos>", "Change role position"],
+          [",channelcreate <name> [text|voice]", "Create a channel"],
+          [",channeldelete [#channel]", "Delete a channel"],
+          [",channelclone [#channel]", "Clone a channel"],
+          [",categorycreate <name>", "Create a category"],
+          [",ticket setup/create/close/add/remove", "Ticket system"],
+          [",cc add/remove/list", "Custom commands"],
+          [",alias add/remove/list", "Command aliases"],
+          [",disable/enable <command>", "Disable a command"],
+          [",autorespond add/remove/list", "Auto responders"],
+          [",reactiontrigger add/remove/list", "Reaction triggers"],
+          [",reactionrole <msgId> <emoji> <@role>", "Reaction roles"],
+          [",sticky <message|off>", "Sticky message"],
+          [",counter create/delete/list", "Member counters"],
+          [",warnthreshold <n> <action>", "Auto punish on warns"],
+          [",birthday channel #channel", "Birthday announcements"],
+          [",antinuke / ,antiraid / ,vanitylock", "Security systems"],
+          [",moderation <on|off|status>", "Enable or disable all moderation commands (,warn ,ban ,afk ,timeout)"],
+          [",config", "Open the Video Scraper config panel — set sources, target, schedule, and rename prefix"],
+        ]
+      },
+      economy: {
+        label: "Economy",
+        emoji: "<:RUSH_dollar:1521415308206669926>",
+        description: "Coins, gambling, work and more",
+        commands: [
+          [",balance [user]", "Check coin balance"],
+          [",daily", "Claim daily reward (500 coins)"],
+          [",weekly", "Claim weekly reward (2500 coins)"],
+          [",monthly", "Claim monthly reward (10000 coins)"],
+          [",work", "Work to earn coins (1h cooldown)"],
+          [",crime", "Commit a crime for coins (risky)"],
+          [",rob <user>", "Rob another user"],
+          [",pay <user> <amount>", "Pay someone coins"],
+          [",bet <amount>", "Coinflip for coins"],
+          [",blackjack <amount>", "Play blackjack"],
+          [",slots", "Spin the slot machine"],
+          [",dice <NdN>", "Roll dice (e.g. 2d6)"],
+          [",richlist", "Top 10 richest users"],
+          [",give <user> <amount>", "Admin: give coins"],
+          [",take <user> <amount>", "Admin: take coins"],
+          [",setbal <user> <amount>", "Admin: set balance"],
+          [",resetbal <user>", "Admin: reset balance"],
+        ]
+      },
+      fun: {
+        label: "Fun",
+        emoji: "🎮",
+        description: "Games, generators and more",
+        commands: [
+          [",coinflip", "Flip a coin"],
+          [",8ball <question>", "Ask the magic 8ball"],
+          [",roll [sides]", "Roll a dice"],
+          [",dice <NdN>", "Roll multiple dice"],
+          [",choose opt1 | opt2 | ...", "Choose between options"],
+          [",decide opt1 | opt2 | ...", "Let the bot decide"],
+          [",number <min> <max>", "Random number"],
+          [",yesno", "Random yes or no"],
+          [",poll <question>", "Create a quick poll"],
+          [",poll create q | opt1 | opt2", "Advanced poll with options"],
+          [",rps <rock|paper|scissors>", "Rock paper scissors"],
+          [",ttt <@user>", "Tic tac toe"],
+          [",slots", "Slot machine"],
+          [",numberguess", "Number guessing game"],
+          [",ship [@u1] [@u2]", "Ship two users"],
+          [",rate <thing>", "Rate something"],
+          [",pp [user]", "Check pp size"],
+          [",howgay [user]", "How gay are you"],
+          [",howdumb [user]", "How dumb are you"],
+          [",hack <user>", "Fake hack someone"],
+          [",wanted [user]", "Wanted poster"],
+          [",wyr", "Would you rather"],
+          [",nhie", "Never have I ever"],
+          [",tod", "Truth or dare"],
+          [",compliment [user]", "Send a compliment"],
+          [",insult [user]", "Silly insult"],
+          [",meme", "Random meme"],
+          [",joke", "Random joke"],
+          [",fact", "Random fact"],
+          [",quote", "Random quote"],
+          [",catfact / ,dogfact", "Animal facts"],
+          [",cat / ,dog / ,fox / ,duck / ,panda", "Animal images"],
+          [",team <size> @u1 @u2 ...", "Split into teams"],
+          [",shuffle item1 | item2", "Shuffle items"],
+          [",countdown <n>", "Countdown in chat"],
+          [",ascii <text>", "ASCII text"],
+          [",emojify <text>", "Emojify text"],
+          [",mock <text>", "SpOnGeBoB mock text"],
+          [",leet <text>", "L33t speak"],
+          [",vaporwave <text>", "Vaporwave text"],
+          [",zalgo <text>", "Zalgo text"],
+          [",reverse <text>", "Reverse text"],
+          [",clap <text>", "Add 👏 claps"],
+        ]
+      },
+      utility: {
+        label: "Utility",
+        emoji: "<:RUSH_maintenance:1521415300254404648>",
+        description: "Useful tools and helpers",
+        commands: [
+          [",remind <time> <text>", "Set a reminder (e.g. 30m, 1h)"],
+          [",reminders", "View your reminders"],
+          [",afk [reason]", "Set AFK status"],
+          [",todo add/done/remove/list", "Personal todo list"],
+          [",tag create/delete/list/<name>", "Server tags"],
+          [",highlight add/remove/list <word>", "Word highlights"],
+          [",snipe", "Snipe last deleted message"],
+          [",editsnipe", "Snipe last edited message"],
+          [",pin/unpin <messageId>", "Pin/unpin a message"],
+          [",pins", "List pinned messages count"],
+          [",weather <city>", "Weather info"],
+          [",math / ,calc <expr>", "Calculate an expression"],
+          [",urban <word>", "Urban Dictionary"],
+          [",define <word>", "Dictionary definition"],
+          [",translate <lang> <text>", "Translate text"],
+          [",qr <text>", "Generate QR code"],
+          [",color <#hex>", "Color info"],
+          [",encode/decode <text>", "Base64 encode/decode"],
+          [",binary <text>", "Text to binary"],
+          [",timestamp [date]", "Discord timestamp"],
+          [",charinfo <text>", "Unicode character info"],
+          [",google/youtube/spotify <query>", "Search links"],
+          [",password [length]", "Generate secure password"],
+          [",token", "Generate random token"],
+          [",invitebot", "Get bot invite link"],
+          [",copycat <user> <msg>", "Send message as user"],
+          [",say / ,say2 #channel <msg>", "Say something"],
+          [",embed <title> | <desc>", "Send an embed"],
+          [",announce #channel <msg>", "Announce a message"],
+          [",react <msgId> <emoji>", "React to a message"],
+          [",export", "Export last 100 chat messages"],
+          [",nsfwcheck / ,nsfw", "Check/toggle NSFW"],
+          [",firstmessage", "Jump to first message"],
+          [",serverage / ,accountage", "Age info"],
+          [",news", "Discord status"],
+          [",source", "Bot tech info"],
+        ]
+      },
+      lastfm: {
+        label: "Last.fm",
+        emoji: "<:musicnote:1521415310941618208>",
+        description: "Music tracking with Last.fm",
+        commands: [
+          [",fm set <username>", "Link your Last.fm account"],
+          [",fm unset", "Unlink Last.fm"],
+          [",np [user]", "Now playing / last track"],
+          [",fmprofile [user]", "Last.fm profile stats"],
+          [",topartists", "Your top artists"],
+          [",toptracks", "Your top tracks"],
+          [",topalbums", "Your top albums"],
+        ]
+      },
+      leveling: {
+        label: "Leveling",
+        emoji: "<:RUSH_poll:1521415317614628976>",
+        description: "XP and level system",
+        commands: [
+          [",rank [user]", "View your rank and XP"],
+          [",leaderboard", "Server XP leaderboard"],
+          [",setlevel <user> <level>", "Admin: set user level"],
+          [",resetxp <user>", "Admin: reset user XP"],
+        ]
+      },
+      perks: {
+        label: "Perks Tools",
+        emoji: "<:awhitestar:1521415243954393159>",
+        description: "Clone, sort and manage perks servers",
+        commands: [
+          [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
+          [",separate", "Interactive panel to split server channels into 2–3 categories"],
+          [",videocount [#ch]", "Count videos in a channel or the whole server (attachments + links)"],
+          ["", ""],
+          [",clone", "Open the full clone/setup panel"],
+          [",cloneperks <srcId> <tgtId>", "Clone all roles, categories and channels"],
+          [",clonecategoryperks <srcId> <tgtId>", "Clone a category + distribute its videos per-channel"],
+          [",setuppaidperks <srcId> <tgtId>", "Full paid-perks setup with exclusive channels"],
+          [",hidepaidperks <tgtId> [n]", "Randomly hide N channels in a server (default 20)"],
+          [",sortchannels <id> Cat1|Cat2|Cat3", "Distribute channels into 2–3 categories with overflow"],
+        ]
+      },
+      nsfw: {
+        label: "NSFW (Owner Only)",
+        emoji: "<:18plus:1521415320538054748>",
+        description: "Anti-minors system — owner only",
+        commands: [
+          [",addc #channel", "Add channel to minor monitoring"],
+          [",delc #channel", "Remove channel from monitoring"],
+          [",list", "Show all monitored channels & config"],
+          [",reqattach #channel", "Require media — deletes text-only messages"],
+          [",unreqattach #channel", "Remove media requirement"],
+          [",modr @role", "Role pinged on minor detections"],
+          [",logs #channel", "Channel where minor warnings are sent"],
+          ["", ""],
+          ["Detection:", ""],
+          ["• Ages 10–17", "Deleted + warning logged"],
+          ["• Reversed bypass (61 reversed)", "Deleted + warning logged"],
+          ["• Emoji numbers (1️⃣5️⃣)", "Normalized + detected"],
+          ["• underage / minor / still in hs", "Instant flag"],
+          ["• No 18+ age mentioned", "Silently deleted"],
+          ["• Suspiciously high age (99m)", "Flagged as bypass"],
+        ]
+      }
+    };
+
+    // Build select menu using top-level imports (StringSelectMenuBuilder / StringSelectMenuOptionBuilder)
+    // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
+    const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
+    let selectMenu, mainEmbed, msg;
+    try {
+      const visibleCategories = Object.entries(mergedCategories)
+        .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id));
+
+      selectMenu = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("help_category")
+          .setPlaceholder("Choose a category...")
+          .addOptions(
+            visibleCategories.map(([key, cat]) =>
+              new StringSelectMenuOptionBuilder()
+                .setLabel(cat.label)
+                .setDescription(cat.description.slice(0, 100))
+                .setValue(key)
+                .setEmoji(cat.emoji)
+            )
+          )
+      );
+
+      mainEmbed = {
+        color: PINK,
+        author: { name: message.guild.name, icon_url: message.guild.iconURL() },
+        title: "Command Help",
+        description: [
+          "**information**",
+          "[ ] = optional, < > = required",
+          "",
+          "**Invite**",
+          `[invite](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot) • [support](https://discord.gg/) • view on web`,
+          "",
+          "Select a category from the dropdown menu below to view commands."
+        ].join("\n"),
+        thumbnail: { url: client.user.displayAvatarURL() },
+        footer: { text: `${client.user.username} • ${Object.values(mergedCategories).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+      };
+
+      msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
+    } catch (e) {
+      log(`[help] Failed to build/send help panel: ${e.message}`, "error");
+      return message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Could not build the help panel: ${e.message}` }] }).catch(() => {});
+    }
+
+    // Store session in global map — handled by the global interactionCreate handler below
+    helpSessions.set(msg.id, {
+      mainEmbed,
+      selectMenu,
+      categories: mergedCategories,
+      authorId: message.author.id,
+      guildIconUrl: message.guild.iconURL(),
+      currentCategory: null,
+      currentPage: 0,
+      currentPages: [],
+    });
+    // Auto-cleanup after 60 minutes
+    setTimeout(() => helpSessions.delete(msg.id), 60 * 60 * 1000);
+    return;
+  }
+});
+
+// ── Global help panel interaction handler ─────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.message) return;
+  const id = interaction.customId;
+  if (!id || (id !== "help_category" && !id.startsWith("help_"))) return;
+
+  const sess = helpSessions.get(interaction.message.id);
+  if (!sess) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired — type `,help` again.", flags: 64 });
+
+  if (interaction.user.id !== sess.authorId)
+    return interaction.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+
+  try {
+    await interaction.deferUpdate();
+  } catch { return; }
+
+  function buildCatEmbed(cat, p) {
+    return {
+      color: PINK,
+      title: `${cat.emoji} ${cat.label}`,
+      description: sess.currentPages[p].map(([cmd, desc]) => cmd ? `\`${cmd}\`\n${desc}` : (desc || '')).join("\n\n"),
+      footer: { text: `Page ${p + 1}/${sess.currentPages.length} • ${cat.commands.length} commands` },
+    };
+  }
+  function buildNavRow(p) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
+      new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= sess.currentPages.length - 1),
+    );
+  }
+
+  try {
+    if (interaction.isStringSelectMenu()) {
+      const cat = sess.categories[interaction.values[0]];
+      if (!cat) return;
+      sess.currentCategory = cat;
+      sess.currentPage     = 0;
+      sess.currentPages    = [];
+      const PER = 10;
+      for (let p = 0; p < cat.commands.length; p += PER) sess.currentPages.push(cat.commands.slice(p, p + PER));
+      await interaction.editReply({
+        embeds: [buildCatEmbed(cat, 0)],
+        components: sess.currentPages.length > 1 ? [buildNavRow(0), sess.selectMenu] : [sess.selectMenu],
+      });
+      return;
+    }
+    if (interaction.isButton()) {
+      if (id === "help_home") {
+        sess.currentCategory = null; sess.currentPage = 0; sess.currentPages = [];
+        await interaction.editReply({ embeds: [sess.mainEmbed], components: [sess.selectMenu] });
+        return;
+      }
+      if (!sess.currentCategory) return;
+      if (id === "help_back" && sess.currentPage > 0) sess.currentPage--;
+      if (id === "help_next" && sess.currentPage < sess.currentPages.length - 1) sess.currentPage++;
+      await interaction.editReply({
+        embeds: [buildCatEmbed(sess.currentCategory, sess.currentPage)],
+        components: [buildNavRow(sess.currentPage), sess.selectMenu],
+      });
+    }
+  } catch (e) {
+    log(`[help] interaction error: ${e.message}`, "error");
+  }
+});
+
+
+// ===================================================
+// ===== ,perks COMMAND — PERKS SYSTEM PANEL =========
+// ===================================================
+
+function buildPerksEmbed() {
+  const cfg = perksSystemConfig;
+  const cm  = customMessages;
+  const R   = "\u001b[0m";
+  const CY  = "\u001b[0;36m";
+  const GR  = "\u001b[1;32m";
+  const WH  = "\u001b[1;37m";
+  const DM  = "\u001b[2;35m";
+  const YL  = "\u001b[0;33m";
+
+  const row = (label, val) => `${DM}║${R}  ${CY}${label.padEnd(13)}${R}  ${GR}${String(val).slice(0,22).padEnd(22)}${R}  ${DM}║${R}`;
+  const div = `${DM}╠════════════════════════════════════╣${R}`;
+  const top = `${DM}╔════════════════════════════════════╗${R}`;
+  const bot = `${DM}╚════════════════════════════════════╝${R}`;
+  const sec = (t) => `${DM}║${R}  ${WH}${t.padEnd(34)}${R}  ${DM}║${R}`;
+
+  const lines = [
+    top,
+    sec("SERVERS"),
+    div,
+    row("source",     cfg.sourceGuildId   || "not set"),
+    row("target/vault",cfg.targetGuildId  || "not set"),
+    div,
+    sec("ROLES"),
+    div,
+    row("discord boost", cfg.discordBoostRoleId || "not set"),
+    row("custom boost",  cfg.boostRoleId        || "not set"),
+    row("access role",   cfg.accessRoleId       || "not set"),
+    row("denied role",   cfg.deniedRoleId       || "not set"),
+    div,
+    sec("CHANNEL"),
+    div,
+    row("ping channel",  cfg.pingChannelId      || "not set"),
+    div,
+    sec("MESSAGES"),
+    div,
+    `${DM}║${R}  ${CY}boost msg  ${R}  ${YL}${cm.boost.slice(0,30).replace(/\n/g,' ')}…${R}  ${DM}║${R}`,
+    `${DM}║${R}  ${CY}unboost msg${R}  ${YL}${cm.unboost.slice(0,30).replace(/\n/g,' ')}…${R}  ${DM}║${R}`,
+    `${DM}║${R}  ${CY}ping msg   ${R}  ${YL}${cm.ping.slice(0,30).replace(/\n/g,' ')}${R}${"".padEnd(Math.max(0,30-cm.ping.length))}  ${DM}║${R}`,
+    bot,
+  ].join("\n");
+
+  return {
+    color: PINK,
+    title: "<:019TXTWhite_Yes:1521327983279996999> Perks System Panel",
+    description: `### <:019TXTWhite_Yes:1521327983279996999>  Boost Protection & Messages\n\n\`\`\`ansi\n${lines}\n\`\`\`\n*Use the buttons below to edit each section.*`,
+    footer: { text: "✨ sensational • white edition • owner only" },
+    timestamp: new Date(),
+  };
+}
+
+function buildPerksRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("perks_servers").setLabel("<:RUSH_globe:1521415284496273489> Servers").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_roles"  ).setLabel("🎭 Roles").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_channel").setLabel("📣 Ping Channel").setStyle(ButtonStyle.Primary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("<:RUSH_comment:1491884212297531572> Boost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_unboost_msg").setLabel("💔 Unboost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_ping_msg"   ).setLabel("📣 Ping Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("<:steal:1521327958634135655> Close").setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args    = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "perks") return;
+  if (!isOwner(message.author.id)) return err(message, "Owner only.");
+
+  const sent = await message.reply({ embeds: [buildPerksEmbed()], components: buildPerksRows() });
+  perksSessions.set(message.author.id, { msgId: sent.id, channelId: message.channel.id });
+});
+
+// ── Perks panel interaction handler ──────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+  const id = interaction.customId;
+  if (!id || !id.startsWith("perks_")) return;
+  if (!isOwner(interaction.user.id)) return interaction.reply({ content: "<:steal:1521327958634135655> Owner only.", flags: 64 });
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  async function refreshPanel(i) {
+    const sess = perksSessions.get(interaction.user.id);
+    if (!sess) return;
+    try {
+      const ch  = client.channels.cache.get(sess.channelId) ?? await client.channels.fetch(sess.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(sess.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPerksEmbed()], components: buildPerksRows() }).catch(() => {});
+    } catch (_) {}
+  }
+
+  // ── Close ──
+  if (id === "perks_close") {
+    perksSessions.delete(interaction.user.id);
+    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Perks panel closed." }], components: [] });
+  }
+
+  // ── Modal: Servers ──
+  if (id === "perks_servers") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("<:019TXTWhite_Yes:1521327983279996999> Server IDs");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("source_id").setLabel("Source Server ID (where boosts happen)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.sourceGuildId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("target_id").setLabel("Target / Vault Server ID").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.targetGuildId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Roles ──
+  if (id === "perks_roles") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("<:019TXTWhite_Yes:1521327983279996999> Role IDs");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("discord_boost").setLabel("Discord Boost Role ID (auto-given by Discord)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.discordBoostRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("custom_boost").setLabel("Custom Boost Role ID (bot gives this)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.boostRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("access_role").setLabel("Access Role ID (grants vault access)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.accessRoleId)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("denied_role").setLabel("Denied Role ID (revokes vault access)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.deniedRoleId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Ping Channel ──
+  if (id === "perks_channel") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("<:019TXTWhite_Yes:1521327983279996999> Ping Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_channel").setLabel("Channel ID for silent boost ping").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.pingChannelId)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Boost message ──
+  if (id === "perks_boost_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Boost DM Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("boost_msg").setLabel("Message sent to user when they boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.boost).setMaxLength(1800)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Unboost message ──
+  if (id === "perks_unboost_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Unboost DM Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("unboost_msg").setLabel("Message sent when user removes boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.unboost).setMaxLength(1800)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal: Ping message ──
+  if (id === "perks_ping_msg") {
+    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("<:019TXTWhite_Yes:1521327983279996999> Ping Message");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_msg").setLabel("Message posted in ping channel. Use {user}").setStyle(TextInputStyle.Short).setRequired(true).setValue(customMessages.ping)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── Modal submits ──
+  if (!interaction.isModalSubmit()) return;
+
+  if (id === "perks_modal_servers") {
+    const srcId = interaction.fields.getTextInputValue("source_id").trim();
+    const tgtId = interaction.fields.getTextInputValue("target_id").trim();
+    if (!isValidSnowflake(srcId) || !isValidSnowflake(tgtId)) {
+      return interaction.reply({ content: "<:steal:1521327958634135655> Invalid server ID(s). IDs must be Discord snowflakes (15–20 digit numbers only).", flags: 64 });
+    }
+    perksSystemConfig.sourceGuildId = srcId;
+    perksSystemConfig.targetGuildId = tgtId;
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Server IDs updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_roles") {
+    perksSystemConfig.discordBoostRoleId = interaction.fields.getTextInputValue("discord_boost").trim();
+    perksSystemConfig.boostRoleId        = interaction.fields.getTextInputValue("custom_boost").trim();
+    perksSystemConfig.accessRoleId       = interaction.fields.getTextInputValue("access_role").trim();
+    perksSystemConfig.deniedRoleId       = interaction.fields.getTextInputValue("denied_role").trim();
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Role IDs updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_channel") {
+    perksSystemConfig.pingChannelId = interaction.fields.getTextInputValue("ping_channel").trim();
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Ping channel updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_boost_msg") {
+    customMessages.boost = interaction.fields.getTextInputValue("boost_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Boost message updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_unboost_msg") {
+    customMessages.unboost = interaction.fields.getTextInputValue("unboost_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Unboost message updated.", flags: 64 });
+  }
+
+  if (id === "perks_modal_ping_msg") {
+    customMessages.ping = interaction.fields.getTextInputValue("ping_msg");
+    await saveAllConfigs();
+    await refreshPanel(interaction);
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Ping message updated.", flags: 64 });
+  }
+});
+
+// -- Config Panel command --
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "clone") return;
+
+  log(`[clone] triggered by ${message.author.tag} (${message.author.id}) in guild ${message.guild.id}`, "info");
+
+  if (!isOwner(message.author.id)) {
+    log(`[clone] BLOCKED — not owner (got ${message.author.id})`, "error");
+    return;
+  }
+
+  log(`[clone] owner confirmed — building panel...`, "info");
+
+  try {
+    log(`[clone] calling defaultSession()`, "info");
+    const session = defaultSession();
+
+    log(`[clone] calling buildPanelEmbed()`, "info");
+    const embed = buildPanelEmbed(session);
+
+    log(`[clone] calling buildPanelComponents()`, "info");
+    const components = buildPanelComponents(session);
+
+    log(`[clone] sending reply...`, "info");
+    const sent = await message.reply({ embeds: [embed], components });
+
+    session.msgId     = sent.id;
+    session.channelId = sent.channelId;
+    setupSessions.set(message.author.id, session);
+
+    log(`[clone] panel sent OK — msgId=${sent.id}`, "info");
+  } catch (e) {
+    log(`[clone] CRASH: ${e.message}\n${e.stack}`, "error");
+    message.reply({ content: `<:steal:1521327958634135655> \`${e.message}\`` }).catch(() => {});
+  }
+});
+
+// ===== EXTENDED COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  // Centralized moderation gate
+  if (modGate(message, command)) return;
+
+  // -- ADVANCED MODERATION --------------------------------─
+
+  // ,tempban <user> <minutes> [reason]
+  if (command === "tempban") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const minutes = parseInt(args[2]) || 60;
+    const reason = args.slice(3).join(" ") || "Temporary ban";
+    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    ok(message, `<:019TXTWhite_Yes:1521327983279996999> Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
+    purgeUserMessages(message.guild, target.id);
+    setTimeout(async () => {
+      await message.guild.bans.remove(target.id).catch(() => {});
+      message.channel.send(`<:RUSH_unlock:1521415218037526641> **${target.user.username}**'s tempban has expired.`).catch(() => {});
+    }, minutes * 60 * 1000);
+  }
+
+  // ,softban <user> [reason] -- ban then immediately unban to delete messages
+  if (command === "softban") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const reason = args.slice(2).join(" ") || "Softban";
+    recentBoosters.delete(target.id);
+    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    await message.guild.bans.remove(target.id).catch(() => null);
+    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    purgeUserMessages(message.guild, target.id, softPurgeMsg);
+    return;
+  }
+
+  // ,hardban <user> [reason] -- ban + blacklist (stored in memory)
+  if (command === "hardban" || command === "hb") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const reason = args.slice(2).join(" ") || "Hardban";
+    recentBoosters.delete(target.id);
+    await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
+    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    purgeUserMessages(message.guild, target.id, hbPurgeMsg);
+    return;
+  }
+
+  // ,jail <user> [reason]
+  if (command === "jail") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const reason = args.slice(2).join(" ") || "No reason";
+    const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
+    if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
+    await target.roles.add(jailRole).catch(() => null);
+    try { await target.user.send(`<:RUSH_unlock:1521415218037526641> You have been jailed in **${message.guild.name}**: ${reason}`); } catch {}
+    return ok(message, `jailed **${target.user.username}** | ${reason}`);
+  }
+
+  // ,unjail <user>
+  if (command === "unjail") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
+    if (!jailRole) return err(message, "No role named `jailed` found.");
+    await target.roles.remove(jailRole).catch(() => null);
+    return ok(message, `unjailed **${target.user.username}**`);
+  }
+
+  // ,imute <user> [reason] -- image mute
+  if (command === "imute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
+    if (!role) return err(message, "No role named `image muted` found.");
+    await target.roles.add(role).catch(() => null);
+    return ok(message, `image muted **${target.user.username}**`);
+  }
+
+  // ,iunmute <user>
+  if (command === "iunmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
+    if (!role) return err(message, "No role named `image muted` found.");
+    await target.roles.remove(role).catch(() => null);
+    return ok(message, `Image unmuted **${target.user.username}**`);
+  }
+
+  // ,strip <user> -- removes all roles
+  if (command === "strip") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const roles = target.roles.cache.filter(r => r.id !== message.guild.id && r.position < message.guild.members.me.roles.highest.position);
+    let stripped = 0;
+    for (const role of roles.values()) { await target.roles.remove(role).catch(() => {}); stripped++; }
+    return ok(message, `stripped **${stripped}** roles from **${target.user.username}**`);
+  }
+
+  // ,warnings <user>
+  if (command === "warnings" || command === "warns") {
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null) || message.author;
+    const key = `${message.guild.id}-${target.id}`;
+    const list = warns.get(key) || [];
+    if (list.length === 0) return ok(message, `**${target.username}** has no warnings.`);
+    const embed = {
+      color: PINK,
+      title: `<:RUSH_warning:1521415214799654985> Warnings for ${target.username}`,
+      description: list.map((w, i) => `**${i + 1}.** ${w.reason} — by ${w.mod} (${w.date})`).join("\n")
+    };
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ,clearwarns <user>
+  if (command === "clearwarns") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    warns.delete(`${message.guild.id}-${target.id}`);
+    return ok(message, `Cleared all warnings for **${target.username}**`);
+  }
+
+  // ,delwarn <user> <index>
+  if (command === "delwarn") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const index = parseInt(args[2]) - 1;
+    const key = `${message.guild.id}-${target.id}`;
+    const list = warns.get(key) || [];
+    if (index < 0 || index >= list.length) return err(message, "Invalid warning number.");
+    list.splice(index, 1);
+    warns.set(key, list);
+    saveWarns();
+    return ok(message, `Deleted warning **#${index + 1}** for **${target.username}**`);
+  }
+
+  // ,case <number> -- show a moderation case from audit logs
+
+  // ,warn is handled in the main command handler (handler 1) — do not duplicate here
+
+  // -- LEVELING --------------------------------------------─
+
+  // ,leveling <on|off|status>
+  if (command === "leveling" || command === "levels") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "on" || sub === "enable") {
+      levelingEnabled.set(message.guild.id, true);
+      saveAllConfigs();
+      return ok(message, "leveling system **enabled** — XP will now be tracked.");
+    }
+    if (sub === "off" || sub === "disable") {
+      levelingEnabled.set(message.guild.id, false);
+      saveAllConfigs();
+      return ok(message, "leveling system **disabled**.");
+    }
+    const enabled = levelingEnabled.get(message.guild.id) || false;
+    return info(message, `leveling is currently **${enabled ? "enabled" : "disabled"}** — use \`,leveling on/off\` to toggle.`);
+  }
+
+  // ,moderation <on|off|add|remove|list>
+  if (command === "moderation") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub  = args[1]?.toLowerCase();
+    const isOn = isModerationEnabled(message.guild.id);
+
+    // ,moderation on
+    if (sub === "on" || sub === "enable") {
+      moderationEnabled.set(message.guild.id, true);
+      saveAllConfigs();
+      return ok(message, "moderation **enabled** <:019TXTWhite_Yes:1521327983279996999>");
+    }
+
+    // ,moderation off
+    if (sub === "off" || sub === "disable") {
+      moderationEnabled.set(message.guild.id, false);
+      saveAllConfigs();
+      return ok(message, "moderation **disabled** <:steal:1521327958634135655>");
+    }
+
+    // ,moderation add <command> — adds a command to the per-guild block list
+    if (sub === "add") {
+      const cmd = args[2]?.toLowerCase().replace(/^,/, "");
+      if (!cmd) return err(message, "usage: `,moderation add <command>`");
+      getModerationCustom(message.guild.id).add(cmd);
+      saveAllConfigs();
+      return ok(message, `\`,${cmd}\` added to the moderation block list — it will be silently ignored.`);
+    }
+
+    // ,moderation remove <command> — removes from the per-guild block list
+    if (sub === "remove" || sub === "del") {
+      const cmd = args[2]?.toLowerCase().replace(/^,/, "");
+      if (!cmd) return err(message, "usage: `,moderation remove <command>`");
+      const set = moderationCustom.get(message.guild.id);
+      if (!set?.has(cmd)) return err(message, `\`,${cmd}\` is not in the block list.`);
+      set.delete(cmd);
+      saveAllConfigs();
+      return ok(message, `\`,${cmd}\` removed from the block list.`);
+    }
+
+    // ,moderation list — show custom blocked commands
+    if (sub === "list") {
+      const custom = moderationCustom.get(message.guild.id);
+      const customList = custom?.size ? [...custom].map(c => `\`,${c}\``).join("  ") : "*(none)*";
+      const defaultList = [...MOD_COMMANDS].map(c => `\`,${c}\``).join(" ");
+      return message.reply({ embeds: [{
+        color: PINK,
+        title: "<:RUSH_caution:1521415278355808297> Moderation Block List",
+        description: [
+          `**Status:** ${isOn ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off"}`,
+          "",
+          "**Default blocked commands** *(when moderation is off)*",
+          defaultList,
+          "",
+          "**Custom blocked commands** *(always blocked regardless of on/off)*",
+          customList,
+          "",
+          "Use `,moderation add <cmd>` / `,moderation remove <cmd>` to edit.",
+        ].join("\n"),
+        footer: { text: message.guild.name },
+        timestamp: new Date(),
+      }]});
+    }
+
+    // ,moderation — status overview
+    const custom = moderationCustom.get(message.guild.id);
+    const customLine = custom?.size
+      ? `+${custom.size} custom: ` + [...custom].map(c => `\`,${c}\``).join(" ")
+      : "no custom commands";
+    return message.reply({ embeds: [{
+      color: PINK,
+      title: "<:RUSH_caution:1521415278355808297> Moderation",
+      description: [
+        `**Status:** ${isOn ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled"}`,
+        `**Custom block list:** ${customLine}`,
+        "",
+        "`moderation on/off` — toggle",
+        "`moderation add <cmd>` — add a command to always block",
+        "`moderation remove <cmd>` — unblock a custom command",
+        "`moderation list` — see everything",
+      ].join("\n"),
+      footer: { text: message.guild.name }, timestamp: new Date(),
+    }]});
+  }
+
+  // ,rank [user]
+  if (command === "rank") {
+    const target = message.mentions.members.first() || message.member;
+    const key = `${message.guild.id}-${target.id}`;
+    const data = xpData.get(key) || { xp: 0, level: 0 };
+    const needed = (data.level + 1) * 100;
+    return message.reply({ embeds: [{ color: PINK,
+      title: `${target.user.username}'s Rank`,
+      thumbnail: { url: target.user.displayAvatarURL() },
+      fields: [
+        { name: "Level", value: `${data.level}`, inline: true },
+        { name: "XP", value: `${data.xp} / ${needed}`, inline: true },
+      ],
+      footer: { text: `${message.guild.name}` }, timestamp: new Date()
+    }] });
+  }
+
+  // ,leaderboard / ,lb
+  if (command === "leaderboard" || command === "lb") {
+    const guildEntries = [...xpData.entries()]
+      .filter(([k]) => k.startsWith(message.guild.id))
+      .sort((a, b) => (b[1].level * 1000 + b[1].xp) - (a[1].level * 1000 + a[1].xp))
+      .slice(0, 10);
+    if (guildEntries.length === 0) return message.reply("<:RUSH_list:1521415268000337961> No XP data yet.");
+    const lines = guildEntries.map(([k, d], i) => {
+      const userId = k.split("-")[1];
+      return `**${i + 1}.** <@${userId}> — Level ${d.level} (${d.xp} XP)`;
+    });
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_trophy:1521415294441226271> XP Leaderboard", description: lines.join("\n") }] });
+  }
+
+  // ,setlevel <user> <level>
+  if (command === "setlevel") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const level = parseInt(args[2]);
+    if (isNaN(level)) return err(message, "Invalid level.");
+    const key = `${message.guild.id}-${target.id}`;
+    xpData.set(key, { xp: 0, level });
+    saveXP();
+    return ok(message, `Set **${target.user.username}**'s level to **${level}**`);
+  }
+
+  // ,resetxp <user>
+  if (command === "resetxp") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    xpData.delete(`${message.guild.id}-${target.id}`);
+    return ok(message, `Reset XP for **${target.user.username}**`);
+  }
+
+  // -- ECONOMY ----------------------------------------------
+
+  // ,balance / ,bal [user]
+  if (command === "balance" || command === "bal") {
+    const target = message.mentions.users.first() || message.author;
+    const bal = economy.get(target.id) || 0;
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_dollar:1521415308206669926> ${target.username}'s Balance`, description: `**${bal}** coins` }] });
+  }
+
+  // ,daily
+  if (command === "daily") {
+    const key = `daily-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 86400000) {
+      const remaining = Math.ceil((86400000 - (now - last)) / 3600000);
+      return info(message, `<:RUSH_clock:1521415225058791454> You already claimed your daily. Come back in **${remaining}h**.`);
+    }
+    const current = economy.get(message.author.id) || 0;
+    economy.set(message.author.id, current + 500);
+    saveEconomy();
+    economy.set(key, now);
+    return ok(message, `You claimed your daily **500 coins**! Balance: **${current + 500}**`);
+  }
+
+  // ,pay <user> <amount>
+  if (command === "pay") {
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    const amount = parseInt(args[2]);
+    if (isNaN(amount) || amount <= 0) return err(message, "Invalid amount.");
+    const senderBal = economy.get(message.author.id) || 0;
+    if (senderBal < amount) return err(message, "Insufficient funds.");
+    economy.set(message.author.id, senderBal - amount);
+    economy.set(target.id, (economy.get(target.id) || 0) + amount);
+    return ok(message, `Paid **${amount} coins** to **${target.username}**`);
+  }
+
+  // ,coinflip bet <amount>
+  if (command === "bet") {
+    const amount = parseInt(args[1]);
+    if (isNaN(amount) || amount <= 0) return err(message, "missing required argument");
+
+    const bal = economy.get(message.author.id) || 0;
+    if (bal < amount) return err(message, "Insufficient funds.");
+    const win = Math.random() < 0.5;
+    economy.set(message.author.id, win ? bal + amount : bal - amount);
+    return message.reply(win ? `<:RUSH_giveaway:1521415256772186132> You won **${amount} coins**! Balance: **${bal + amount}**` : `😔 You lost **${amount} coins**. Balance: **${bal - amount}**`);
+  }
+
+  // ,blackjack / ,bj <amount>
+  if (command === "blackjack" || command === "bj") {
+    const amount = parseInt(args[1]);
+    if (isNaN(amount) || amount <= 0) return err(message, "missing required argument");
+
+    const bal = economy.get(message.author.id) || 0;
+    if (bal < amount) return err(message, "Insufficient funds.");
+    const card = () => Math.min(Math.floor(Math.random() * 13) + 1, 10);
+    const playerTotal = card() + card();
+    const dealerTotal = card() + card();
+    const win = playerTotal > dealerTotal && playerTotal <= 21;
+    const bust = playerTotal > 21;
+    economy.set(message.author.id, win ? bal + amount : bal - amount);
+    return info(message, `🃏 You: **${playerTotal}** | Dealer: **${dealerTotal}** — ${bust ? "bust!" : win ? `you win **${amount} coins**!` : `dealer wins. -${amount} coins`}`);
+  }
+
+  // ,richlist
+  if (command === "richlist") {
+    const entries = [...economy.entries()]
+      .filter(([k]) => !k.startsWith("daily-"))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    if (entries.length === 0) return message.reply("<:RUSH_list:1521415268000337961> No economy data yet.");
+    const lines = entries.map(([id, bal], i) => `**${i + 1}.** <@${id}> — **${bal}** coins`);
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_dollar:1521415308206669926> Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // -- REMINDERS --------------------------------------------
+
+  // ,remind <time> <text> (e.g. ,remind 30m take a break)
+  if (command === "remind" || command === "reminder") {
+    const timeStr = args[1];
+    const text = args.slice(2).join(" ");
+    if (!timeStr || !text) return err(message, "missing required argument: **time** and **message**\nusage: `,remind 30m take a break`");
+    const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return err(message, "invalid time format — use: `30s`, `5m`, `2h`, `1d`");
+    const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    const list = remindersData.get(message.author.id) || [];
+    list.push({ time: Date.now() + ms, text, channelId: message.channel.id });
+    remindersData.set(message.author.id, list);
+    saveReminders();
+    return info(message, `<:RUSH_clock:1521415225058791454> I'll remind you in **${timeStr}**: ${text}`);
+  }
+
+  // ,reminders
+  if (command === "reminders") {
+    const list = remindersData.get(message.author.id) || [];
+    if (list.length === 0) return message.reply("<:RUSH_task:1521415237813665813> You have no active reminders.");
+    const lines = list.map((r, i) => `**${i + 1}.** ${r.text} — <t:${Math.floor(r.time / 1000)}:R>`);
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_clock:1521415225058791454> Your Reminders", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // -- GIVEAWAYS --------------------------------------------
+
+  // ,gcreate <duration> <prize> (e.g. ,gcreate 1h iPhone 15)
+  if (command === "gcreate" || command === "gstart") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const timeStr = args[1];
+    const prize = args.slice(2).join(" ");
+    if (!timeStr || !prize) return err(message, "missing required argument");
+
+    const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return err(message, "Invalid time.");
+    const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    const endTime = Date.now() + ms;
+    const embed = { color: PINK, title: "<:RUSH_giveaway:1521415256772186132> GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with <:RUSH_giveaway:1521415256772186132> to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.username}` } };
+    const msg = await message.channel.send({ embeds: [embed] });
+    await msg.react("1491885329978888212");
+    giveaways.set(msg.id, { prize, endTime, entries: [], channelId: message.channel.id, guildId: message.guild.id, ended: false });
+    saveGiveaways();
+    message.delete().catch(() => {});
+  }
+
+  // ,gend <messageId>
+  if (command === "gend") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    if (!msgId) return err(message, "missing required argument");
+
+    const gw = giveaways.get(msgId);
+    if (!gw) return err(message, "Giveaway not found.");
+    gw.endTime = 0;
+    giveaways.set(msgId, gw);
+    return ok(message, "Giveaway will end shortly.");
+  }
+
+  // ,greroll <messageId>
+  if (command === "greroll") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    if (!msgId) return err(message, "missing required argument");
+
+    const gw = giveaways.get(msgId);
+    if (!gw || !gw.ended || gw.entries.length === 0) return err(message, "Giveaway not found or no entries.");
+    const winner = gw.entries[Math.floor(Math.random() * gw.entries.length)];
+    return ok(message, `New winner: <@${winner}>! Congratulations!`);
+  }
+
+  // -- SERVER CONFIG ----------------------------------------
+
+  // ,autorole <@role | off>
+  if (command === "autorole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") {
+      autoroles.delete(message.guild.id);
+      saveAllConfigs();return ok(message, "Autorole disabled.");
+    }
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    autoroles.set(message.guild.id, role.id);
+    saveAllConfigs();return ok(message, `Autorole set to **${role.name}**`);
+  }
+
+  // ,welcome <#channel> <message> (use {user}, {server}, {count})
+  if (command === "welcome") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { welcomeConfig.delete(message.guild.id); return ok(message, "Welcome messages disabled."); }
+    const channel = message.mentions.channels.first();
+    if (!channel) return err(message, "missing required argument");
+
+    const msg = args.slice(2).join(" ");
+    if (!msg) return err(message, "Please provide a message. Use `{user}`, `{server}`, `{count}`");
+    welcomeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
+    saveAllConfigs();return ok(message, `Welcome messages set in ${channel}`);
+  }
+
+  // ,goodbye <#channel> <message>
+  if (command === "goodbye") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { goodbyeConfig.delete(message.guild.id); return ok(message, "Goodbye messages disabled."); }
+    const channel = message.mentions.channels.first();
+    if (!channel) return err(message, "missing required argument");
+
+    const msg = args.slice(2).join(" ");
+    if (!msg) return err(message, "Please provide a message.");
+    goodbyeConfig.set(message.guild.id, { channelId: channel.id, message: msg });
+    saveAllConfigs();return ok(message, `Goodbye messages set in ${channel}`);
+  }
+
+  // ,embedcolor [#hex | reset] -- set or reset the embed color for this server
+  if (command === "embedcolor" || command === "embedcolour") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+
+    const input = args[1]?.toLowerCase();
+
+    if (!input || input === "view") {
+      const current = embedColors.get(message.guild.id);
+      const hex = current ? `#${current.toString(16).toUpperCase().padStart(6, "0")}` : "#FF69B4 (default pink)";
+      return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "🎨 Embed Color", description: `Current color: **${hex}**\n\nUse \`,embedcolor #RRGGBB\` to change it.\nUse \`,embedcolor reset\` to go back to default pink.`, thumbnail: { url: `https://singlecolorimage.com/get/${(current ?? PINK).toString(16).padStart(6,"0")}/64x64` } }] });
+    }
+
+    if (input === "reset" || input === "default") {
+      embedColors.delete(message.guild.id);
+      saveAllConfigs();
+      return message.reply({ embeds: [{ color: PINK, title: "🎨 Embed Color Reset", description: "Embed color reset to default **#FF69B4** (pink)." }] });
+    }
+
+    // Parse hex: accept #RRGGBB or RRGGBB
+    const hex = input.replace("#", "");
+    if (!/^[0-9a-f]{6}$/i.test(hex)) return err(message, "Invalid color. Use a hex code like `,embedcolor #FF69B4`");
+
+    const colorInt = parseInt(hex, 16);
+    embedColors.set(message.guild.id, colorInt);
+    saveAllConfigs();
+    return message.reply({ embeds: [{ color: colorInt, title: "🎨 Embed Color Updated", description: `All embeds in this server will now use **#${hex.toUpperCase()}**.` }] });
+  }
+
+
+  if (command === "pingonjoin" || command === "poj") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+
+    function pojEmbed(cfg) {
+      const channels = (cfg?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*";
+      return {
+        color: 0x2B2D31,
+        title: "Ping on join",
+        description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+        fields: [
+          { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+          { name: "Channels", value: channels,                               inline: false },
+        ],
+      };
+    }
+
+    function pojComponents(guildId) {
+      const { ActionRowBuilder } = require("discord.js");
+      return [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+      )];
+    }
+
+    const cfg = pingOnJoinConfig.get(message.guild.id) ?? { enabled: false, channels: [] };
+    pingOnJoinConfig.set(message.guild.id, cfg);
+    return message.reply({ embeds: [pojEmbed(cfg)], components: pojComponents(message.guild.id) });
+  }
+
+  // ,starboard <#channel> [threshold]
+  if (command === "starboard") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { starboardConfig.delete(message.guild.id); return ok(message, "Starboard disabled."); }
+    const channel = message.mentions.channels.first();
+    if (!channel) return err(message, "missing required argument");
+
+    const threshold = parseInt(args[2]) || 3;
+    starboardConfig.set(message.guild.id, { channelId: channel.id, threshold });
+    return ok(message, `Starboard set to ${channel} with threshold **${threshold}** <:awhitestar:1521415243954393159>`);
+  }
+
+  // ,setup -- creates jail-log channel and jailed role
+  if (command === "setup") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    await message.channel.sendTyping().catch(() => {});
+
+    const results = [];
+
+    // Create Jailed role if it doesn't exist
+    let jailedRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
+    if (!jailedRole) {
+      jailedRole = await message.guild.roles.create({ name: "Jailed", color: "#808080", reason: "Setup by bot" }).catch(() => null);
+      results.push(jailedRole ? `<:019TXTWhite_Yes:1521327983279996999> Created role **Jailed**` : `<:steal:1521327958634135655> Failed to create Jailed role`);
+    } else {
+      results.push(`ℹ️ Role **Jailed** already exists`);
+    }
+
+    // Create jail-log channel if it doesn't exist
+    let jailLog = message.guild.channels.cache.find(c => c.name === "jail-log");
+    if (!jailLog) {
+      jailLog = await message.guild.channels.create({
+        name: "jail-log", type: 0,
+        permissionOverwrites: [
+          { id: message.guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+        ]
+      }).catch(() => null);
+      results.push(jailLog ? `<:019TXTWhite_Yes:1521327983279996999> Created channel **#jail-log**` : `<:steal:1521327958634135655> Failed to create jail-log`);
+    } else {
+      results.push(`ℹ️ Channel **#jail-log** already exists`);
+    }
+
+    // Create jail channel if it doesn't exist
+    let jailChannel = message.guild.channels.cache.find(c => c.name === "jail");
+    if (!jailChannel) {
+      jailChannel = await message.guild.channels.create({
+        name: "jail", type: 0,
+        permissionOverwrites: [
+          { id: message.guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          ...(jailedRole ? [{ id: jailedRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
+          { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+        ]
+      }).catch(() => null);
+      results.push(jailChannel ? `<:019TXTWhite_Yes:1521327983279996999> Created channel **#jail**` : `<:steal:1521327958634135655> Failed to create jail channel`);
+    } else {
+      results.push(`ℹ️ Channel **#jail** already exists`);
+    }
+
+    // Apply Jailed role perms to ALL existing channels (deny send + view)
+    if (jailedRole) {
+      let applied = 0;
+      const channels = message.guild.channels.cache.filter(c => c.type === 0 && c.id !== jailChannel?.id);
+      for (const ch of channels.values()) {
+        await ch.permissionOverwrites.edit(jailedRole, {
+          SendMessages: false,
+          AddReactions: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false,
+        }).catch(() => {});
+        applied++;
+      }
+      results.push(`<:019TXTWhite_Yes:1521327983279996999> Applied Jailed perms to **${applied}** channels`);
+    }
+
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // ,setupmute -- creates muted roles with proper channel overwrites
+  if (command === "setupmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    await message.channel.sendTyping().catch(() => {});
+
+    const results = [];
+    const roleConfigs = [
+      { name: "Muted", deny: { SendMessages: false, CreatePublicThreads: false, CreatePrivateThreads: false } },
+      { name: "Image Muted", deny: { AttachFiles: false, EmbedLinks: false } },
+      { name: "Reaction Muted", deny: { AddReactions: false } },
+    ];
+
+    for (const cfg of roleConfigs) {
+      let role = message.guild.roles.cache.find(r => r.name === cfg.name);
+      if (!role) {
+        role = await message.guild.roles.create({ name: cfg.name, color: "#808080", reason: "Setupmute by bot" }).catch(() => null);
+        if (!role) { results.push(`<:steal:1521327958634135655> Failed to create **${cfg.name}** role`); continue; }
+        results.push(`<:019TXTWhite_Yes:1521327983279996999> Created role **${cfg.name}**`);
+      } else {
+        results.push(`ℹ️ Role **${cfg.name}** already exists`);
+      }
+      // Apply to all text channels
+      let applied = 0;
+      for (const ch of message.guild.channels.cache.filter(c => c.type === 0).values()) {
+        await ch.permissionOverwrites.edit(role, cfg.deny).catch(() => {});
+        applied++;
+      }
+      results.push(`  └ Applied to **${applied}** channels`);
+    }
+
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Mute Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // -- SNIPE ------------------------------------------------
+
+  // ,snipe
+  if (command === "snipe" || command === "s") {
+    const s = sniped.get(message.channel.id);
+    if (!s) return info(message, "nothing to snipe");
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, description: s.content, footer: { text: `🌸 deleted at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
+  }
+
+  // ,editsnipe
+  if (command === "editsnipe" || command === "esnipe" || command === "es") {
+    const s = editSniped.get(message.channel.id);
+    if (!s) return info(message, "nothing to snipe");
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `🌸 edited at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
+  }
+
+  // -- AFK --------------------------------------------------
+
+  // ,afk [reason]
+  if (command === "afk") {
+    const reason = args.slice(1).join(" ") || "AFK";
+    afkUsers.set(`${message.guild.id}-${message.author.id}`, reason);
+    saveAFK();
+    return info(message, `you're now **afk** with the status: **${reason}**`);
+  }
+
+  // -- LAST.FM ----------------------------------------------
+
+  // ,fm set <username>
+  if (command === "fm") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "set") {
+      const username = args[2];
+      if (!username) return err(message, "missing required argument");
+
+      lastfmUsers.set(message.author.id, username);
+      return ok(message, `Last.fm username set to **${username}**`);
+    }
+    if (sub === "unset") {
+      lastfmUsers.delete(message.author.id);
+      return ok(message, "Last.fm username removed.");
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // ,nowplaying / ,np
+  if (command === "nowplaying" || command === "np") {
+    const target = message.mentions.users.first() || message.author;
+    const username = lastfmUsers.get(target.id);
+    if (!username) return err(message, `No Last.fm username set. Use \`,fm set <username>\``);
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=1`);
+      const data = await res.json();
+      const track = data.recenttracks?.track?.[0];
+      if (!track) return err(message, "No recent tracks found.");
+      const isPlaying = track["@attr"]?.nowplaying === "true";
+      return message.reply({ embeds: [{ color: PINK, author: { name: `${isPlaying ? "▶️ Now Playing" : "⏹️ Last Played"} — ${username}`, icon_url: target.displayAvatarURL() }, title: track.name, description: `by **${track.artist["#text"]}** on *${track.album["#text"]}*`, thumbnail: { url: track.image?.[2]?.["#text"] || "" } }] });
+    } catch {
+      return err(message, "Could not fetch Last.fm data. Make sure to add a Last.fm API key.");
+    }
+  }
+
+  // ,topartists / ,ta
+  if (command === "topartists" || command === "ta") {
+    const username = lastfmUsers.get(message.author.id);
+    if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopartists&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const data = await res.json();
+      const artists = data.topartists?.artist;
+      if (!artists) return err(message, "No data found.");
+      const lines = artists.map((a, i) => `**${i + 1}.** ${a.name} — ${a.playcount} plays`);
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Artists for ${username}`, description: lines.join("\n") }] });
+    } catch { return err(message, "Could not fetch Last.fm data."); }
+  }
+
+  // ,toptracks / ,tt
+  if (command === "toptracks" || command === "tt") {
+    const username = lastfmUsers.get(message.author.id);
+    if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const data = await res.json();
+      const tracks = data.toptracks?.track;
+      if (!tracks) return err(message, "No data found.");
+      const lines = tracks.map((t, i) => `**${i + 1}.** ${t.name} by ${t.artist.name} — ${t.playcount} plays`);
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Tracks for ${username}`, description: lines.join("\n") }] });
+    } catch { return err(message, "Could not fetch Last.fm data."); }
+  }
+
+  // ,topalbums / ,tal
+  if (command === "topalbums" || command === "tal") {
+    const username = lastfmUsers.get(message.author.id);
+    if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopalbums&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const data = await res.json();
+      const albums = data.topalbums?.album;
+      if (!albums) return err(message, "No data found.");
+      const lines = albums.map((a, i) => `**${i + 1}.** ${a.name} by ${a.artist.name} — ${a.playcount} plays`);
+      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Albums for ${username}`, description: lines.join("\n") }] });
+    } catch { return err(message, "Could not fetch Last.fm data."); }
+  }
+
+  // ,fmprofile / ,fmp
+  if (command === "fmprofile" || command === "fmp") {
+    const target = message.mentions.users.first() || message.author;
+    const username = lastfmUsers.get(target.id);
+    if (!username) return err(message, "No Last.fm username set.");
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getinfo&user=${username}&api_key=YOUR_LASTFM_KEY&format=json`);
+      const data = await res.json();
+      const user = data.user;
+      if (!user) return err(message, "missing required argument: **user**");
+      return message.reply({ embeds: [{ color: PINK, title: user.name, url: user.url, thumbnail: { url: user.image?.[2]?.["#text"] || "" }, fields: [{ name: "Scrobbles", value: user.playcount, inline: true }, { name: "Artists", value: user.artist_count || "N/A", inline: true }, { name: "Registered", value: `<t:${user.registered?.unixtime}:R>`, inline: true }] }] });
+    } catch { return err(message, "Could not fetch Last.fm data."); }
+  }
+
+  // -- TICKETS ----------------------------------------------
+
+  // ,ticket setup <#log-channel>
+
+});
+
+// ===================================================
+// ===== MASS DM SYSTEM (with Railway persistence) ===
+// ===================================================
+const MASSDM_TAG = "SENSATIONAL_MASSDM_V1";
+let activeMassDM = null; // { guildId, channelId, dmText, targetIds, startIndex, statusMsgId, sent, failed }
+
+async function saveMassDMProgress() {
+  if (!activeMassDM) return;
+  saveMassDM(); // DB-backed via scheduleSave
+}
+
+async function clearMassDMProgress() {
+  activeMassDM = null;
+  saveMassDM(); // DB-backed via scheduleSave
+}
+
+async function resumeMassDMIfNeeded() {
+  try {
+    if (!activeMassDM || !activeMassDM.targetIds?.length) return;
+    if (activeMassDM.startIndex >= activeMassDM.targetIds.length) {
+      activeMassDM = null;
+      saveMassDM();
+      return;
+    }
+    const remaining = activeMassDM.targetIds.length - activeMassDM.startIndex;
+    log(`[MassDM] Resuming — ${remaining} users left from index ${activeMassDM.startIndex}`, "info");
+    const notifyCh = client.channels.cache.get(activeMassDM.channelId);
+    if (notifyCh) {
+      await notifyCh.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n<a:Loading:1521415253982969898> **${remaining}** users remaining (${activeMassDM.sent} sent, ${activeMassDM.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
+    }
+    runMassDM(activeMassDM);
+  } catch (e) {
+    log(`[MassDM] Resume error: ${e.message}`, "error");
+  }
+}
+
+async function runMassDM(state) {
+  const { guildId, channelId, dmText, targetIds, sent: prevSent = 0, failed: prevFailed = 0 } = state;
+  let { startIndex = 0 } = state;
+
+  activeMassDM = { ...state, sent: prevSent, failed: prevFailed, startIndex };
+
+  const guild = client.guilds.cache.get(guildId);
+  const statusCh = client.channels.cache.get(channelId);
+
+  let sent = prevSent, failed = prevFailed, rateLimited = 0;
+  let cancelled = false;
+  const startTime = Date.now();
+  const total = targetIds.length;
+
+  const statusMsg = statusCh ? await statusCh.send({ embeds: [{ color: PINK,
+    title: "<:RUSH_comment:1491884212297531572> Mass DM in progress...",
+    description: `Sending to **${total - startIndex}** remaining members (${startIndex > 0 ? `resumed from #${startIndex}` : 'started fresh'})\n\n<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${total - startIndex}**`,
+    footer: { text: "React to cancel" }
+  }] }).catch(() => null) : null;
+
+  if (statusMsg) {
+    activeMassDM.statusMsgId = statusMsg.id;
+    await statusMsg.react("1521327958634135655").catch(() => {});
+    statusMsg.createReactionCollector({
+      filter: (r, u) => r.emoji.id === "1521327958634135655" && !u.bot,
+      time: 48 * 60 * 60 * 1000
+    }).on("collect", () => { cancelled = true; });
+  }
+
+  const updateStatus = async () => {
+    if (!statusMsg) return;
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const done = (sent + failed) - prevSent - prevFailed;
+    const rate = done / (elapsed || 1);
+    const remaining = total - startIndex;
+    const eta = rate > 0 ? Math.ceil(remaining / rate) : "?";
+    await statusMsg.edit({ embeds: [{ color: PINK,
+      title: "<:RUSH_comment:1491884212297531572> Mass DM in progress...",
+      description: `<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${remaining}**\n<:RUSH_thunder:1521415273943400580> **${rate.toFixed(1)}/s** | <:RUSH_clock:1521415225058791454> ETA: **${typeof eta === "number" ? eta + "s" : eta}**\n<:RUSH_pin:1521415247183872080> Progress saved — safe to restart`,
+      footer: { text: `Elapsed: ${elapsed}s` }
+    }] }).catch(() => {});
+  };
+
+  for (let i = startIndex; i < targetIds.length; i++) {
+    if (cancelled) break;
+
+    const userId = targetIds[i];
+    let retries = 0, done = false;
+
+    while (retries < 3 && !done) {
+      try {
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (!user) { failed++; done = true; break; }
+        await user.send({ embeds: [{ color: PINK,
+          title: `<:RUSH_comment:1491884212297531572> Message from ${guild?.name || "Server"}`,
+          description: dmText,
+          footer: { text: guild?.name || "Server" },
+          timestamp: new Date()
+        }] });
+        sent++;
+        done = true;
+      } catch (e) {
+        if (e.code === 50007 || e.code === 50013 || e.code === 10013) {
+          failed++; done = true; // DMs closed or invalid user
+        } else if (e.status === 429 || e.code === 429) {
+          rateLimited++;
+          const wait = Math.max((e.retryAfter || 5) * 1000, 5000) + 1000;
+          log(`[MassDM] Rate limited — waiting ${wait}ms`, "error");
+          await new Promise(r => setTimeout(r, wait));
+          retries++;
+        } else {
+          failed++; done = true;
+        }
+      }
+    }
+    if (!done) failed++;
+
+    startIndex = i + 1;
+    activeMassDM.startIndex = startIndex;
+    activeMassDM.sent = sent;
+    activeMassDM.failed = failed;
+
+    // Save progress every 10 sends
+    if (startIndex % 10 === 0) await saveMassDMProgress();
+    // Update status every 50
+    if (startIndex % 50 === 0) await updateStatus();
+
+    // 1.1s between DMs -- Discord allows ~1/s
+    await new Promise(r => setTimeout(r, 1100));
+  }
+
+  // Done -- clear saved state
+  await clearMassDMProgress();
+
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK,
+    title: cancelled ? "<:RUSH_comment:1491884212297531572> Mass DM cancelled" : "<:RUSH_comment:1491884212297531572> Mass DM complete <:019TXTWhite_Yes:1521327983279996999>",
+    description: `<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed (DMs off): **${failed}**${rateLimited > 0 ? ` | <:RUSH_thunder:1521415273943400580> Rate limited: **${rateLimited}x**` : ""}\n<:RUSH_clock:1521415225058791454> Total time: **${elapsed}s** | 👥 Total: **${total}**`,
+    footer: { text: guild?.name || "Server" }, timestamp: new Date()
+  }] }).catch(() => {});
+
+  log(`[MassDM] Complete — sent: ${sent}, failed: ${failed}, time: ${elapsed}s`, "success");
+}
+
+
+const TICKET_CATEGORY_ID = "1409003502826557560";
+const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
+const TICKET_NO_RESPONSE_MS = 30 * 60 * 1000;  // 30 minutes — delete if creator never writes
+const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing, openedAt, creatorMsgSent }
+const ticketWarnings = new Map();
+
+// Auto-delete a ticket where the creator never responded within 30 minutes
+async function closeNoResponseTicket(channelId, activity) {
+  if (activity.closing) return;
+  activity.closing = true;
+  ticketActivity.set(channelId, activity);
+  try {
+    const guild = client.guilds.cache.get(activity.guildId);
+    if (!guild) { ticketActivity.delete(channelId); return; }
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) { ticketActivity.delete(channelId); return; }
+
+    await ch.send({ embeds:[{ color:0xFF4444, description:`<@${activity.creatorId}> This ticket has been deleted because no message was sent within **30 minutes**.` }] }).catch(()=>{});
+
+    ticketActivity.delete(channelId);
+    ticketWarnings.delete(channelId);
+    for (const [key, chId] of openTickets.entries()) {
+      if (chId === channelId) { openTickets.delete(key); break; }
+    }
+    await new Promise(r => setTimeout(r, 5000));
+    await ch.delete("[Auto-Delete] No response in 30min").catch(e => log(`[Tickets] <:steal:1521327958634135655> Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] <:019TXTWhite_Yes:1521327983279996999> Auto-deleted ${ch.name} (no creator response in 30min)`, "success");
+  } catch (e) {
+    log(`[Tickets] <:steal:1521327958634135655> closeNoResponseTicket error ${channelId}: ${e.message}`, "error");
+    ticketActivity.delete(channelId);
+  }
+}
+
+async function closeInactiveTicket(channelId, activity) {
+  if (activity.closing) return;
+  activity.closing = true;
+  ticketActivity.set(channelId, activity);
+
+  try {
+    const guild = client.guilds.cache.get(activity.guildId);
+    if (!guild) { ticketActivity.delete(channelId); return; }
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) { ticketActivity.delete(channelId); return; }
+
+    // DM creator
+    client.users.fetch(activity.creatorId).then(creator => {
+      creator.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **2 hours** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+    }).catch(() => {});
+
+    // Send warning in channel
+    await ch.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **2 hours** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
+
+    // Log
+    const cfg = ticketConfig.get(guild.id);
+    if (cfg?.logChannelId) {
+      const logCh = guild.channels.cache.get(cfg.logChannelId);
+      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "<:RUSH_ticket:1521415234802417754> Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **2 hours** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+    }
+
+    // Cleanup
+    ticketActivity.delete(channelId);
+    ticketWarnings.delete(channelId);
+    for (const [key, chId] of openTickets.entries()) {
+      if (chId === channelId) { openTickets.delete(key); break; }
+    }
+
+    // Delete channel immediately (await so we know if it works)
+    await new Promise(r => setTimeout(r, 5000));
+    await ch.delete("[Auto-Close] Inactive 2h").catch(e => log(`[Tickets] <:steal:1521327958634135655> Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] <:019TXTWhite_Yes:1521327983279996999> Deleted ${ch.name}`, "success");
+  } catch (e) {
+    log(`[Tickets] <:steal:1521327958634135655> Error closing ${channelId}: ${e.message}`, "error");
+    ticketActivity.delete(channelId);
+  }
+}
+
+// On startup: scan ticket category and re-register open tickets
+async function rehydrateTickets() {
+  try {
+    let count = 0;
+    for (const guild of client.guilds.cache.values()) {
+      const ticketChannels = guild.channels.cache.filter(c => c.parentId === TICKET_CATEGORY_ID && c.type === 0);
+      for (const ch of ticketChannels.values()) {
+        if (ticketActivity.has(ch.id)) continue;
+
+        // Find creator from openTickets map first
+        let creatorId = null;
+        for (const [key, chId] of openTickets.entries()) {
+          if (chId === ch.id) { creatorId = key.split('-')[1]; break; }
+        }
+
+        // Fallback: first non-bot message in channel
+        if (!creatorId) {
+          const msgs = await ch.messages.fetch({ limit: 50 }).catch(() => null);
+          if (msgs) {
+            const firstHuman = [...msgs.values()].reverse().find(m => !m.author.bot);
+            if (firstHuman) creatorId = firstHuman.author.id;
+          }
+        }
+
+        if (!creatorId) { log(`[Tickets] Could not find creator for ${ch.name}, skipping`, "error"); continue; }
+
+        // lastActivity = last message from creator only (mods don't reset timer)
+        const msgs2 = await ch.messages.fetch({ limit: 100 }).catch(() => null);
+        const lastCreatorMsg = msgs2 ? [...msgs2.values()].find(m => m.author.id === creatorId) : null;
+        const lastActivity = lastCreatorMsg ? lastCreatorMsg.createdTimestamp : ch.createdTimestamp;
+        const elapsed = Date.now() - lastActivity;
+
+        ticketActivity.set(ch.id, { creatorId, guildId: guild.id, lastActivity, closing: false });
+        count++;
+        log(`[Tickets] Re-registered ${ch.name} — inactive for ${Math.floor(elapsed/60000)}min`, "info");
+
+        // If already over 2 hours, close immediately
+        if (elapsed >= TICKET_TIMEOUT_MS) {
+          log(`[Tickets] ${ch.name} already past 2h — closing immediately`, "info");
+          closeInactiveTicket(ch.id, ticketActivity.get(ch.id));
+        }
+      }
+    }
+    log(`[Tickets] Rehydrated ${count} tickets`, "success");
+  } catch (e) {
+    log(`[Tickets] Rehydration error: ${e.message}`, "error");
+  }
+}
+
+// Reset timer ONLY when CREATOR sends a message
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const activity = ticketActivity.get(message.channel.id);
+  if (!activity || activity.closing) return;
+  if (message.author.id !== activity.creatorId) return;
+  activity.lastActivity = Date.now();
+  activity.creatorMsgSent = true; // mark that creator has responded
+  ticketActivity.set(message.channel.id, activity);
+  log(`[Tickets] Timer reset for ${message.channel.name}`, "info");
+});
+
+// Check every 5 minutes (more reliable than every minute)
+setInterval(async () => {
+  const now = Date.now();
+  const entries = [...ticketActivity.entries()];
+  if (entries.length > 0) log(`[Tickets] Checking ${entries.length} ticket(s)...`, "info");
+  for (const [channelId, activity] of entries) {
+    if (activity.closing) continue;
+    const elapsed = now - activity.lastActivity;
+    // 30-minute no-response: creator never sent a message since ticket opened
+    if (!activity.creatorMsgSent && activity.openedAt && (now - activity.openedAt) >= TICKET_NO_RESPONSE_MS) {
+      log(`[Tickets] ${channelId}: creator never responded in 30min — auto-deleting`, "info");
+      closeNoResponseTicket(channelId, activity);
+      continue;
+    }
+    const minutesLeft = Math.ceil((TICKET_TIMEOUT_MS - elapsed) / 60000);
+    log(`[Tickets] ${channelId}: ${Math.floor(elapsed/60000)}min inactive (${minutesLeft}min left)`, "info");
+    if (elapsed >= TICKET_TIMEOUT_MS) {
+      closeInactiveTicket(channelId, activity);
+    }
+  }
+}, 5 * 60 * 1000); // every 5 minutes
+
+// ===== TICKET + EXTRA COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  // ,tc -- close ticket (usable by creator, mods with ManageChannels, or configured mod role)
+  if (command === "tc") {
+    const _cfg = ticketConfig.get(message.guild.id);
+    const _act = ticketActivity.get(message.channel.id);
+    if (!_act) return err(message, "this channel is not a ticket");
+    const _isCreator = _act.creatorId === message.author.id;
+    const _hasPerm = message.member.permissions.has(PermissionFlagsBits.ManageChannels);
+    const _hasRole = _cfg?.modRoleId && message.member.roles.cache.has(_cfg.modRoleId);
+    if (!_isCreator && !_hasPerm && !_hasRole) return err(message, "you don't have permission to close this ticket");
+    if (_cfg?.logChannelId) {
+      const _logCh = message.guild.channels.cache.get(_cfg.logChannelId);
+      if (_logCh) _logCh.send({ embeds: [{ color: PINK, description: `Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
+    }
+    ticketActivity.delete(message.channel.id);
+    ticketWarnings.delete(message.channel.id);
+    for (const [k, chId] of openTickets.entries()) {
+      if (chId === message.channel.id) { openTickets.delete(k); break; }
+    }
+    await message.channel.send({ embeds: [{ color: PINK, description: "Closing ticket in 3 seconds..." }] });
+    setTimeout(() => message.channel.delete().catch(() => {}), 3000);
+    return;
+  }
+
+  if (command === "ticket") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "setup") {
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+      const logCh = message.mentions.channels.first();
+      if (!logCh) return err(message, "missing required argument");
+      ticketConfig.set(message.guild.id, { logChannelId: logCh.id });
+      saveAllConfigs();
+      return ok(message, `ticket system set up. logs → ${logCh}`);
+    }
+    if (sub === "create" || !sub) {
+      const existing = openTickets.get(`${message.guild.id}-${message.author.id}`);
+      if (existing) return err(message, `you already have an open ticket: <#${existing}>`);
+      const cfg = ticketConfig.get(message.guild.id);
+      const permOverwrites = [
+        { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+        { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      ];
+      // Add mod role to ticket if configured
+      if (cfg?.modRoleId) {
+        permOverwrites.push({ id: cfg.modRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] });
+      }
+      const ticketChannel = await message.guild.channels.create({
+        name: `ticket-${message.author.username}`,
+        type: 0,
+        parent: TICKET_CATEGORY_ID,
+        permissionOverwrites: permOverwrites
+      }).catch(() => null);
+      if (!ticketChannel) return err(message, "could not create ticket channel — check my permissions");
+      openTickets.set(`${message.guild.id}-${message.author.id}`, ticketChannel.id);
+      ticketActivity.set(ticketChannel.id, {
+        creatorId: message.author.id,
+        guildId: message.guild.id,
+        lastActivity: Date.now(),
+        closing: false
+      });
+      await ticketChannel.send({ embeds: [{ color: PINK, title: "<:RUSH_ticket:1521415234802417754> Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n<:RUSH_warning:1521415214799654985> This ticket will be **automatically closed** if you don't respond within **2 hours**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
+      return ok(message, `ticket created: ${ticketChannel}`);
+    }
+    if (sub === "close") {
+      // Allow: ticket creator, mods with ManageChannels, or the configured mod role
+      const config = ticketConfig.get(message.guild.id);
+      const activity = ticketActivity.get(message.channel.id);
+      const isCreator = activity?.creatorId === message.author.id;
+      const hasPerm = message.member.permissions.has(PermissionFlagsBits.ManageChannels);
+      const hasModRole = config?.modRoleId && message.member.roles.cache.has(config.modRoleId);
+      if (!isCreator && !hasPerm && !hasModRole) return err(message, "You don't have permission to close this ticket.");
+
+      if (config?.logChannelId) {
+        const logCh = message.guild.channels.cache.get(config.logChannelId);
+        if (logCh) logCh.send({ embeds: [{ color: PINK, description: `Ticket **${message.channel.name}** closed by **${message.author.username}**`, timestamp: new Date() }] }).catch(() => {});
+      }
+      ticketActivity.delete(message.channel.id);
+      ticketWarnings.delete(message.channel.id);
+      for (const [key, chId] of openTickets.entries()) {
+        if (chId === message.channel.id) { openTickets.delete(key); break; }
+      }
+      await message.channel.send({ embeds: [{ color: PINK, description: "Closing ticket in 3 seconds..." }] });
+      setTimeout(() => message.channel.delete().catch(() => {}), 3000);
+      return;
+    }
+    if (sub === "add") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+      const target = message.mentions.members.first();
+      if (!target) return err(message, "missing required argument");
+      await message.channel.permissionOverwrites.edit(target, { ViewChannel: true, SendMessages: true }).catch(() => null);
+      return ok(message, `added ${target} to the ticket`);
+    }
+    if (sub === "remove") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+      const target = message.mentions.members.first();
+      if (!target) return err(message, "missing required argument");
+
+      await message.channel.permissionOverwrites.delete(target).catch(() => null);
+      return ok(message, `Removed ${target} from the ticket.`);
+    }
+  }
+
+  // -- FUN EXTRAS ------------------------------------------─
+
+  // ,rps <rock|paper|scissors>
+  if (command === "rps") {
+    const choices = ["rock", "paper", "scissors"];
+    const userChoice = args[1]?.toLowerCase();
+    if (!choices.includes(userChoice)) return err(message, "missing required argument");
+
+    const botChoice = choices[Math.floor(Math.random() * 3)];
+    let result;
+    if (userChoice === botChoice) result = "🤝 It's a tie!";
+    else if ((userChoice === "rock" && botChoice === "scissors") || (userChoice === "paper" && botChoice === "rock") || (userChoice === "scissors" && botChoice === "paper")) result = "<:RUSH_giveaway:1521415256772186132> You win!";
+    else result = "😔 You lose!";
+    return info(message, `You: **${userChoice}** | Me: **${botChoice}** — ${result}`);
+  }
+
+  // ,tictactoe / ,ttt <@user>
+  if (command === "tictactoe" || command === "ttt") {
+    const target = message.mentions.users.first();
+    if (!target || target.bot || target.id === message.author.id) return err(message, "missing required argument");
+
+    const board = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    const players = [message.author.id, target.id];
+    let turn = 0;
+    const render = () => `${board[0]}|${board[1]}|${board[2]}\n-+-+-\n${board[3]}|${board[4]}|${board[5]}\n-+-+-\n${board[6]}|${board[7]}|${board[8]}`;
+    const checkWin = () => {
+      const wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+      return wins.some(([a,b,c]) => board[a] === board[b] && board[b] === board[c] && ["X","O"].includes(board[a]));
+    };
+    const msg = await message.channel.send(`🎮 TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
+    const collector = message.channel.createMessageCollector({ filter: m => players.includes(m.author.id) && /^[1-9]$/.test(m.content), time: 60000 });
+    collector.on("collect", async m => {
+      if (m.author.id !== players[turn]) return;
+      const pos = parseInt(m.content) - 1;
+      if (["X","O"].includes(board[pos])) return;
+      board[pos] = turn === 0 ? "X" : "O";
+      m.delete().catch(() => {});
+      if (checkWin()) { collector.stop(); return msg.edit(`🎮 TicTacToe\n\`\`\`${render()}\`\`\`\n<:RUSH_giveaway:1521415256772186132> <@${players[turn]}> wins!`); }
+      if (!board.includes(...["1","2","3","4","5","6","7","8","9"].filter(n => board.includes(n)))) { collector.stop(); return msg.edit(`🎮 TicTacToe\n\`\`\`${render()}\`\`\`\n🤝 It's a draw!`); }
+      turn = turn === 0 ? 1 : 0;
+      msg.edit(`🎮 TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
+    });
+    collector.on("end", (_, reason) => { if (reason === "time") msg.edit(`<:RUSH_clock:1521415225058791454> Game timed out.\n\`\`\`${render()}\`\`\``); });
+  }
+
+  // ,hack <@user> -- joke command
+  if (command === "hack") {
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    const steps = [
+      { color: PINK, description: `🔍 Finding IP of **${target.username}**...` },
+      { color: PINK, description: `💻 Accessing mainframe...` },
+      { color: PINK, description: `<:RUSH_unlock:1521415218037526641> Bypassing firewall...` },
+      { color: PINK, description: `<:RUSH_folder:1521415227495940096> Stealing data...` },
+      { color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Successfully hacked **${target.username}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
+    ];
+    let i = 0;
+    const m = await message.reply({ embeds: [steps[0]] });
+    const interval = setInterval(() => {
+      i++;
+      if (i >= steps.length) { clearInterval(interval); return; }
+      m.edit({ embeds: [steps[i]] }).catch(() => clearInterval(interval));
+    }, 1500);
+  }
+
+  // ,ship <@user1> [@user2]
+  if (command === "ship") {
+    const u1 = message.mentions.users.first() || message.author;
+    const u2 = [...message.mentions.users.values()][1] || message.author;
+    const score = Math.floor(Math.random() * 101);
+    const bar = "█".repeat(Math.floor(score / 10)) + "░".repeat(10 - Math.floor(score / 10));
+    return message.reply({ embeds: [{ color: PINK, title: "💕 Ship", description: `**${u1.username}** 💕 **${u2.username}**\n\n${bar} **${score}%**`, footer: { text: message.guild.name } }] });
+  }
+
+  // ,pp [user]
+  if (command === "pp") {
+    const target = message.mentions.users.first() || message.author;
+    const size = Math.floor(Math.random() * 15);
+    return info(message, `**${target.username}**'s pp: 8${"=".repeat(size)}D`);
+  }
+
+  // ,rate <thing>
+  if (command === "rate") {
+    const thing = args.slice(1).join(" ");
+    if (!thing) return err(message, "missing required argument");
+
+    const score = Math.floor(Math.random() * 11);
+    return info(message, `I rate **${thing}** a **${score}/10**`);
+  }
+
+  // ,howgay [user]
+  if (command === "howgay") {
+    const target = message.mentions.users.first() || message.author;
+    const score = Math.floor(Math.random() * 101);
+    return info(message, `**${target.username}** is **${score}%** gay`);
+  }
+
+  // ,howdumb [user]
+  if (command === "howdumb") {
+    const target = message.mentions.users.first() || message.author;
+    const score = Math.floor(Math.random() * 101);
+    return info(message, `**${target.username}** is **${score}%** dumb`);
+  }
+
+  // ,wanted [user]
+  if (command === "wanted") {
+    const target = message.mentions.users.first() || message.author;
+    return info(message, `**WANTED**\n${target.displayAvatarURL()}\nReward: $${Math.floor(Math.random() * 1000000)}`);
+  }
+
+  // -- UTILITY EXTRAS --------------------------------------─
+
+  // ,uptime
+  if (command === "uptime") {
+    const s = Math.floor(process.uptime());
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return info(message, `uptime **${d}d ${h}h ${m}m ${sec}s**`);
+  }
+
+  // ,firstmessage [#channel]
+  if (command === "firstmessage") {
+    await message.channel.sendTyping().catch(() => {});
+    const channel = message.mentions.channels.first() || message.channel;
+    const msgs = await channel.messages.fetch({ limit: 1, after: "0" }).catch(() => null);
+    if (!msgs || msgs.size === 0) return err(message, "Could not fetch messages.");
+    const first = msgs.first();
+    return info(message, `first message in ${channel}: https://discord.com/channels/${message.guild.id}/${channel.id}/${first.id}`);
+  }
+
+  // ,jumbo <emoji>
+  if (command === "jumbo") {
+    const emoji = args[1];
+    if (!emoji) return err(message, "missing required argument");
+
+    const match = emoji.match(/<a?:[^:]+:(\d+)>/);
+    if (match) return message.reply({ embeds: [{ image: { url: `https://cdn.discordapp.com/emojis/${match[1]}.${emoji.startsWith("<a:") ? "gif" : "png"}?size=256` } }] });
+    return err(message, "Please use a custom Discord emoji.");
+  }
+
+  // ,stealemoji <emoji> <name>
+  if (command === "stealemoji") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+    const emoji = args[1];
+    const name = args[2];
+    if (!emoji || !name) return err(message, "missing required argument");
+
+    const match = emoji.match(/<a?:[^:]+:(\d+)>/);
+    if (!match) return err(message, "Invalid emoji.");
+    const url = `https://cdn.discordapp.com/emojis/${match[1]}.${emoji.startsWith("<a:") ? "gif" : "png"}`;
+    const created = await message.guild.emojis.create({ attachment: url, name }).catch(() => null);
+    if (!created) return err(message, "Failed to add emoji.");
+    return ok(message, `Added emoji ${created}`);
+  }
+
+  // ,steal <emoji> — steals the emoji next to the command
+  if (command === "steal") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+    const emojiStr = args[1];
+    if (!emojiStr) return err(message, "missing required argument: **emoji**\nusage: `,steal <emoji>`");
+    const match = emojiStr.match(/<(a?):([^:]+):(\d+)>/);
+    if (!match) return err(message, "that's not a custom emoji — only emojis from other servers can be stolen");
+    const [, animated, emojiName, emojiId] = match;
+    const url = `https://cdn.discordapp.com/emojis/${emojiId}.${animated ? "gif" : "png"}`;
+    const created = await message.guild.emojis.create({ attachment: url, name: emojiName, reason: `Stolen by ${message.author.username}` }).catch(e => e);
+    if (!created || created instanceof Error) return err(message, `failed to steal emoji — ${created?.message || "unknown error"}`);
+    return ok(message, `stolen ${created} **${emojiName}**`);
+  }
+
+  // ,steals — steals ALL stickers from messages in the current channel
+  if (command === "steals") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+    await message.channel.sendTyping().catch(() => {});
+    const msgs = await message.channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!msgs) return err(message, "Could not fetch messages.");
+    const stickers = [];
+    for (const msg of msgs.values()) {
+      for (const sticker of msg.stickers.values()) {
+        if (!stickers.find(s => s.id === sticker.id)) stickers.push(sticker);
+      }
+    }
+    if (stickers.length === 0) return info(message, "no stickers found in the last 100 messages");
+    let added = 0, failed = 0;
+    for (const sticker of stickers) {
+      const url = `https://media.discordapp.net/stickers/${sticker.id}.${sticker.format === 1 ? 'png' : sticker.format === 2 ? 'apng' : 'lottie'}`;
+      const created = await message.guild.stickers.create({
+        file: url, name: sticker.name, tags: sticker.tags || sticker.name.slice(0, 1),
+        reason: `Stolen by ${message.author.username}`
+      }).catch(() => null);
+      if (created) added++; else failed++;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return ok(message, `stolen **${added}** sticker${added !== 1 ? 's' : ''}${failed > 0 ? ` (${failed} failed)` : ''}`);
+  }
+
+  // ,deleteemoji <emoji>
+  if (command === "deleteemoji") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+    const emoji = message.guild.emojis.cache.find(e => args[1]?.includes(e.id));
+    if (!emoji) return err(message, "Emoji not found.");
+    await emoji.delete().catch(() => null);
+    return ok(message, `Deleted emoji **${emoji.name}**`);
+  }
+
+  // ,emojis
+  if (command === "emojis") {
+    const emojis = message.guild.emojis.cache;
+    if (emojis.size === 0) return message.reply("No custom emojis.");
+    const list = emojis.map(e => `${e}`).slice(0, 50).join(" ");
+    return message.reply({ embeds: [{ color: PINK, title: `Emojis (${emojis.size})`, description: list }] });
+  }
+
+  // ,invites [user]
+  if (command === "invites") {
+    const target = message.mentions.members.first() || message.member;
+    const invites = await message.guild.invites.fetch().catch(() => null);
+    if (!invites) return err(message, "Could not fetch invites.");
+    const count = invites.filter(i => i.inviter?.id === target.id).reduce((sum, i) => sum + (i.uses || 0), 0);
+    return info(message, `**${target.user.username}** has **${count}** invite uses.`);
+  }
+
+  // ,createinvite [maxUses] [expiresIn hours]
+  if (command === "createinvite") {
+    if (!message.member.permissions.has(PermissionFlagsBits.CreateInstantInvite)) return err(message, "Missing permissions.");
+    const maxUses = parseInt(args[1]) || 0;
+    const hours = parseInt(args[2]) || 0;
+    const invite = await message.channel.createInvite({ maxUses, maxAge: hours * 3600 }).catch(() => null);
+    if (!invite) return err(message, "Could not create invite.");
+    return ok(message, `invite created: **discord.gg/${invite.code}**${maxUses ? ` (${maxUses} uses)` : ""}${hours ? ` (expires in ${hours}h)` : ""}`);
+  }
+
+  // ,listinvites
+  if (command === "listinvites") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const invites = await message.guild.invites.fetch().catch(() => null);
+    if (!invites || invites.size === 0) return message.reply("No active invites.");
+    const list = invites.map(i => `**discord.gg/${i.code}** — ${i.inviter?.username || "Unknown"} (${i.uses} uses)`).slice(0, 15).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Invites (${invites.size})`, description: list }] });
+  }
+
+  // ,weather <city> -- requires no API key, uses wttr.in
+  if (command === "weather") {
+    await message.channel.sendTyping().catch(() => {});
+    const city = args.slice(1).join("+");
+    if (!city) return err(message, "missing required argument");
+
+    try {
+      const res = await fetch(`https://wttr.in/${city}?format=j1`);
+      const data = await res.json();
+      const current = data.current_condition[0];
+      const area = data.nearest_area[0];
+      const name = area.areaName[0].value + ", " + area.country[0].value;
+      return message.reply({ embeds: [{ color: PINK, title: `🌤️ Weather in ${name}`, fields: [{ name: "Condition", value: current.weatherDesc[0].value, inline: true }, { name: "Temp", value: `${current.temp_C}°C / ${current.temp_F}°F`, inline: true }, { name: "Humidity", value: `${current.humidity}%`, inline: true }, { name: "Wind", value: `${current.windspeedKmph} km/h`, inline: true }] }] });
+    } catch { return err(message, "Could not fetch weather data."); }
+  }
+
+  // ,math <expression>
+  if (command === "math") {
+    const expr = args.slice(1).join(" ");
+    if (!expr) return err(message, "missing required argument");
+
+    try {
+      const result = Function(`"use strict"; return (${expr.replace(/[^0-9+\-*/().\s%]/g, "")})`)();
+      return info(message, `**${expr}** = **${result}**`);
+    } catch { return err(message, "Invalid expression."); }
+  }
+
+  // ,urban <word>
+  if (command === "urban") {
+    await message.channel.sendTyping().catch(() => {});
+    const word = args.slice(1).join(" ");
+    if (!word) return err(message, "missing required argument");
+
+    try {
+      const res = await fetch(`https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(word)}`);
+      const data = await res.json();
+      const def = data.list?.[0];
+      if (!def) return err(message, "No definition found.");
+      return message.reply({ embeds: [{ color: PINK, title: def.word, url: def.permalink, description: def.definition.substring(0, 1024), fields: [{ name: "Example", value: def.example.substring(0, 512) || "None" }], footer: { text: `👍 ${def.thumbs_up} | 👎 ${def.thumbs_down}` } }] });
+    } catch { return err(message, "Could not fetch definition."); }
+  }
+
+  // ,updated help command
+  // help is handled in the 50 MOST USED COMMANDS handler
+});
+
+// ===================================================
+// ===== ANTINUKE & ANTIRAID SYSTEM ==================
+// ===================================================
+
+// -- CONFIG STORAGE ----------------------------------
+const antinukeConfig = new Map();
+const antiraidConfig = new Map();
+const recentJoins = new Map();     // guildId => [{ userId, time }]
+const recentActions = new Map();   // guildId-modId-actionType => [timestamps]
+const lockedGuilds = new Set();    // guildIds currently under raid lockdown
+
+function getAntiNuke(guildId) {
+  if (!antinukeConfig.has(guildId)) {
+    antinukeConfig.set(guildId, {
+      enabled: false,
+      punishment: "ban",       // ban | kick | strip
+      threshold: 3,            // actions before triggering
+      whitelist: new Set(),    // whitelisted user IDs
+    });
+  }
+  return antinukeConfig.get(guildId);
+}
+
+function getAntiRaid(guildId) {
+  if (!antiraidConfig.has(guildId)) {
+    antiraidConfig.set(guildId, {
+      enabled: false,
+      action: "kick",          // kick | ban | mute
+      joinThreshold: 10,       // joins in window
+      joinWindow: 10000,       // ms
+    });
+  }
+  return antiraidConfig.get(guildId);
+}
+
+async function punishUser(guild, userId, punishment, reason) {
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return;
+    if (punishment === "ban") await guild.members.ban(userId, { reason });
+    else if (punishment === "kick") await member.kick(reason);
+    else if (punishment === "strip") {
+      const roles = member.roles.cache.filter(r => r.id !== guild.id);
+      for (const r of roles.values()) await member.roles.remove(r).catch(() => {});
+    }
+    log(`AntiNuke: ${punishment} applied to ${member.user.username} | ${reason}`, "success");
+  } catch (e) {
+    log(`AntiNuke punishment failed: ${e.message}`, "error");
+  }
+}
+
+function trackAction(guildId, userId, actionType, threshold) {
+  const key = `${guildId}-${userId}-${actionType}`;
+  const now = Date.now();
+  const times = (recentActions.get(key) || []).filter(t => now - t < 10000);
+  times.push(now);
+  recentActions.set(key, times);
+  return times.length >= threshold;
+}
+
+// -- ANTINUKE EVENTS --------------------------------─
+
+// Detect mass bans
+client.on("guildBanAdd", async (ban) => {
+  const cfg = getAntiNuke(ban.guild.id);
+  if (!cfg.enabled) return;
+  try {
+    const logs = await ban.guild.fetchAuditLogs({ type: 22, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (entry.executor.id === client.user.id) return;
+    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (trackAction(ban.guild.id, entry.executor.id, "ban", cfg.threshold)) {
+      await punishUser(ban.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass ban detected`);
+      notifyOwner(ban.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Ban\n**Punishment:** ${cfg.punishment}`);
+    }
+  } catch {}
+});
+
+// Detect mass kicks
+client.on("guildMemberRemove", async (member) => {
+  const cfg = getAntiNuke(member.guild.id);
+  if (!cfg.enabled) return;
+  try {
+    const logs = await member.guild.fetchAuditLogs({ type: 20, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (entry.executor.id === client.user.id) return;
+    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (entry.target?.id !== member.id) return;
+    if (trackAction(member.guild.id, entry.executor.id, "kick", cfg.threshold)) {
+      await punishUser(member.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass kick detected`);
+      notifyOwner(member.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Kick\n**Punishment:** ${cfg.punishment}`);
+    }
+  } catch {}
+});
+
+// Detect mass channel delete
+client.on("channelDelete", async (channel) => {
+  if (!channel.guild) return;
+  const cfg = getAntiNuke(channel.guild.id);
+  if (!cfg.enabled) return;
+  try {
+    const logs = await channel.guild.fetchAuditLogs({ type: 12, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (entry.executor.id === client.user.id) return;
+    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (trackAction(channel.guild.id, entry.executor.id, "channelDelete", cfg.threshold)) {
+      await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass channel delete`);
+      notifyOwner(channel.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Channel Delete\n**Punishment:** ${cfg.punishment}`);
+    }
+  } catch {}
+});
+
+// Detect mass role delete
+client.on("roleDelete", async (role) => {
+  const cfg = getAntiNuke(role.guild.id);
+  if (!cfg.enabled) return;
+  try {
+    const logs = await role.guild.fetchAuditLogs({ type: 32, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (entry.executor.id === client.user.id) return;
+    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (trackAction(role.guild.id, entry.executor.id, "roleDelete", cfg.threshold)) {
+      await punishUser(role.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass role delete`);
+      notifyOwner(role.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Role Delete\n**Punishment:** ${cfg.punishment}`);
+    }
+  } catch {}
+});
+
+// Detect webhook creation
+client.on("webhooksUpdate", async (channel) => {
+  const cfg = getAntiNuke(channel.guild.id);
+  if (!cfg.enabled) return;
+  try {
+    const logs = await channel.guild.fetchAuditLogs({ type: 50, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (entry.executor.id === client.user.id) return;
+    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (trackAction(channel.guild.id, entry.executor.id, "webhook", 1)) {
+      await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized webhook`);
+      notifyOwner(channel.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Webhook Created\n**Punishment:** ${cfg.punishment}`);
+    }
+  } catch {}
+});
+
+// Detect dangerous role permission grants
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  const cfg = getAntiNuke(newMember.guild.id);
+  if (!cfg.enabled) return;
+  const added = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+  for (const role of added.values()) {
+    if (role.permissions.has(PermissionFlagsBits.Administrator) || role.permissions.has(PermissionFlagsBits.BanMembers) || role.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      try {
+        const logs = await newMember.guild.fetchAuditLogs({ type: 25, limit: 1 });
+        const entry = logs.entries.first();
+        if (!entry || !entry.executor) return;
+        if (entry.executor.id === client.user.id) return;
+        if (cfg.whitelist.has(entry.executor.id)) return;
+        if (trackAction(newMember.guild.id, entry.executor.id, "dangerousRole", cfg.threshold)) {
+          await punishUser(newMember.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Dangerous role granted`);
+          notifyOwner(newMember.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Dangerous Role Grant\n**Punishment:** ${cfg.punishment}`);
+        }
+      } catch {}
+    }
+  }
+});
+
+// -- ANTIRAID EVENT ----------------------------------─
+client.on("guildMemberAdd", async (member) => {
+  if (member.guild.id === TARGET_GUILD_ID) return;
+  const cfg = getAntiRaid(member.guild.id);
+  if (!cfg.enabled) return;
+
+  const guildId = member.guild.id;
+  const now = Date.now();
+  const joins = (recentJoins.get(guildId) || []).filter(j => now - j.time < cfg.joinWindow);
+  joins.push({ userId: member.id, time: now });
+  recentJoins.set(guildId, joins);
+
+  if (joins.length >= cfg.joinThreshold) {
+    if (!lockedGuilds.has(guildId)) {
+      lockedGuilds.add(guildId);
+      notifyOwner(member.guild, `<:RUSH_warning:1521415214799654985> **AntiRaid** triggered!\n**${joins.length} joins** in ${cfg.joinWindow / 1000}s\n**Action:** ${cfg.action} + lockdown`);
+      // Lock all channels
+      const channels = member.guild.channels.cache.filter(c => c.type === 0);
+      for (const ch of channels.values()) {
+        await ch.permissionOverwrites.edit(member.guild.roles.everyone, { SendMessages: false }).catch(() => {});
+      }
+      log(`AntiRaid: Lockdown activated in ${member.guild.name}`, "success");
+      // Auto-unlock after 5 minutes
+      setTimeout(async () => {
+        lockedGuilds.delete(guildId);
+        for (const ch of channels.values()) {
+          await ch.permissionOverwrites.edit(member.guild.roles.everyone, { SendMessages: null }).catch(() => {});
+        }
+        log(`AntiRaid: Lockdown lifted in ${member.guild.name}`, "info");
+      }, 5 * 60 * 1000);
+    }
+    // Apply action to raider
+    try {
+      if (cfg.action === "ban") await member.ban({ reason: "[AntiRaid] Raid detected" });
+      else if (cfg.action === "kick") await member.kick("[AntiRaid] Raid detected");
+      else if (cfg.action === "mute") await member.timeout(10 * 60 * 1000, "[AntiRaid] Raid detected");
+    } catch {}
+  }
+});
+
+// -- NOTIFY OWNER HELPER ------------------------------
+async function notifyOwner(guild, message) {
+  try {
+    const owner = await client.users.fetch(guild.ownerId);
+    await owner.send(message);
+  } catch {}
+}
+
+// -- ANTINUKE & ANTIRAID COMMANDS --------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  // Centralized moderation gate
+  if (modGate(message, command)) return;
+
+  // ,antinuke <on|off|punishment|threshold|whitelist|unwhitelist|status>
+  if (command === "antinuke") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator) && message.author.id !== message.guild.ownerId) return err(message, "Only the server owner or admins can configure antinuke.");
+    const cfg = getAntiNuke(message.guild.id);
+    const sub = args[1]?.toLowerCase();
+
+    if (sub === "on" || sub === "enable") {
+      cfg.enabled = true;
+      saveAllConfigs();return ok(message, "**AntiNuke** enabled. The bot will now monitor for destructive actions.");
+    }
+    if (sub === "off" || sub === "disable") {
+      cfg.enabled = false;
+      saveAllConfigs();return ok(message, "**AntiNuke** disabled.");
+    }
+    if (sub === "punishment") {
+      const p = args[2]?.toLowerCase();
+      if (!["ban", "kick", "strip"].includes(p)) return err(message, "missing required argument");
+
+      cfg.punishment = p;
+      saveAllConfigs();return ok(message, `AntiNuke punishment set to **${p}**`);
+    }
+    if (sub === "threshold") {
+      const n = parseInt(args[2]);
+      if (isNaN(n) || n < 1) return err(message, "missing required argument: **number**\nusage: `,antinuke threshold <number>`");
+      cfg.threshold = n;
+      saveAllConfigs();return ok(message, `AntiNuke threshold set to **${n}** actions`);
+    }
+    if (sub === "whitelist") {
+      const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
+      if (!target) return err(message, "missing required argument");
+
+      cfg.whitelist.add(target.id);
+      saveAllConfigs();return ok(message, `**${target.username}** whitelisted from AntiNuke`);
+    }
+    if (sub === "unwhitelist") {
+      const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
+      if (!target) return err(message, "missing required argument");
+
+      cfg.whitelist.delete(target.id);
+      saveAllConfigs();return ok(message, `**${target.username}** removed from AntiNuke whitelist`);
+    }
+    if (sub === "status" || !sub) {
+      const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
+      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_caution:1521415278355808297> AntiNuke Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled", inline: true }, { name: "Punishment", value: cfg.punishment, inline: true }, { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true }, { name: "Whitelist", value: wl }] }] });
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // ,antiraid <on|off|action|threshold|window|status|unlock>
+  if (command === "antiraid") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator) && message.author.id !== message.guild.ownerId) return err(message, "Only the server owner or admins can configure antiraid.");
+    const cfg = getAntiRaid(message.guild.id);
+    const sub = args[1]?.toLowerCase();
+
+    if (sub === "on" || sub === "enable") {
+      cfg.enabled = true;
+      saveAllConfigs();return ok(message, "**AntiRaid** enabled. Mass joins will trigger automatic lockdown.");
+    }
+    if (sub === "off" || sub === "disable") {
+      cfg.enabled = false;
+      saveAllConfigs();return ok(message, "**AntiRaid** disabled.");
+    }
+    if (sub === "action") {
+      const a = args[2]?.toLowerCase();
+      if (!["ban", "kick", "mute"].includes(a)) return err(message, "missing required argument");
+
+      cfg.action = a;
+      saveAllConfigs();return ok(message, `AntiRaid action set to **${a}**`);
+    }
+    if (sub === "threshold") {
+      const n = parseInt(args[2]);
+      if (isNaN(n) || n < 1) return err(message, "missing required argument: **number**\nusage: `,antiraid threshold <number>`");
+      cfg.joinThreshold = n;
+      saveAllConfigs();return ok(message, `AntiRaid threshold set to **${n}** joins`);
+    }
+    if (sub === "window") {
+      const n = parseInt(args[2]);
+      if (isNaN(n) || n < 1) return err(message, "missing required argument");
+
+      cfg.joinWindow = n * 1000;
+      saveAllConfigs();return ok(message, `AntiRaid window set to **${n}** seconds`);
+    }
+    if (sub === "unlock") {
+      lockedGuilds.delete(message.guild.id);
+      const channels = message.guild.channels.cache.filter(c => c.type === 0);
+      for (const ch of channels.values()) {
+        await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => {});
+      }
+      saveAllConfigs();return ok(message, "Server unlocked manually.");
+    }
+    if (sub === "status" || !sub) {
+      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> AntiRaid Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled", inline: true }, { name: "Action", value: cfg.action, inline: true }, { name: "Threshold", value: `${cfg.joinThreshold} joins`, inline: true }, { name: "Window", value: `${cfg.joinWindow / 1000}s`, inline: true }, { name: "Lockdown Active", value: lockedGuilds.has(message.guild.id) ? "<:RUSH_unlock:1521415218037526641> Yes" : "<:019TXTWhite_Yes:1521327983279996999> No", inline: true }] }] });
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // ,lockdown [reason] -- manually lock all channels
+  if (command === "lockdown") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const reason = args.slice(1).join(" ") || "Manual lockdown";
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    let count = 0;
+    for (const ch of channels.values()) {
+      await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => {});
+      count++;
+    }
+    lockedGuilds.add(message.guild.id);
+    return ok(message, `**${count}** channels locked | ${reason}`);
+  }
+
+  // ,unlockdown -- unlock all channels
+  if (command === "unlockdown") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    let count = 0;
+    for (const ch of channels.values()) {
+      await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => {});
+      count++;
+    }
+    lockedGuilds.delete(message.guild.id);
+    return ok(message, `**${count}** channels unlocked.`);
+  }
+
+  // ,massnick <nickname> -- change all members' nicknames
+  if (command === "massnick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const nick = args.slice(1).join(" ") || null;
+    const members = await message.guild.members.fetch();
+    let count = 0;
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Changing nicknames for ${members.size} members...` }] });
+    for (const m of members.values()) {
+      if (m.user.bot || m.id === message.guild.ownerId) continue;
+      await m.setNickname(nick).catch(() => {});
+      count++;
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Changed nicknames for **${count}** members.` }] });
+  }
+
+  // ,massrole <add|remove> <@role> -- add/remove a role from everyone
+  if (command === "massrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const action = args[1]?.toLowerCase();
+    const role = message.mentions.roles.first();
+    if (!role || !["add", "remove"].includes(action)) return err(message, "missing required argument");
+
+    const members = await message.guild.members.fetch();
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Processing **${members.size}** members...` }] });
+    let count = 0;
+    for (const m of members.values()) {
+      if (m.user.bot) continue;
+      if (action === "add") await m.roles.add(role).catch(() => {});
+      else await m.roles.remove(role).catch(() => {});
+      count++;
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> ${action === "add" ? "Added" : "Removed"} **${role.name}** for **${count}** members.` }] });
+  }
+
+  // ,addr inactive @role-to-add | @required-role1 @required-role2 ...
+  // Adds @role-to-add to everyone who doesn't have ANY of the required roles
+  // ,inactive remove @role1 @role2 ... -- kicks up to 350 members missing ALL listed roles
+  if (command === "inactive" && args[1]?.toLowerCase() === "remove") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+
+    const roleIds = [...message.content.matchAll(/<@&(\d+)>/g)].map(m => m[1]);
+    if (roleIds.length === 0) return err(message, "missing required argument: **roles**\nusage: `,inactive remove @role1 @role2 ...`\nKicks members who have NONE of the listed roles.");
+
+    const roles = roleIds.map(id => message.guild.roles.cache.get(id)).filter(Boolean);
+    if (roles.length === 0) return err(message, "no valid roles found");
+
+    await message.channel.sendTyping().catch(() => {});
+    const allMembers = await message.guild.members.fetch().catch(() => null);
+    if (!allMembers) return err(message, "failed to fetch members");
+
+    // Members who have NONE of the listed roles
+    const toKick = [...allMembers.filter(m => {
+      if (m.user.bot) return false;
+      if (m.id === message.author.id) return false;
+      if (isOwner(m.id)) return false;
+      if (m.roles.highest.position >= message.guild.members.me.roles.highest.position) return false;
+      // If they have EVEN ONE of the required roles -> safe
+      return roleIds.every(rid => !m.roles.cache.has(rid));
+    }).values()].slice(0, 350); // cap at 350
+
+    if (toKick.length === 0) return info(message, `no inactive members found — everyone has at least one of: ${roles.map(r => `**${r.name}**`).join(', ')}`);
+
+    return confirm(message,
+      `This will kick **${toKick.length}** members who have NONE of: ${roles.map(r => `**${r.name}**`).join(', ')}\n\n<:RUSH_warning:1521415214799654985> Anyone with even ONE of these roles is safe.`,
+      async () => {
+        const statusMsg = await message.channel.send({ embeds: [{ color: PINK,
+          title: "👢 Inactive Kick in progress...",
+          description: `Kicking **${toKick.length}** members...\n\n<:019TXTWhite_Yes:1521327983279996999> Kicked: **0** | <:steal:1521327958634135655> Failed: **0** | <a:Loading:1521415253982969898> Remaining: **${toKick.length}**`,
+          footer: { text: "Rate limit safe — 1 kick/s" }
+        }] }).catch(() => null);
+
+        let kicked = 0, failed = 0;
+
+        for (const member of toKick) {
+          let retries = 0;
+          while (retries < 3) {
+            try {
+              await member.kick(`[Inactive Remove] Missing roles: ${roles.map(r => r.name).join(', ')}`);
+              kicked++;
+              break;
+            } catch (e) {
+              if (e.status === 429 || e.code === 429) {
+                // Rate limited -- wait and retry
+                const wait = ((e.retryAfter || 5) * 1000) + 500;
+                log(`[InactiveRemove] Rate limited — waiting ${wait}ms`, "error");
+                await new Promise(r => setTimeout(r, wait));
+                retries++;
+              } else {
+                failed++;
+                break;
+              }
+            }
+          }
+
+          if ((kicked + failed) % 25 === 0 && statusMsg) {
+            statusMsg.edit({ embeds: [{ color: PINK,
+              title: "👢 Inactive Kick in progress...",
+              description: `<:019TXTWhite_Yes:1521327983279996999> Kicked: **${kicked}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${toKick.length - kicked - failed}**`,
+              footer: { text: "Rate limit safe" }
+            }] }).catch(() => {});
+          }
+
+          // 1.1s between each kick -- rate limit safe
+          await new Promise(r => setTimeout(r, 1100));
+        }
+
+        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK,
+          title: "👢 Inactive Kick complete <:019TXTWhite_Yes:1521327983279996999>",
+          description: `<:019TXTWhite_Yes:1521327983279996999> Kicked: **${kicked}** | <:steal:1521327958634135655> Failed: **${failed}**\nMissing all of: ${roles.map(r => `**${r.name}**`).join(', ')}`,
+          footer: { text: message.guild.name }, timestamp: new Date()
+        }] }).catch(() => {});
+
+        log(`[InactiveRemove] Kicked ${kicked} members, failed ${failed}`, "success");
+      }
+    );
+  }
+
+  if (command === "addr" && args[1]?.toLowerCase() === "inactive") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+
+    const raw = message.content.slice(1).trim();
+    const parts = raw.split("|");
+    if (parts.length < 2) return err(message, "usage: `,addr inactive @role-to-add | @required-role1 @required-role2 ...`");
+
+    const leftMentions = parts[0].match(/<@&(\d+)>/g) || [];
+    if (leftMentions.length === 0) return err(message, "missing required argument: **role to add**");
+    const roleToAddId = leftMentions[0].replace(/<@&|>/g, '');
+    const roleToAdd = message.guild.roles.cache.get(roleToAddId);
+    if (!roleToAdd) return err(message, "role to add not found");
+
+    const rightMentions = parts[1].match(/<@&(\d+)>/g) || [];
+    if (rightMentions.length === 0) return err(message, "missing required argument: **required roles**");
+    const requiredRoleIds = rightMentions.map(m => m.replace(/<@&|>/g, ''));
+    const requiredRoles = requiredRoleIds.map(id => message.guild.roles.cache.get(id)).filter(Boolean);
+
+    await message.channel.sendTyping().catch(() => {});
+    const members = await message.guild.members.fetch();
+
+    const inactive = members.filter(m => {
+      if (m.user.bot) return false;
+      if (m.roles.cache.has(roleToAdd.id)) return false;
+      return requiredRoleIds.every(rid => !m.roles.cache.has(rid));
+    });
+
+    if (inactive.size === 0) return info(message, `no inactive members found (everyone has at least one of the required roles)`);
+
+    // Show confirm buttons
+    return confirm(message,
+      `This will add **${roleToAdd.name}** to **${inactive.size}** members who don't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`,
+      async () => {
+        const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Adding **${roleToAdd.name}** to **${inactive.size}** members...` }] }).catch(() => null);
+        let count = 0;
+        for (const m of inactive.values()) {
+          await m.roles.add(roleToAdd).catch(() => {});
+          count++;
+          if (count % 25 === 0 && statusMsg) {
+            statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Progress: **${count}/${inactive.size}** members...` }] }).catch(() => {});
+          }
+        }
+        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999> Done", description: `Added **${roleToAdd.name}** to **${count}** members\nwho didn't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`, footer: { text: message.guild.name }, timestamp: new Date() }] }).catch(() => {});
+      }
+    );
+  }
+
+  // ,logging <#channel | off> -- set mod log channel
+  if (command === "logging") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") {
+      welcomeConfig.delete(`log-${message.guild.id}`);
+      saveAllConfigs();return ok(message, "Logging disabled.");
+    }
+    const channel = message.mentions.channels.first();
+    if (!channel) return err(message, "missing required argument");
+
+    welcomeConfig.set(`log-${message.guild.id}`, { channelId: channel.id });
+    saveAllConfigs();return ok(message, `Mod logs will be sent to ${channel}`);
+  }
+
+  // ,rolecreate <name> [color]
+  if (command === "rolecreate") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const name = args[1];
+    const color = args[2] || "#000000";
+    if (!name) return err(message, "missing required argument");
+
+    const role = await message.guild.roles.create({ name, color }).catch(() => null);
+    if (!role) return err(message, "Could not create role.");
+    return ok(message, `Created role **${role.name}**`);
+  }
+
+  // ,roledelete <@role>
+  if (command === "roledelete") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    await role.delete().catch(() => null);
+    return ok(message, `Deleted role **${role.name}**`);
+  }
+
+  // ,rolecolor <@role> <#color>
+  if (command === "rolecolor") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    const color = args[2];
+    if (!role || !color) return err(message, "missing required argument");
+
+    await role.setColor(color).catch(() => null);
+    return ok(message, `Changed **${role.name}** color to **${color}**`);
+  }
+
+  // ,roleall -- list all roles
+  if (command === "roleall" || command === "roles") {
+    const roles = message.guild.roles.cache.sort((a, b) => b.position - a.position);
+    const list = roles.map(r => `<@&${r.id}> (${r.members.size})`).slice(0, 20).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Roles (${roles.size})`, description: list }] });
+  }
+
+  // ,channelcreate <name> [text|voice]
+  if (command === "channelcreate") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const name = args[1];
+    const type = args[2]?.toLowerCase() === "voice" ? 2 : 0;
+    if (!name) return err(message, "missing required argument");
+
+    const ch = await message.guild.channels.create({ name, type }).catch(() => null);
+    if (!ch) return err(message, "Could not create channel.");
+    return ok(message, `Created ${type === 2 ? "voice" : "text"} channel **${ch.name}**`);
+  }
+
+  // ,channeldelete [#channel]
+  if (command === "channeldelete") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const channel = message.mentions.channels.first() || message.channel;
+    await channel.delete().catch(() => null);
+    if (channel.id !== message.channel.id) ok(message, `<:019TXTWhite_Yes:1521327983279996999> Deleted **${channel.name}**`);
+  }
+
+  // ,categorycreate <name>
+  if (command === "categorycreate") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const name = args.slice(1).join(" ");
+    if (!name) return err(message, "missing required argument");
+
+    const cat = await message.guild.channels.create({ name, type: 4 }).catch(() => null);
+    if (!cat) return err(message, "Could not create category.");
+    return ok(message, `Created category **${cat.name}**`);
+  }
+
+  // ,modlogs [user] -- show recent audit log entries
+  if (command === "modlogs") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ViewAuditLog)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    const logs = await message.guild.fetchAuditLogs({ limit: 10 }).catch(() => null);
+    if (!logs) return err(message, "Could not fetch audit logs.");
+    let entries = [...logs.entries.values()];
+    if (target) entries = entries.filter(e => e.target?.id === target.id || e.executor?.id === target.id);
+    if (entries.length === 0) return message.reply("<:RUSH_task:1521415237813665813> No recent mod actions found.");
+    const lines = entries.map(e => `**${e.action}** — by ${e.executor?.username || "Unknown"} on ${e.target?.username || e.target?.id || "Unknown"}\n*${e.reason || "No reason"}*`);
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Mod Logs", description: lines.join("\n\n").substring(0, 4096) }] });
+  }
+
+  // ,timeout <user> <duration> [reason] -- discord native timeout
+  if (command === "timeout") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    // Block action on boosters by role ID (unless owner)
+    if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    const timeStr = args[2];
+    const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return err(message, "missing required argument: **time**\nusage: `,timeout @user 10m [reason]` — formats: 30s, 5m, 2h, 1d");
+    const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    const reason = args.slice(3).join(" ") || "No reason";
+    const toResult = await target.timeout(ms, reason).catch(() => null);
+    if (!toResult) return err(message, `failed to timeout **${target.user.username}**`);
+    return ok(message, `timed out **${target.user.username}** for **${timeStr}** | ${reason}`);
+  }
+
+  // ,untimeout <user>
+  if (command === "untimeout") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.timeout(null).catch(() => null);
+    return ok(message, `Removed timeout from **${target.user.username}**`);
+  }
+
+  // ,baninfo <userId>
+  if (command === "baninfo") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const userId = args[1];
+    if (!userId) return err(message, "missing required argument: **userId**");
+
+    const ban = await message.guild.bans.fetch(userId).catch(() => null);
+    if (!ban) return err(message, "User is not banned.");
+    return message.reply({ embeds: [{ color: PINK, title: `🔨 Ban Info`, fields: [{ name: "User", value: ban.user.username, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
+  }
+
+  // ,memberinfo <user> -- detailed member info
+  if (command === "memberinfo" || command === "mi") {
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
+    const perms = target.permissions.toArray().slice(0, 5).join(", ");
+    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? `<t:${Math.floor(target.premiumSinceTimestamp / 1000)}:R>` : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
+  }
+
+  // ,whois <user> -- alias for memberinfo
+  if (command === "whois") {
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
+    const perms = target.permissions.toArray().slice(0, 5).join(", ");
+    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes <:019TXTWhite_Yes:1521327983279996999>" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
+  }
+
+  // ,newmembers [count] -- show most recently joined members
+  if (command === "newmembers") {
+    await message.channel.sendTyping().catch(() => {});
+    const count = Math.min(parseInt(args[1]) || 10, 20);
+    const members = (await message.guild.members.fetch()).sort((a, b) => b.joinedTimestamp - a.joinedTimestamp).first(count);
+    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.username} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
+    return message.reply({ embeds: [{ color: PINK, title: `🆕 Newest Members`, description: lines.join("\n") }] });
+  }
+
+  // ,oldmembers [count] -- show oldest members
+  if (command === "oldmembers") {
+    await message.channel.sendTyping().catch(() => {});
+    const count = Math.min(parseInt(args[1]) || 10, 20);
+    const members = (await message.guild.members.fetch()).sort((a, b) => a.joinedTimestamp - b.joinedTimestamp).first(count);
+    const lines = members.map((m, i) => `**${i + 1}.** ${m.user.username} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
+    return message.reply({ embeds: [{ color: PINK, title: `👴 Oldest Members`, description: lines.join("\n") }] });
+  }
+
+  // ,inrole <@role> -- list members with a role
+  if (command === "inrole") {
+    const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
+    if (!role) return err(message, "missing required argument: **role**");
+    const members = role.members;
+    if (members.size === 0) return info(message, `no members have **${role.name}**.`);
+    const list = members.map(m => m.user.username).slice(0, 30).join(", ");
+    return message.reply({ embeds: [{ color: role.color || PINK, title: `${role.name} (${members.size})`, description: list }] });
+  }
+
+  // ,boostinfo -- show all server boosters
+  if (command === "boostinfo" || command === "boosters") {
+    const boosters = message.guild.members.cache.filter(m => m.premiumSince);
+    if (boosters.size === 0) return message.reply("No boosters.");
+    const list = boosters.map(m => `${m.user.username} — <t:${Math.floor(m.premiumSinceTimestamp / 1000)}:R>`).join("\n");
+    return message.reply({ embeds: [{ color: 0xFF73FA, title: `💜 Boosters (${boosters.size})`, description: list }] });
+  }
+
+  // ,servericon
+  if (command === "servericon" || command === "sicon") {
+    const url = message.guild.iconURL({ size: 1024 });
+    if (!url) return err(message, "Server has no icon.");
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Icon`, image: { url } }] });
+  }
+
+  // ,serverbanner
+  if (command === "serverbanner") {
+    const url = message.guild.bannerURL({ size: 1024 });
+    if (!url) return err(message, "Server has no banner.");
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Banner`, image: { url } }] });
+  }
+
+  // ,bind staff <@role> -- mark role as staff (for antinuke)
+  if (command === "bind") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "staff") {
+      const role = message.mentions.roles.first();
+      if (!role) return err(message, "missing required argument");
+
+      const cfg = getAntiNuke(message.guild.id);
+      cfg.whitelist.add(role.id);
+      return ok(message, `**${role.name}** marked as staff role (whitelisted in AntiNuke)`);
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // ,clearsnipe
+  if (command === "clearsnipe" || command === "cs") {
+    const _csCfg = ticketConfig.get(message.guild.id);
+    const _csHasPerm = message.member.permissions.has(PermissionFlagsBits.ManageMessages);
+    const _csHasRole = _csCfg?.modRoleId && message.member.roles.cache.has(_csCfg.modRoleId);
+    if (!_csHasPerm && !_csHasRole) return err(message, "Missing permissions.");
+    sniped.delete(message.channel.id);
+    editSniped.delete(message.channel.id);
+    return ok(message, "snipe cleared");
+  }
+
+  // ,identify <userId> -- look up a user by ID
+  if (command === "identify" || command === "lookup") {
+    const userId = args[1];
+    if (!userId) return err(message, "missing required argument: **userId**");
+
+    const user = await client.users.fetch(userId).catch(() => null);
+    if (!user) return err(message, "missing required argument: **user**");
+    return message.reply({ embeds: [{ color: PINK, title: user.username, thumbnail: { url: user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: user.id, inline: true }, { name: "Bot", value: user.bot ? "Yes" : "No", inline: true }, { name: "Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:R>`, inline: true }] }] });
+  }
+});
+
+// ===================================================
+// ===== EXTENDED MODERATION (130+ commands) =========
+// ===================================================
+
+// -- AUTOMOD / FILTER SYSTEM ------------------------─
+const filterConfig = new Map();
+const spamTracker = new Map();    // userId-guildId => [timestamps]
+const automodExempt = new Map();
+const modlogChannel = new Map();
+
+function getFilter(guildId) {
+  if (!filterConfig.has(guildId)) filterConfig.set(guildId, { enabled: false, words: [], links: false, invites: false, caps: false, spam: false, maxMentions: 5, mentions: false });
+  return filterConfig.get(guildId);
+}
+function getExempt(guildId) {
+  if (!automodExempt.has(guildId)) automodExempt.set(guildId, { roles: new Set(), channels: new Set() });
+  return automodExempt.get(guildId);
+}
+
+async function sendModLog(guild, embed) {
+  const chId = modlogChannel.get(guild.id);
+  if (!chId) return;
+  const ch = guild.channels.cache.get(chId);
+  if (ch) await ch.send({ embeds: [embed] }).catch(() => {});
+}
+
+// Automod message scanner
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild || message.member?.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+  const filter = getFilter(message.guild.id);
+  if (!filter.enabled) return;
+  const exempt = getExempt(message.guild.id);
+  if (exempt.channels.has(message.channel.id)) return;
+  if (message.member?.roles.cache.some(r => exempt.roles.has(r.id))) return;
+
+  const content = message.content;
+  let triggered = null;
+
+  // Bad words
+  if (filter.words.length > 0 && filter.words.some(w => content.toLowerCase().includes(w.toLowerCase()))) triggered = "Banned word";
+  // Links
+  if (!triggered && filter.links && /https?:\/\/[^\s]+/.test(content)) triggered = "Unauthorized link";
+  // Discord invites
+  if (!triggered && filter.invites && /(discord\.gg|discord\.com\/invite)\/[a-zA-Z0-9]+/.test(content)) triggered = "Discord invite";
+  // Caps (>70% caps, >8 chars)
+  if (!triggered && filter.caps && content.length > 8) {
+    const upper = content.replace(/[^a-zA-Z]/g, "");
+    if (upper.length > 0 && (upper.split("").filter(c => c === c.toUpperCase()).length / upper.length) > 0.7) triggered = "Excessive caps";
+  }
+  // Spam (5 messages in 5s)
+  if (!triggered && filter.spam) {
+    const key = `${message.author.id}-${message.guild.id}`;
+    const now = Date.now();
+    const times = (spamTracker.get(key) || []).filter(t => now - t < 5000);
+    times.push(now);
+    spamTracker.set(key, times);
+    if (times.length >= 5) triggered = "Spam";
+  }
+  // Mass mentions
+  if (!triggered && filter.mentions && message.mentions.users.size >= filter.maxMentions) triggered = `Mass mention (${message.mentions.users.size})`;
+
+  if (triggered) {
+    await message.delete().catch(() => {});
+    const warn = await message.channel.send(`<:RUSH_warning:1521415214799654985> ${message.author} your message was removed: **${triggered}**`);
+    setTimeout(() => warn.delete().catch(() => {}), 5000);
+    await sendModLog(message.guild, { color: PINK, title: "🤖 AutoMod", fields: [{ name: "User", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
+  }
+});
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  // Centralized moderation gate
+  if (modGate(message, command)) return;
+
+  // -- PURGE FILTERS ----------------------------------─
+
+  // ,purge bots [amount]
+  if (command === "purge" && args[1] === "bots") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.author.bot).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} bot messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge images [amount]
+  if (command === "purge" && args[1] === "images") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.attachments.size > 0 || m.embeds.some(e => e.image)).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} image messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge links [amount]
+  if (command === "purge" && args[1] === "links") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => /https?:\/\/[^\s]+/.test(m.content)).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} link messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge embeds [amount]
+  if (command === "purge" && args[1] === "embeds") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.embeds.length > 0).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} embed messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge user <@user|id> -- deletes ALL messages from user in this channel
+  if (command === "purge" && args[1] === "user") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,purge user @user`");
+
+    const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning and deleting all messages from **${target.username}**... this may take a moment` }] });
+
+    let deleted = 0;
+    let lastId = undefined;
+    let keepGoing = true;
+
+    while (keepGoing) {
+      const options = { limit: 100 };
+      if (lastId) options.before = lastId;
+
+      const batch = await message.channel.messages.fetch(options).catch(() => null);
+      if (!batch || batch.size === 0) { keepGoing = false; break; }
+
+      const userMsgs = [...batch.filter(m => m.author.id === target.id).values()];
+      lastId = batch.last().id;
+
+      // Bulk delete recent messages (< 14 days)
+      const recent = userMsgs.filter(m => Date.now() - m.createdTimestamp < 12 * 24 * 60 * 60 * 1000);
+      const old = userMsgs.filter(m => Date.now() - m.createdTimestamp >= 12 * 24 * 60 * 60 * 1000);
+
+      if (recent.length > 0) {
+        await message.channel.bulkDelete(recent, true).catch(() => {});
+        deleted += recent.length;
+      }
+      // Delete old messages one by one (bulkDelete doesn't work on these)
+      for (const msg of old) {
+        await msg.delete().catch(() => {});
+        deleted++;
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      if (deleted > 0 && deleted % 50 === 0) {
+        statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Deleted **${deleted}** messages from **${target.username}** so far...` }] }).catch(() => {});
+      }
+
+      if (batch.size < 100) keepGoing = false;
+    }
+
+    await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${deleted}** messages from **${target.username}**` }] }).catch(() => {});
+    setTimeout(() => statusMsg.delete().catch(() => {}), 5000);
+    return;
+  }
+
+  // ,purge contains <text> [amount]
+  if (command === "purge" && args[1] === "contains") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const text = args[2];
+    if (!text) return err(message, "missing required argument");
+
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.content.toLowerCase().includes(text.toLowerCase())).first(parseInt(args[3]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages containing **${text}**.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge startswith <text>
+  if (command === "purge" && args[1] === "startswith") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const text = args[2];
+    if (!text) return err(message, "missing required argument");
+
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.content.toLowerCase().startsWith(text.toLowerCase())).first(100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge mentions [amount]
+  if (command === "purge" && args[1] === "mentions") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => m.mentions.users.size > 0).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages with mentions.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // ,purge humans [amount]
+  if (command === "purge" && args[1] === "humans") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const toDelete = msgs.filter(m => !m.author.bot).first(parseInt(args[2]) || 100);
+    await message.channel.bulkDelete(toDelete, true).catch(() => {});
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} human messages.` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+
+  // -- FILTER / AUTOMOD COMMANDS ------------------------
+
+  // ,filter <on|off|add|remove|list|links|invites|caps|spam|mentions>
+  if (command === "filter") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cfg = getFilter(message.guild.id);
+    const sub = args[1]?.toLowerCase();
+    if (sub === "on") { cfg.enabled = true; return ok(message, "AutoMod filter enabled."); }
+    if (sub === "off") { cfg.enabled = false; return ok(message, "AutoMod filter disabled."); }
+    if (sub === "add") {
+      const word = args.slice(2).join(" ");
+      if (!word) return err(message, "missing required argument");
+
+      cfg.words.push(word.toLowerCase());
+      saveAllConfigs();return ok(message, `Added **${word}** to filter.`);
+    }
+    if (sub === "remove") {
+      const word = args.slice(2).join(" ").toLowerCase();
+      cfg.words = cfg.words.filter(w => w !== word);
+      saveAllConfigs();return ok(message, `Removed **${word}** from filter.`);
+    }
+    if (sub === "list") return message.reply({ embeds: [{ color: PINK, title: "Filter Words", description: cfg.words.length > 0 ? cfg.words.map((w, i) => `${i + 1}. \`${w}\``).join("\n") : "No words filtered." }] });
+    if (sub === "links") { cfg.links = !cfg.links; return ok(message, `Link filter: **${cfg.links ? "on" : "off"}**`); }
+    if (sub === "invites") { cfg.invites = !cfg.invites; return ok(message, `Invite filter: **${cfg.invites ? "on" : "off"}**`); }
+    if (sub === "caps") { cfg.caps = !cfg.caps; return ok(message, `Caps filter: **${cfg.caps ? "on" : "off"}**`); }
+    if (sub === "spam") { cfg.spam = !cfg.spam; return ok(message, `Spam filter: **${cfg.spam ? "on" : "off"}**`); }
+    if (sub === "mentions") {
+      const max = parseInt(args[2]);
+      if (!isNaN(max)) { cfg.maxMentions = max; cfg.mentions = true; return ok(message, `Mention filter: on (max **${max}**)`); }
+      cfg.mentions = !cfg.mentions;
+      saveAllConfigs();return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
+    }
+    if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "🤖 AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true }, { name: "Links", value: cfg.links ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Invites", value: cfg.invites ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Caps", value: cfg.caps ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Spam", value: cfg.spam ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Mentions", value: cfg.mentions ? `<:019TXTWhite_Yes:1521327983279996999> (max ${cfg.maxMentions})` : "<:steal:1521327958634135655>", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
+    return err(message, "missing required argument");
+
+  }
+
+  // ,filter exempt <add|remove> <@role|#channel>
+  if (command === "filterexempt" || (command === "filter" && args[1] === "exempt")) {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const exempt = getExempt(message.guild.id);
+    const action = command === "filterexempt" ? args[1] : args[2];
+    const role = message.mentions.roles.first();
+    const channel = message.mentions.channels.first();
+    if (!role && !channel) return err(message, "missing required argument");
+
+    if (action === "add") {
+      if (role) { exempt.roles.add(role.id); return ok(message, `**${role.name}** exempted from filter.`); }
+      if (channel) { exempt.channels.add(channel.id); return ok(message, `${channel} exempted from filter.`); }
+    }
+    if (action === "remove") {
+      if (role) { exempt.roles.delete(role.id); return ok(message, `**${role.name}** removed from filter exemptions.`); }
+      if (channel) { exempt.channels.delete(channel.id); return ok(message, `${channel} removed from filter exemptions.`); }
+    }
+  }
+
+  // -- MOD LOG SETUP ------------------------------------
+
+  // ,modlog <#channel | off>
+  if (command === "modlog" || command === "modlogs" && args[1]?.startsWith("<#")) {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { modlogChannel.delete(message.guild.id); return ok(message, "Mod logs disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    modlogChannel.set(message.guild.id, ch.id);
+    return ok(message, `Mod logs → ${ch}`);
+  }
+
+  // -- HACKBAN ------------------------------------------
+
+  // ,hackban <userId> [reason] -- ban user not in server
+  if (command === "hackban") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const userId = args[1];
+    if (!userId) return err(message, "missing required argument: **userId**");
+
+    const reason = args.slice(2).join(" ") || "Hackban";
+    recentBoosters.delete(userId);
+    await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    purgeUserMessages(message.guild, userId, hkPurgeMsg);
+    return;
+  }
+
+  // ,unbanall -- unban everyone
+  if (command === "unbanall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const bans = await message.guild.bans.fetch();
+    if (bans.size === 0) return info(message, "No banned users.");
+    await confirm(message, `Are you sure you want to **unban all ${bans.size} users**?\n\nThis action is **irreversable**.`, async () => {
+      for (const ban of bans.values()) await message.guild.bans.remove(ban.user.id).catch(() => {});
+      message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Unbanned **${bans.size}** users.` }] });
+    });
+  }
+
+  // ,banreason <userId> <reason> -- update ban reason
+  if (command === "banreason") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const userId = args[1];
+    const reason = args.slice(2).join(" ");
+    if (!userId || !reason) return err(message, "missing required argument");
+
+    const ban = await message.guild.bans.fetch(userId).catch(() => null);
+    if (!ban) return err(message, "User is not banned.");
+    await message.guild.bans.remove(userId).catch(() => {});
+    await message.guild.members.ban(userId, { reason }).catch(() => {});
+    return ok(message, `ban reason updated for **${userId}**`);
+  }
+
+  // -- HISTORY ------------------------------------------
+
+  // ,history <@user> -- show all moderation actions for a user
+  if (command === "history") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const key = `${message.guild.id}-${target.id}`;
+    const warnList = warns.get(key) || [];
+    const isBanned = await message.guild.bans.fetch(target.id).catch(() => null);
+    const fields = [];
+    if (warnList.length > 0) fields.push({ name: `<:RUSH_warning:1521415214799654985> Warns (${warnList.length})`, value: warnList.map((w, i) => `${i + 1}. ${w.reason} — ${w.mod}`).join("\n").substring(0, 1024) });
+    if (isBanned) fields.push({ name: "🔨 Banned", value: isBanned.reason || "No reason" });
+    if (fields.length === 0) fields.push({ name: "Clean record", value: "No moderation actions found." });
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_task:1521415237813665813> History: ${target.username}`, thumbnail: { url: target.displayAvatarURL() }, fields }] });
+  }
+
+  // ,clearhistory <@user>
+  if (command === "clearhistory") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    warns.delete(`${message.guild.id}-${target.id}`);
+    return ok(message, `Cleared history for **${target.username}**`);
+  }
+
+  // -- ROLE MANAGEMENT EXTENDED ------------------------─
+
+  // ,roleicon <@role> <emoji>
+  if (command === "roleicon") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    const emoji = args[2];
+    if (!role || !emoji) return err(message, "missing required argument");
+
+    await role.setUnicodeEmoji(emoji).catch(() => null);
+    return ok(message, `Set icon for **${role.name}**`);
+  }
+
+  // ,rolehoist <@role> -- toggle hoist
+  if (command === "rolehoist") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    await role.setHoist(!role.hoist).catch(() => null);
+    return ok(message, `**${role.name}** hoist: **${!role.hoist}**`);
+  }
+
+  // ,rolemention <@role> -- toggle mentionable
+  if (command === "rolemention") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    await role.setMentionable(!role.mentionable).catch(() => null);
+    return ok(message, `**${role.name}** mentionable: **${!role.mentionable}**`);
+  }
+
+  // ,giverole <@user> <@role> -- alias
+  if (command === "giverole" || command === "addrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const role = message.mentions.roles.first();
+    if (!target || !role) return err(message, "missing required argument");
+
+    await target.roles.add(role).catch(() => null);
+    return ok(message, `Added **${role.name}** to **${target.user.username}**`);
+  }
+
+  // ,takerole <@user> <@role> -- alias
+  if (command === "takerole" || command === "removerole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const role = message.mentions.roles.first();
+    if (!target || !role) return err(message, "missing required argument");
+
+    await target.roles.remove(role).catch(() => null);
+    return ok(message, `Removed **${role.name}** from **${target.user.username}**`);
+  }
+
+  // ,roleperms <@role> -- show role permissions
+  if (command === "roleperms") {
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    const perms = role.permissions.toArray();
+    return message.reply({ embeds: [{ color: role.color || PINK, title: `Permissions: ${role.name}`, description: perms.length > 0 ? perms.join(", ") : "No permissions" }] });
+  }
+
+  // -- CHANNEL MANAGEMENT EXTENDED ----------------------
+
+  // ,channelclone [#channel]
+  if (command === "channelclone") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    const clone = await ch.clone().catch(() => null);
+    if (!clone) return err(message, "Could not clone channel.");
+    return ok(message, `Cloned to ${clone}`);
+  }
+
+  // ,lockall -- lock all text channels
+  if (command === "lockall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    for (const ch of channels.values()) await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => {});
+    return ok(message, `Locked **${channels.size}** channels.`);
+  }
+
+  // ,unlockall -- unlock all text channels
+  if (command === "unlockall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    for (const ch of channels.values()) await ch.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => {});
+    return ok(message, `Unlocked **${channels.size}** channels.`);
+  }
+
+  // ,hideall -- hide all channels from everyone
+  if (command === "hideall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    for (const ch of channels.values()) await ch.permissionOverwrites.edit(message.guild.roles.everyone, { ViewChannel: false }).catch(() => {});
+    return ok(message, `hidden **${channels.size}** channels`);
+  }
+
+  // ,unhideall
+  if (command === "unhideall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    for (const ch of channels.values()) await ch.permissionOverwrites.edit(message.guild.roles.everyone, { ViewChannel: null }).catch(() => {});
+    return ok(message, `unhidden **${channels.size}** channels`);
+  }
+
+  // ,slowmodeall <seconds>
+  if (command === "slowmodeall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const seconds = parseInt(args[1]) ?? 0;
+    const channels = message.guild.channels.cache.filter(c => c.type === 0);
+    for (const ch of channels.values()) await ch.setRateLimitPerUser(seconds).catch(() => {});
+    return message.reply(seconds === 0 ? `<:019TXTWhite_Yes:1521327983279996999> Slowmode disabled in all channels.` : `<:019TXTWhite_Yes:1521327983279996999> Slowmode set to **${seconds}s** in all channels.`);
+  }
+
+  // -- VOICE MODERATION --------------------------------─
+
+  // ,vcmute <@user>
+  if (command === "vcmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    if (!target.voice.channel) return err(message, "User is not in a voice channel.");
+    await target.voice.setMute(true).catch(() => null);
+    return ok(message, `Voice muted **${target.user.username}**`);
+  }
+
+  // ,vcunmute <@user>
+  if (command === "vcunmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.voice.setMute(false).catch(() => null);
+    return ok(message, `Voice unmuted **${target.user.username}**`);
+  }
+
+  // ,vcdeafen <@user>
+  if (command === "vcdeafen") {
+    if (!message.member.permissions.has(PermissionFlagsBits.DeafenMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.voice.setDeaf(true).catch(() => null);
+    return ok(message, `Deafened **${target.user.username}**`);
+  }
+
+  // ,vcundeafen <@user>
+  if (command === "vcundeafen") {
+    if (!message.member.permissions.has(PermissionFlagsBits.DeafenMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.voice.setDeaf(false).catch(() => null);
+    return ok(message, `Undeafened **${target.user.username}**`);
+  }
+
+  // ,vckick <@user>
+  if (command === "vckick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MoveMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    if (!target.voice.channel) return err(message, "User is not in a voice channel.");
+    await target.voice.disconnect().catch(() => null);
+    return ok(message, `kicked **${target.user.username}** from voice`);
+  }
+
+  // ,vcmove <@user> <#channel>
+  if (command === "vcmove") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MoveMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const channel = message.mentions.channels.first();
+    if (!target || !channel) return err(message, "missing required argument");
+
+    await target.voice.setChannel(channel).catch(() => null);
+    return ok(message, `Moved **${target.user.username}** to ${channel}`);
+  }
+
+  // ,vcmuteall -- mute everyone in a voice channel
+  if (command === "vcmuteall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
+    const vc = message.member.voice.channel;
+    if (!vc) return err(message, "You must be in a voice channel.");
+    for (const m of vc.members.values()) await m.voice.setMute(true).catch(() => {});
+    return ok(message, `Muted **${vc.members.size}** members in **${vc.name}**`);
+  }
+
+  // ,vcunmuteall
+  if (command === "vcunmuteall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.MuteMembers)) return err(message, "Missing permissions.");
+    const vc = message.member.voice.channel;
+    if (!vc) return err(message, "You must be in a voice channel.");
+    for (const m of vc.members.values()) await m.voice.setMute(false).catch(() => {});
+    return ok(message, `Unmuted **${vc.members.size}** members in **${vc.name}**`);
+  }
+
+  // -- SERVER SETTINGS ----------------------------------
+
+  // ,setname <n> -- rename server
+  if (command === "setname") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const name = args.slice(1).join(" ");
+    if (!name) return err(message, "missing required argument");
+
+    await message.guild.setName(name).catch(() => null);
+    return ok(message, `Server renamed to **${name}**`);
+  }
+
+  // ,setdescription <text>
+  if (command === "setdescription" || command === "setdesc") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const desc = args.slice(1).join(" ") || null;
+    await message.guild.setDescription(desc).catch(() => null);
+    return ok(message, `Server description ${desc ? "updated" : "cleared"}.`);
+  }
+
+  // ,vanity -- show server vanity URL
+  if (command === "vanity") {
+    const vanity = message.guild.vanityURLCode;
+    if (!vanity) return err(message, "This server has no vanity URL.");
+    return info(message, `Vanity URL: **discord.gg/${vanity}** (${message.guild.vanityURLUses} uses)`);
+  }
+
+  // ,verification <none|low|medium|high|highest>
+  if (command === "verification") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const levels = { none: 0, low: 1, medium: 2, high: 3, highest: 4 };
+    const level = levels[args[1]?.toLowerCase()];
+    if (level === undefined) return err(message, "missing required argument");
+
+    await message.guild.setVerificationLevel(level).catch(() => null);
+    return ok(message, `Verification level set to **${args[1]}**`);
+  }
+
+  // ,contentfilter <disabled|members|all>
+  if (command === "contentfilter") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const levels = { disabled: 0, members: 1, all: 2 };
+    const level = levels[args[1]?.toLowerCase()];
+    if (level === undefined) return err(message, "missing required argument");
+
+    await message.guild.setExplicitContentFilter(level).catch(() => null);
+    return ok(message, `Content filter set to **${args[1]}**`);
+  }
+
+  // ,invitecheck -- show all invites and their usage
+  if (command === "invitecheck") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const invites = await message.guild.invites.fetch().catch(() => null);
+    if (!invites || invites.size === 0) return message.reply("No active invites.");
+    const sorted = invites.sort((a, b) => (b.uses || 0) - (a.uses || 0));
+    const list = sorted.map(i => `**discord.gg/${i.code}** — ${i.inviter?.username || "Unknown"} | ${i.uses} uses | expires: ${i.maxAge ? `${i.maxAge / 3600}h` : "never"}`).slice(0, 15).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_comment:1491884212297531572> Invites (${invites.size})`, description: list }] });
+  }
+
+  // ,deleteinvite <code>
+  if (command === "deleteinvite") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const code = args[1];
+    if (!code) return err(message, "missing required argument");
+
+    await client.fetchInvite(code).then(inv => inv.delete()).catch(() => null);
+    return ok(message, `Deleted invite **${code}**`);
+  }
+
+  // ,deleteallinvites -- delete all invites
+  if (command === "deleteallinvites") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const invites = await message.guild.invites.fetch().catch(() => null);
+    if (!invites) return err(message, "Could not fetch invites.");
+    for (const inv of invites.values()) await inv.delete().catch(() => {});
+    return ok(message, `Deleted **${invites.size}** invites.`);
+  }
+
+  // -- REACTION ROLES ------------------------------------
+  // ,reactionrole <messageId> <emoji> <@role>
+  if (command === "reactionrole" || command === "rr") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    const emoji = args[2];
+    const role = message.mentions.roles.first();
+    if (!msgId || !emoji || !role) return err(message, "missing required argument");
+
+    reactionRoles.set(`${msgId}-${emoji}`, role.id);
+    try {
+      const msg = await message.channel.messages.fetch(msgId);
+      await msg.react(emoji);
+    } catch {}
+    return ok(message, `Reaction role set: ${emoji} → **${role.name}**`);
+  }
+
+  // -- USEFUL EXTRAS ------------------------------------─
+
+  // ,massban <userId1> <userId2> ... -- ban multiple users
+  if (command === "massban" || command === "mb") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    // Accept raw IDs and/or mentions (<@123456>)
+    const rawTokens = args.slice(1);
+    const reason = rawTokens.filter(t => !/^(<@!?\d+>|\d+)$/.test(t)).join(" ") || `[Massban] by ${message.author.username}`;
+    const ids = [
+      ...[...message.mentions.users.values()].map(u => u.id),
+      ...rawTokens.filter(t => /^\d{17,20}$/.test(t)),
+    ].filter((id, i, arr) => arr.indexOf(id) === i); // dedupe
+    if (ids.length === 0) return err(message, "Specifica almeno un utente o ID. Uso: `,massban @user1 @user2 123456789`");
+
+    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `🔨 Banning **${ids.length}** users...` }] });
+    let banned = 0, failed = 0;
+    for (const id of ids) {
+      recentBoosters.delete(id);
+      const ok2 = await message.guild.members.ban(id, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
+      ok2 ? banned++ : failed++;
+      addCase(message.guild.id, "ban", id, message.author.id, reason);
+      if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
+    }
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Massban complete — **${banned}** banned${failed ? `, **${failed}** failed` : ""} — <:RUSH_trash_can:1521415241190215721> messages deleted | ${reason}` }] });
+  }
+
+  // ,masskick <@user1> <@user2> ...
+  if (command === "masskick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+    const targets = [...message.mentions.members.values()];
+    if (targets.length === 0) return err(message, "missing required argument");
+
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Kicking **${targets.length}** users...` }] });
+    for (const t of targets) await t.kick(`[Masskick] by ${message.author.username}`).catch(() => {});
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Kicked **${targets.length}** users.` }] });
+  }
+
+  // ,timeout all <duration> -- timeout everyone
+  if (command === "timeoutall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const timeStr = args[1];
+    const match = timeStr?.match(/^(\d+)(s|m|h)$/);
+    if (!match) return err(message, "missing required argument: **time**\nusage: `,timeoutall 10m` — formats: 30s, 5m, 2h");
+    const units = { s: 1000, m: 60000, h: 3600000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    const members = await message.guild.members.fetch();
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Timing out **${members.size}** members...` }] });
+    for (const m of members.values()) {
+      if (m.user.bot || m.id === message.guild.ownerId) continue;
+      await m.timeout(ms).catch(() => {});
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Timed out all members for **${timeStr}**.` }] });
+  }
+
+  // ,untimeoutall
+  if (command === "untimeoutall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const members = await message.guild.members.fetch();
+    for (const m of members.values()) {
+      if (m.communicationDisabledUntil) await m.timeout(null).catch(() => {});
+    }
+    return ok(message, `Removed all timeouts.`);
+  }
+
+  // ,note <@user> <text> -- add a private note to a user
+  if (command === "note") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const text = args.slice(2).join(" ");
+    if (!target || !text) return err(message, "missing required argument");
+
+    const key = `${message.guild.id}-${target.id}`;
+    const list = notes.get(key) || [];
+    list.push({ text, mod: message.author.username, date: new Date().toLocaleDateString() });
+    notes.set(key, list);
+    return ok(message, `Note added for **${target.username}**`);
+  }
+
+  // ,notes <@user> -- view notes
+  if (command === "notes") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const list = notes.get(`${message.guild.id}-${target.id}`) || [];
+    if (list.length === 0) return info(message, `no notes for **${target.username}**.`);
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_task:1521415237813665813> Notes: ${target.username}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
+  }
+
+  // ,clearnotes <@user>
+  if (command === "clearnotes") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    notes.delete(`${message.guild.id}-${target.id}`);
+    return ok(message, `Cleared notes for **${target.username}**`);
+  }
+
+  // ,moved <@user> <#channel> -- move user messages context (just informs)
+  if (command === "move") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const channel = message.mentions.channels.first();
+    if (!target || !channel) return err(message, "missing required argument");
+
+    return info(message, `**${target.username}** please continue in ${channel}`);
+  }
+
+  // ,report <@user> <reason> -- report a user to mods
+  if (command === "report") {
+    const target = message.mentions.users.first();
+    const reason = args.slice(2).join(" ");
+    if (!target || !reason) return err(message, "missing required argument");
+
+    const logChId = modlogChannel.get(message.guild.id);
+    if (logChId) {
+      const logCh = message.guild.channels.cache.get(logChId);
+      if (logCh) await logCh.send({ embeds: [{ color: PINK, title: "📢 User Report", fields: [{ name: "Reported User", value: target.username, inline: true }, { name: "Reported By", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: reason }], timestamp: new Date() }] });
+    }
+    return ok(message, `Report submitted for **${target.username}**`);
+  }
+});
+
+// Reaction roles handler
+client.on("messageReactionAdd", async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch().catch(() => {});
+  const roleId = reactionRoles.get(`${reaction.message.id}-${reaction.emoji.name}`);
+  if (!roleId) return;
+  const member = await reaction.message.guild?.members.fetch(user.id).catch(() => null);
+  if (member) await member.roles.add(roleId).catch(() => {});
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch().catch(() => {});
+  const roleId = reactionRoles.get(`${reaction.message.id}-${reaction.emoji.name}`);
+  if (!roleId) return;
+  const member = await reaction.message.guild?.members.fetch(user.id).catch(() => null);
+  if (member) await member.roles.remove(roleId).catch(() => {});
+});
+
+// ===================================================
+// ===== MASSIVE EXTENSION -- 250+ NEW COMMANDS =======
+// ===================================================
+
+// -- IN-MEMORY STORES --------------------------------
+const vanityLock = new Map();
+const customCommands = new Map();
+const disabledCommands = new Map();
+
+// ── Comandi di moderazione disattivati globalmente (rimuovere da questo set per riabilitarli) ──
+const FORCE_DISABLED_COMMANDS = new Set([
+  "warn", "clearwarns", "delwarn", "warnings", "warns",
+  "ban", "unban", "hackban", "hardban", "hb", "softban", "tempban",
+  "baninfo", "unbanall", "banreason",
+  "kick",
+  "mute", "unmute", "imute", "iunmute", "setupmute",
+  "timeout", "untimeout",
+  "jail", "unjail",
+  "vcmute", "vcunmute", "vckick",
+]);
+const aliases = new Map();
+const boosterRoles = new Map();      // userId-guildId => roleId (custom booster role)
+const reactionTriggers = new Map();
+const counters = new Map();
+const stickyMessages = new Map();    // channelId => { content, msgId }
+const bumpReminder = new Map();      // guildId => { channelId, lastBump, reminded }
+const joinToCreate = new Map();      // guildId => { triggerVcId, categoryId }
+const tempVoiceChannels = new Set(); // channelIds of temp vc
+const confessions = new Map();       // guildId => channelId
+const appealConfig = new Map();      // guildId => channelId
+const medicConfig = new Map();       // guildId => { roleId }
+const fakePerms = new Map();         // guildId-roleId => [permissions]
+const autoResponders = new Map();    // guildId => [{ trigger, response, exact }]
+const birthdayData = new Map();      // userId => { day, month }
+const birthdayChannel = new Map();
+const muteRole = new Map();
+const ignoreList = new Map();        // guildId => Set<userId> (ignored from all cmds)
+const blacklistWords = new Map();    // guildId => Set<word>
+const warnThresholds = new Map();
+const caseCounter = new Map();       // guildId => number
+const cases = new Map();             // guildId-caseId => { type, user, mod, reason, date }
+
+function nextCase(guildId) {
+  const n = (caseCounter.get(guildId) || 0) + 1;
+  caseCounter.set(guildId, n);
+  return n;
+}
+
+function addCase(guildId, type, userId, modId, reason) {
+  const id = nextCase(guildId);
+  cases.set(`${guildId}-${id}`, { id, type, userId, modId, reason, date: new Date().toISOString() });
+  saveCases();
+  return id;
+}
+
+// -- VANITY LOCK MONITOR ------------------------------
+setInterval(async () => {
+  for (const [guildId, cfg] of vanityLock.entries()) {
+    if (!cfg.locked || !cfg.code) continue;
+    try {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) continue;
+      const vanityData = await guild.fetchVanityData().catch(() => null);
+      if (!vanityData) continue;
+      if (vanityData.code !== cfg.code) {
+        // Vanity was changed -- revert it
+        await guild.setVanityCode(cfg.code).catch(async () => {
+          // Can't revert -- notify owner
+          const owner = await client.users.fetch(guild.ownerId).catch(() => null);
+          if (owner) await owner.send(`<:RUSH_warning:1521415214799654985> **Vanity Lock Alert!**\nVanity \`${cfg.code}\` was changed and could NOT be restored!\nCurrent: \`${vanityData.code}\``).catch(() => {});
+        });
+        if (cfg.notifyUserId) {
+          const u = await client.users.fetch(cfg.notifyUserId).catch(() => null);
+          if (u) await u.send(`<:RUSH_unlock:1521415218037526641> **Vanity Lock**: \`${cfg.code}\` was changed. Attempting to restore...`).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+}, 15000);
+
+// -- BUMP REMINDER ------------------------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.id === "302050872383242240" && message.embeds[0]?.description?.includes("Bump done")) {
+    const cfg = bumpReminder.get(message.guild?.id);
+    if (!cfg) return;
+    cfg.lastBump = Date.now();
+    cfg.reminded = false;
+    bumpReminder.set(message.guild.id, cfg);
+  }
+});
+setInterval(async () => {
+  for (const [guildId, cfg] of bumpReminder.entries()) {
+    if (cfg.reminded || !cfg.lastBump) continue;
+    if (Date.now() - cfg.lastBump >= 7200000) {
+      cfg.reminded = true;
+      bumpReminder.set(guildId, cfg);
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) continue;
+      const ch = guild.channels.cache.get(cfg.channelId);
+      if (ch) ch.send("<:RUSH_clock:1521415225058791454> It's time to **bump** the server! Use `/bump` now!").catch(() => {});
+    }
+  }
+}, 60000);
+
+// -- STICKY MESSAGES ----------------------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (message.content?.toLowerCase().startsWith(",sticky")) return; // ignore sticky management commands
+  const sticky = stickyMessages.get(message.channel.id);
+  if (!sticky) return;
+  if (message.id === sticky.msgId) return;
+  const old = await message.channel.messages.fetch(sticky.msgId).catch(() => null);
+  if (old) await old.delete().catch(() => {});
+  const newMsg = await message.channel.send(sticky.content).catch(() => null);
+  if (newMsg) sticky.msgId = newMsg.id;
+  stickyMessages.set(message.channel.id, sticky);
+    saveSticky();
+});
+
+// -- AUTO RESPONDERS ----------------------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const responders = autoResponders.get(message.guild.id) || [];
+  for (const r of responders) {
+    const matches = r.exact ? message.content.toLowerCase() === r.trigger.toLowerCase() : message.content.toLowerCase().includes(r.trigger.toLowerCase());
+    if (matches) {
+      await message.channel.send({ embeds: [{ color: PINK, description: r.response }] }).catch(() => {});
+      break;
+    }
+  }
+});
+
+// -- JOIN TO CREATE ------------------------------------
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  const guildId = newState.guild.id;
+  const cfg = joinToCreate.get(guildId);
+  if (!cfg) return;
+  // User joined the trigger channel
+  if (newState.channelId === cfg.triggerVcId && newState.member) {
+    const ch = await newState.guild.channels.create({
+      name: `${newState.member.user.username}'s channel`,
+      type: 2,
+      parent: cfg.categoryId || null,
+    }).catch(() => null);
+    if (ch) {
+      tempVoiceChannels.add(ch.id);
+      await newState.member.voice.setChannel(ch).catch(() => {});
+    }
+  }
+  // Clean up empty temp channels
+  if (oldState.channel && tempVoiceChannels.has(oldState.channelId)) {
+    if (oldState.channel.members.size === 0) {
+      await oldState.channel.delete().catch(() => {});
+      tempVoiceChannels.delete(oldState.channelId);
+    }
+  }
+});
+
+// -- BIRTHDAY CHECKER --------------------------------─
+setInterval(async () => {
+  const now = new Date();
+  const day = now.getDate();
+  const month = now.getMonth() + 1;
+  for (const [userId, bd] of birthdayData.entries()) {
+    if (bd.day === day && bd.month === month && bd.announcedYear !== now.getFullYear()) {
+      bd.announcedYear = now.getFullYear();
+      birthdayData.set(userId, bd);
+    saveBirthdays();
+      // Announce in all guilds where this user is
+      for (const [guildId, channelId] of birthdayChannel.entries()) {
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) continue;
+        const member = guild.members.cache.get(userId);
+        if (!member) continue;
+        const ch = guild.channels.cache.get(channelId);
+        if (ch) ch.send(`🎂 Happy Birthday <@${userId}>! <:RUSH_giveaway:1521415256772186132>`).catch(() => {});
+      }
+    }
+  }
+}, 60 * 60 * 1000); // check every hour
+
+// -- CUSTOM COMMAND HANDLER ----------------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  const guildId = message.guild.id;
+
+  // Check disabled commands (per-guild ,disable + globali FORCE_DISABLED_COMMANDS)
+  const disabled = disabledCommands.get(guildId);
+  if (disabled?.has(command) || FORCE_DISABLED_COMMANDS.has(command)) return;
+
+  // Centralized moderation gate
+  if (modGate(message, command)) return;
+
+  // Check aliases
+  const aliasKey = `${guildId}-${command}`;
+  const aliasTarget = aliases.get(aliasKey);
+  if (aliasTarget) {
+    message.content = `,${aliasTarget} ${args.slice(1).join(" ")}`;
+  }
+
+  // Custom commands
+  const ccKey = `${guildId}-${command}`;
+  const ccResponse = customCommands.get(ccKey);
+  if (ccResponse) {
+    return message.channel.send(ccResponse.replace("{user}", message.author.toString()).replace("{server}", message.guild.name).replace("{count}", message.guild.memberCount));
+  }
+
+  // -- VANITY COMMANDS ----------------------------------─
+
+  if (command === "vanitylock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    const cfg = vanityLock.get(guildId) || { code: null, locked: false, notifyUserId: message.author.id };
+
+    if (sub === "on" || sub === "enable") {
+      const vanityData = await message.guild.fetchVanityData().catch(() => null);
+      if (!vanityData?.code) return err(message, "This server has no vanity URL.");
+      cfg.code = vanityData.code;
+      cfg.locked = true;
+      cfg.notifyUserId = message.author.id;
+      vanityLock.set(guildId, cfg);
+      saveAllConfigs();
+      return ok(message, `Vanity lock enabled for **discord.gg/${cfg.code}** — I'll monitor every 15s and restore if changed.`);
+    }
+    if (sub === "off" || sub === "disable") {
+      cfg.locked = false;
+      vanityLock.set(guildId, cfg);
+      saveAllConfigs();
+      return ok(message, "Vanity lock disabled.");
+    }
+    if (sub === "status" || !sub) {
+      const vanityData = await message.guild.fetchVanityData().catch(() => null);
+      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_unlock:1521415218037526641> Vanity Lock", fields: [{ name: "Status", value: cfg.locked ? "<:019TXTWhite_Yes:1521327983279996999> Locked" : "<:steal:1521327958634135655> Unlocked", inline: true }, { name: "Locked Code", value: cfg.code ? `discord.gg/${cfg.code}` : "None", inline: true }, { name: "Current Code", value: vanityData?.code ? `discord.gg/${vanityData.code}` : "None", inline: true }] }] });
+    }
+  }
+
+  // ,vanitytransfer <code> -- claim a vanity for the server
+  if (command === "vanitytransfer") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const code = args[1];
+    if (!code) return err(message, "missing required argument");
+
+    await message.guild.setVanityCode(code).catch(e => err(message, `Failed: ${e.message}`));
+    return ok(message, `Vanity URL set to **discord.gg/${code}**`);
+  }
+
+  // -- CASE SYSTEM --------------------------------------─
+
+  // ,case <id>
+  if (command === "case") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const id = parseInt(args[1]);
+    if (isNaN(id)) return err(message, "missing required argument");
+
+    const c = cases.get(`${guildId}-${id}`);
+    if (!c) return err(message, `Case #${id} not found.`);
+    return message.reply({ embeds: [{ color: PINK, title: `Case #${c.id}`, fields: [{ name: "Type", value: c.type, inline: true }, { name: "User", value: `<@${c.userId}>`, inline: true }, { name: "Moderator", value: `<@${c.modId}>`, inline: true }, { name: "Reason", value: c.reason }, { name: "Date", value: `<t:${Math.floor(new Date(c.date).getTime() / 1000)}:R>` }] }] });
+  }
+
+  // ,cases <@user>
+  if (command === "cases") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const userCases = [...cases.entries()].filter(([k, v]) => k.startsWith(guildId) && v.userId === target.id).map(([, v]) => v);
+    if (userCases.length === 0) return ok(message, `**${target.username}** has no cases.`);
+    const lines = userCases.map(c => `**#${c.id}** ${c.type} — ${c.reason} (${c.date.split("T")[0]})`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Cases: ${target.username}`, description: lines.substring(0, 4096) }] });
+  }
+
+  // ,editcase <id> <new reason>
+  if (command === "editcase") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const id = parseInt(args[1]);
+    const reason = args.slice(2).join(" ");
+    if (isNaN(id) || !reason) return err(message, "missing required argument");
+
+    const c = cases.get(`${guildId}-${id}`);
+    if (!c) return err(message, `Case #${id} not found.`);
+    c.reason = reason;
+    cases.set(`${guildId}-${id}`, c);
+  saveCases();
+    return ok(message, `Case #${id} reason updated.`);
+  }
+
+  // ,deletecase <id>
+  if (command === "deletecase") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const id = parseInt(args[1]);
+    if (isNaN(id)) return err(message, "missing required argument");
+
+    cases.delete(`${guildId}-${id}`);
+    return ok(message, `Case #${id} deleted.`);
+  }
+
+  // -- WARN THRESHOLDS ----------------------------------─
+
+  // ,warnthreshold <count> <action> -- e.g. ,warnthreshold 3 mute
+  if (command === "warnthreshold") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const count = parseInt(args[1]);
+    const action = args[2]?.toLowerCase();
+    if (isNaN(count) || !["mute", "kick", "ban"].includes(action)) return err(message, "missing required argument");
+
+    const list = warnThresholds.get(guildId) || [];
+    list.push({ count, action });
+    list.sort((a, b) => a.count - b.count);
+    warnThresholds.set(guildId, list);
+    saveAllConfigs();return ok(message, `At **${count}** warns → **${action}**`);
+  }
+
+  // ,warnthresholds -- list all thresholds
+  if (command === "warnthresholds") {
+    const list = warnThresholds.get(guildId) || [];
+    if (list.length === 0) return message.reply("No warn thresholds set.");
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Warn Thresholds", description: list.map(t => `**${t.count}** warns → **${t.action}**`).join("\n") }] });
+  }
+
+  // -- CUSTOM COMMANDS ----------------------------------─
+
+  // ,cc add <name> <response>
+  if (command === "cc") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const name = args[2]?.toLowerCase();
+      const response = args.slice(3).join(" ");
+      if (!name || !response) return err(message, "missing required argument");
+
+      customCommands.set(`${guildId}-${name}`, response);
+      saveAllConfigs();return ok(message, `Custom command **,${name}** created.`);
+    }
+    if (sub === "remove" || sub === "delete") {
+      const name = args[2]?.toLowerCase();
+      if (!name) return err(message, "missing required argument");
+
+      customCommands.delete(`${guildId}-${name}`);
+      saveAllConfigs();return ok(message, `Custom command **,${name}** removed.`);
+    }
+    if (sub === "list") {
+      const cmds = [...customCommands.keys()].filter(k => k.startsWith(`${guildId}-`)).map(k => k.replace(`${guildId}-`, ""));
+      if (cmds.length === 0) return message.reply("No custom commands.");
+      return message.reply({ embeds: [{ color: PINK, title: "Custom Commands", description: cmds.map(c => `\`,${c}\``).join(", ") }] });
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // -- ALIASES ------------------------------------------─
+
+  // ,alias add <alias> <command>
+  if (command === "alias") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const alias = args[2]?.toLowerCase();
+      const target = args[3]?.toLowerCase();
+      if (!alias || !target) return err(message, "missing required argument");
+
+      aliases.set(`${guildId}-${alias}`, target);
+      saveAllConfigs();return ok(message, `\`,${alias}\` is now an alias for \`,${target}\``);
+    }
+    if (sub === "remove") {
+      const alias = args[2]?.toLowerCase();
+      aliases.delete(`${guildId}-${alias}`);
+      saveAllConfigs();return ok(message, `Alias \`,${alias}\` removed.`);
+    }
+    if (sub === "list") {
+      const list = [...aliases.entries()].filter(([k]) => k.startsWith(`${guildId}-`)).map(([k, v]) => `\`,${k.replace(`${guildId}-`, "")}\` → \`,${v}\``);
+      if (list.length === 0) return message.reply("No aliases set.");
+      return message.reply({ embeds: [{ color: PINK, title: "Aliases", description: list.join("\n") }] });
+    }
+  }
+
+  // -- DISABLE COMMANDS ----------------------------------
+
+  // ,disable <command>
+  if (command === "disable") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cmd = args[1]?.toLowerCase();
+    if (!cmd) return err(message, "missing required argument");
+
+    const set = disabledCommands.get(guildId) || new Set();
+    set.add(cmd);
+    disabledCommands.set(guildId, set);
+    saveAllConfigs();return ok(message, `Command \`,${cmd}\` disabled.`);
+  }
+
+  // ,enable <command>
+  if (command === "enable") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cmd = args[1]?.toLowerCase();
+    const set = disabledCommands.get(guildId);
+    set?.delete(cmd);
+    return ok(message, `Command \`,${cmd}\` enabled.`);
+  }
+
+  // ,disabled -- list disabled commands
+  if (command === "disabled") {
+    const set = disabledCommands.get(guildId);
+    if (!set || set.size === 0) return message.reply("No commands are disabled.");
+    return info(message, `disabled: ${[...set].map(c => "`,"+c+"`").join(", ")}`);
+  }
+
+  // -- AUTO RESPONDERS ----------------------------------─
+
+  // ,autorespond add <trigger> | <response>
+  if (command === "autorespond" || command === "ar") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const text = args.slice(2).join(" ");
+      const parts = text.split("|");
+      if (parts.length < 2) return err(message, "missing required argument");
+
+      const trigger = parts[0].trim();
+      const response = parts.slice(1).join("|").trim();
+      const exact = args[2] === "--exact";
+      const list = autoResponders.get(guildId) || [];
+      list.push({ trigger, response, exact });
+      autoResponders.set(guildId, list);
+    saveAllConfigs();
+      return ok(message, `auto responder added: \`${trigger}\` → \`${response}\``);
+    }
+    if (sub === "remove") {
+      const trigger = args.slice(2).join(" ");
+      const list = (autoResponders.get(guildId) || []).filter(r => r.trigger !== trigger);
+      autoResponders.set(guildId, list);
+    saveAllConfigs();
+      return ok(message, `auto responder \`${trigger}\` removed.`);
+    }
+    if (sub === "list") {
+      const list = autoResponders.get(guildId) || [];
+      if (list.length === 0) return message.reply("No auto responders.");
+      return message.reply({ embeds: [{ color: PINK, title: "Auto Responders", description: list.map((r, i) => `**${i + 1}.** \`${r.trigger}\` → \`${r.response}\``).join("\n") }] });
+    }
+  }
+
+  // -- REACTION TRIGGERS --------------------------------─
+
+  // ,reactiontrigger add <trigger> <emoji>
+  if (command === "reactiontrigger" || command === "rt") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const trigger = args[2];
+      const emoji = args[3];
+      if (!trigger || !emoji) return err(message, "missing required argument");
+
+      const list = reactionTriggers.get(guildId) || [];
+      list.push({ trigger, emoji });
+      reactionTriggers.set(guildId, list);
+      return ok(message, `reaction trigger added: \`${trigger}\` → ${emoji}`);
+    }
+    if (sub === "remove") {
+      const trigger = args[2];
+      const list = (reactionTriggers.get(guildId) || []).filter(r => r.trigger !== trigger);
+      reactionTriggers.set(guildId, list);
+      return ok(message, `reaction trigger \`${trigger}\` removed.`);
+    }
+    if (sub === "list") {
+      const list = reactionTriggers.get(guildId) || [];
+      if (list.length === 0) return message.reply("No reaction triggers.");
+      return message.reply({ embeds: [{ color: PINK, title: "Reaction Triggers", description: list.map((r, i) => `**${i + 1}.** \`${r.trigger}\` → ${r.emoji}`).join("\n") }] });
+    }
+  }
+
+  // Reaction trigger handler
+  if (!message.content.startsWith(",")) {
+    const triggers = reactionTriggers.get(guildId) || [];
+    for (const t of triggers) {
+      if (message.content.toLowerCase().includes(t.trigger.toLowerCase())) {
+        await message.react(t.emoji).catch(() => {});
+      }
+    }
+  }
+
+  // -- STICKY MESSAGES ----------------------------------─
+
+  // ,sticky <message>
+  if (command === "sticky") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "off" || sub === "remove") {
+      const existing = stickyMessages.get(message.channel.id);
+      if (!existing) return err(message, "No sticky message set in this channel.");
+      const oldMsg = await message.channel.messages.fetch(existing.msgId).catch(() => null);
+      if (oldMsg) await oldMsg.delete().catch(() => {});
+      stickyMessages.delete(message.channel.id);
+      saveSticky();
+      return ok(message, "Sticky message removed.");
+    }
+    const content = args.slice(1).join(" ");
+    if (!content) return err(message, "missing required argument");
+
+    const msg = await message.channel.send(content);
+    stickyMessages.set(message.channel.id, { content, msgId: msg.id });
+    saveSticky();
+    message.delete().catch(() => {});
+  }
+
+  // -- COUNTERS ------------------------------------------
+
+  // ,counter create <name> <#channel> <type: members|bots|all|custom>
+  if (command === "counter") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "create") {
+      const name = args[2];
+      const channel = message.mentions.channels.first();
+      const type = args[4]?.toLowerCase() || "custom";
+      if (!name || !channel) return err(message, "missing required argument");
+
+      let count = 0;
+      if (type === "members") count = message.guild.memberCount;
+      else if (type === "bots") count = message.guild.members.cache.filter(m => m.user.bot).size;
+      else if (type === "all") count = message.guild.memberCount;
+      counters.set(`${guildId}-${name}`, { channelId: channel.id, count, type });
+      await channel.setName(`${name}: ${count}`).catch(() => {});
+      saveAllConfigs();return ok(message, `Counter **${name}** created in ${channel}`);
+    }
+    if (sub === "delete") {
+      const name = args[2];
+      counters.delete(`${guildId}-${name}`);
+      saveAllConfigs();return ok(message, `Counter **${name}** deleted.`);
+    }
+    if (sub === "list") {
+      const list = [...counters.entries()].filter(([k]) => k.startsWith(`${guildId}-`));
+      if (list.length === 0) return message.reply("No counters.");
+      return message.reply({ embeds: [{ color: PINK, title: "Counters", description: list.map(([k, v]) => `**${k.replace(`${guildId}-`, "")}** — <#${v.channelId}> (${v.count})`).join("\n") }] });
+    }
+  }
+
+  // Update member counters on join/leave
+  client.on("guildMemberAdd", async (member) => {
+    for (const [key, cfg] of counters.entries()) {
+      if (!key.startsWith(member.guild.id)) continue;
+      if (cfg.type === "members" || cfg.type === "all") {
+        cfg.count = member.guild.memberCount;
+        counters.set(key, cfg);
+        const ch = member.guild.channels.cache.get(cfg.channelId);
+        if (ch) await ch.setName(`${key.replace(`${member.guild.id}-`, "")}: ${cfg.count}`).catch(() => {});
+      }
+    }
+  });
+
+  // -- CONFESSIONS --------------------------------------─
+
+  // ,confessions <#channel | off>
+  if (command === "confessions") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { confessions.delete(guildId); return ok(message, "Confessions disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    confessions.set(guildId, ch.id);
+    return ok(message, `Confessions channel set to ${ch}`);
+  }
+
+  // ,confess <message>
+  if (command === "confess") {
+    const chId = confessions.get(guildId);
+    if (!chId) return err(message, "Confessions are not set up.");
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const ch = message.guild.channels.cache.get(chId);
+    if (!ch) return err(message, "Confession channel not found.");
+    await ch.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Anonymous Confession", description: text, footer: { text: `Confession #${(counters.get(`${guildId}-confessions`) || { count: 0 }).count + 1}` }, timestamp: new Date() }] });
+    message.delete().catch(() => {});
+    await message.author.send("<:019TXTWhite_Yes:1521327983279996999> Your confession was submitted anonymously.").catch(() => {});
+  }
+
+  // -- BUMP REMINDER ------------------------------------─
+
+  // ,bumpchannel <#channel>
+  if (command === "bumpchannel") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    const existing = bumpReminder.get(guildId) || {};
+    existing.channelId = ch.id;
+    bumpReminder.set(guildId, existing);
+    return ok(message, `Bump reminder set in ${ch} (reminds 2h after last bump)`);
+  }
+
+  // -- JOIN TO CREATE ------------------------------------
+
+  // ,jointocreate <#voicechannel>
+  if (command === "jointocreate" || command === "jtc") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "off") { joinToCreate.delete(guildId); return ok(message, "Join to Create disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    joinToCreate.set(guildId, { triggerVcId: ch.id, categoryId: ch.parentId });
+    return ok(message, `Join **${ch.name}** to create your own voice channel.`);
+  }
+
+  // -- BOOSTER ROLES ------------------------------------─
+
+  // ,boosterrole create -- creates a custom role for the booster
+  if (command === "boosterrole") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "create") {
+      if (!message.member.premiumSince) return err(message, "You must be a booster to use this.");
+      const existingRoleId = boosterRoles.get(`${message.author.id}-${guildId}`);
+      if (existingRoleId) return err(message, "You already have a custom booster role.");
+      const role = await message.guild.roles.create({ name: `${message.author.username}'s Role`, color: "#FF73FA", reason: "Custom booster role" }).catch(() => null);
+      if (!role) return err(message, "Could not create role.");
+      await message.member.roles.add(role).catch(() => {});
+      boosterRoles.set(`${message.author.id}-${guildId}`, role.id);
+      return ok(message, `custom booster role **${role.name}** created! Use \`,boosterrole color\` and \`,boosterrole rename\``);
+    }
+    if (sub === "color") {
+      const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
+      if (!roleId) return err(message, "You don't have a custom booster role.");
+      const color = args[2];
+      if (!color) return err(message, "missing required argument");
+
+      const role = message.guild.roles.cache.get(roleId);
+      await role?.setColor(color).catch(() => {});
+      return ok(message, `Role color updated to **${color}**`);
+    }
+    if (sub === "rename") {
+      const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
+      if (!roleId) return err(message, "You don't have a custom booster role.");
+      const name = args.slice(2).join(" ");
+      if (!name) return err(message, "missing required argument");
+
+      const role = message.guild.roles.cache.get(roleId);
+      await role?.setName(name).catch(() => {});
+      return ok(message, `Role renamed to **${name}**`);
+    }
+    if (sub === "delete") {
+      const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
+      if (!roleId) return err(message, "No custom booster role.");
+      const role = message.guild.roles.cache.get(roleId);
+      await role?.delete().catch(() => {});
+      boosterRoles.delete(`${message.author.id}-${guildId}`);
+      return ok(message, "Booster role deleted.");
+    }
+    if (sub === "icon") {
+      const roleId = boosterRoles.get(`${message.author.id}-${guildId}`);
+      if (!roleId) return err(message, "No custom booster role.");
+      const emoji = args[2];
+      const role = message.guild.roles.cache.get(roleId);
+      await role?.setUnicodeEmoji(emoji).catch(() => {});
+      return ok(message, `Role icon set to ${emoji}`);
+    }
+    return err(message, "missing required argument");
+
+  }
+
+  // -- BIRTHDAY ------------------------------------------
+
+  // ,birthday set <day> <month>
+  if (command === "birthday") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "set") {
+      const day = parseInt(args[2]);
+      const month = parseInt(args[3]);
+      if (isNaN(day) || isNaN(month) || day < 1 || day > 31 || month < 1 || month > 12) return err(message, "missing required argument");
+
+      birthdayData.set(message.author.id, { day, month });
+    saveBirthdays();
+      saveAllConfigs();return ok(message, `Birthday set to **${day}/${month}** 🎂`);
+    }
+    if (sub === "remove") {
+      birthdayData.delete(message.author.id);
+      saveAllConfigs();return ok(message, "Birthday removed.");
+    }
+    if (sub === "channel") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+      const ch = message.mentions.channels.first();
+      if (!ch) return err(message, "missing required argument");
+
+      birthdayChannel.set(guildId, ch.id);
+      saveAllConfigs();return ok(message, `Birthday announcements in ${ch}`);
+    }
+    if (sub === "list") {
+      const members = await message.guild.members.fetch();
+      const list = members.filter(m => birthdayData.has(m.id)).map(m => {
+        const bd = birthdayData.get(m.id);
+        return `${m.user.username} — **${bd.day}/${bd.month}**`;
+      }).slice(0, 20);
+      if (list.length === 0) return message.reply("No birthdays set.");
+      return message.reply({ embeds: [{ color: PINK, title: "🎂 Birthdays", description: list.join("\n") }] });
+    }
+    if (sub === "today") {
+      const now = new Date();
+      const members = await message.guild.members.fetch();
+      const today = members.filter(m => {
+        const bd = birthdayData.get(m.id);
+        return bd && bd.day === now.getDate() && bd.month === now.getMonth() + 1;
+      });
+      if (today.size === 0) return message.reply("🎂 No birthdays today.");
+      return info(message, `Today's birthdays: ${today.map(m => m.user.username).join(", ")}`);
+    }
+    const target = message.mentions.users.first() || message.author;
+    const bd = birthdayData.get(target.id);
+    if (!bd) return err(message, `**${target.username}** hasn't set their birthday.`);
+    return info(message, `**${target.username}**'s birthday: **${bd.day}/${bd.month}**`);
+  }
+
+  // -- FAKE PERMISSIONS ----------------------------------
+
+  // ,fakeperm <@role> <permission> -- grant "fake" permissions via role check
+  if (command === "fakeperm") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const role = message.mentions.roles.first();
+      const perm = args[3];
+      if (!role || !perm) return err(message, "missing required argument");
+
+      const key = `${guildId}-${role.id}`;
+      const perms = fakePerms.get(key) || [];
+      perms.push(perm);
+      fakePerms.set(key, perms);
+      return ok(message, `Fake permission **${perm}** added to **${role.name}**`);
+    }
+    if (sub === "remove") {
+      const role = message.mentions.roles.first();
+      const perm = args[3];
+      if (!role || !perm) return err(message, "missing required argument");
+
+      const key = `${guildId}-${role.id}`;
+      const perms = (fakePerms.get(key) || []).filter(p => p !== perm);
+      fakePerms.set(key, perms);
+      return ok(message, `Fake permission **${perm}** removed from **${role.name}**`);
+    }
+    if (sub === "list") {
+      const role = message.mentions.roles.first();
+      if (!role) return err(message, "missing required argument");
+
+      const perms = fakePerms.get(`${guildId}-${role.id}`) || [];
+    return info(message, `fake perms for **${role.name}**: ${perms.join(", ") || "None"}`);
+    }
+  }
+
+  // -- IGNORE LIST --------------------------------------─
+
+  // ,ignore <@user> -- bot ignores all commands from user
+  if (command === "ignore") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    const set = ignoreList.get(guildId) || new Set();
+    if (set.has(target.id)) {
+      set.delete(target.id);
+      return ok(message, `**${target.username}** is no longer ignored.`);
+    }
+    set.add(target.id);
+    ignoreList.set(guildId, set);
+    return ok(message, `Bot will now ignore **${target.username}**`);
+  }
+
+  // ,ignorelist
+  if (command === "ignorelist") {
+    const set = ignoreList.get(guildId);
+    if (!set || set.size === 0) return message.reply("No ignored users.");
+    return info(message, `ignored: ${[...set].map(id => "<@"+id+">").join(", ")}`);
+  }
+
+  // -- LOGGING EVENTS ------------------------------------
+
+  // ,log <event> <#channel> -- configure what to log where
+  if (command === "log") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const events = ["ban", "kick", "mute", "warn", "join", "leave", "message", "voice", "role", "channel", "nickname", "invite"];
+    const sub = args[1]?.toLowerCase();
+    if (sub === "list") return message.reply({ embeds: [{ color: PINK, title: "Log Events", description: events.map(e => { const chId = logEvents.get(`${guildId}-${e}`); return `**${e}**: ${chId ? `<#${chId}>` : "Not set"}`; }).join("\n") }] });
+    if (!events.includes(sub)) return err(message, `invalid event. Valid events: ${events.join(", ")}`);
+    if (args[2] === "off") { logEvents.delete(`${guildId}-${sub}`); return ok(message, `**${sub}** log disabled.`); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    logEvents.set(`${guildId}-${sub}`, ch.id);
+    saveAllConfigs();return ok(message, `**${sub}** events logged to ${ch}`);
+  }
+
+  // -- BLACKLIST ----------------------------------------─
+
+  // ,blacklist add <word>
+  if (command === "blacklist") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    const word = args.slice(2).join(" ").toLowerCase();
+    if (sub === "add") {
+      if (!word) return err(message, "missing required argument");
+
+      const set = blacklistWords.get(guildId) || new Set();
+      set.add(word);
+      blacklistWords.set(guildId, set);
+      return ok(message, `**${word}** blacklisted.`);
+    }
+    if (sub === "remove") {
+      const set = blacklistWords.get(guildId);
+      set?.delete(word);
+      return ok(message, `**${word}** removed from blacklist.`);
+    }
+    if (sub === "list") {
+      const set = blacklistWords.get(guildId);
+      if (!set || set.size === 0) return message.reply("No blacklisted words.");
+      return message.reply({ embeds: [{ color: PINK, title: "Blacklisted Words", description: [...set].join(", ") }] });
+    }
+    if (sub === "clear") {
+      blacklistWords.delete(guildId);
+      return ok(message, "Blacklist cleared.");
+    }
+  }
+
+  // -- SERVER INFO EXTRAS --------------------------------
+
+  // ,channellist -- list all channels
+  if (command === "channellist") {
+    const cats = message.guild.channels.cache.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+    let desc = "";
+    for (const cat of cats.values()) {
+      desc += `**${cat.name}**\n`;
+      const children = cat.children.cache.sort((a, b) => a.position - b.position);
+      for (const ch of children.values()) desc += `  ${ch.type === 2 ? "🔊" : "#"} ${ch.name}\n`;
+    }
+    return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
+  }
+
+  // ,channel list -- elenca all channels del server raggruppati per categoria
+  if (command === "channel" && args[1]?.toLowerCase() === "list") {
+    const guild = message.guild;
+
+    // Raccogli categories ordinate per posizione
+    const cats = guild.channels.cache
+      .filter(c => c.type === 4)
+      .sort((a, b) => a.position - b.position);
+
+    // Canali senza categoria
+    const uncategorized = guild.channels.cache
+      .filter(c => c.type !== 4 && !c.parentId)
+      .sort((a, b) => a.position - b.position);
+
+    // Costruisci le righe di testo
+    const lines = [];
+
+    if (uncategorized.size > 0) {
+      lines.push("**\u2014 No Category \u2014**");
+      for (const ch of uncategorized.values()) {
+        const icon = ch.type === 2 ? "\uD83D\uDD0A" : ch.type === 5 ? "\uD83D\uDCE2" : ch.type === 15 ? "\uD83D\uDCCB" : "#";
+        lines.push(`${icon} ${ch.name}`);
+      }
+      lines.push("");
+    }
+
+    for (const cat of cats.values()) {
+      lines.push(`**${cat.name.toUpperCase()}**`);
+      const children = cat.children.cache.sort((a, b) => a.position - b.position);
+      if (children.size === 0) {
+        lines.push("  *(empty)*");
+      } else {
+        for (const ch of children.values()) {
+          const icon = ch.type === 2 ? "\uD83D\uDD0A" : ch.type === 5 ? "\uD83D\uDCE2" : ch.type === 13 ? "\uD83C\uDFA4" : ch.type === 15 ? "\uD83D\uDCCB" : "#";
+          lines.push(`  ${icon} ${ch.name}`);
+        }
+      }
+      lines.push("");
+    }
+
+    // Suddividi in pagine da ~3800 caratteri
+    const pages = [];
+    let current = "";
+    for (const line of lines) {
+      if (current.length + line.length + 1 > 3800) {
+        pages.push(current.trimEnd());
+        current = "";
+      }
+      current += line + "\n";
+    }
+    if (current.trim()) pages.push(current.trimEnd());
+
+    if (pages.length === 0) return err(message, "No channels found in this server.");
+
+    const totalChannels = guild.channels.cache.filter(c => c.type !== 4).size;
+    let page = 0;
+
+    function buildChListEmbed(p) {
+      return {
+        color: PINK,
+        title: `\uD83D\uDCCB Server Channels \u2014 ${guild.name} (${totalChannels})`,
+        description: pages[p],
+        footer: { text: `Page ${p + 1}/${pages.length} \u2022 sensational \u2022 white edition` },
+        timestamp: new Date()
+      };
+    }
+
+    if (pages.length === 1) {
+      return message.reply({ embeds: [buildChListEmbed(0)] });
+    }
+
+    function buildChListRow(p) {
+      return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("chlist_prev")
+          .setLabel("\u25C0")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(p === 0),
+        new ButtonBuilder()
+          .setCustomId("chlist_next")
+          .setLabel("\u25B6")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(p >= pages.length - 1)
+      );
+    }
+
+    const chListMsg = await message.reply({ embeds: [buildChListEmbed(page)], components: [buildChListRow(page)] });
+    const chListCollector = chListMsg.createMessageComponentCollector({ filter: () => true, time: 60_000 });
+
+    chListCollector.on("collect", async i => {
+      try {
+        if (i.user.id !== message.author.id) {
+          return i.reply({ embeds: [{ color: PINK, description: "\u2716 This menu belongs to someone else." }], flags: 64 });
+        }
+        if (i.customId === "chlist_prev" && page > 0) page--;
+        else if (i.customId === "chlist_next" && page < pages.length - 1) page++;
+        await i.update({ embeds: [buildChListEmbed(page)], components: [buildChListRow(page)] });
+      } catch (e) {
+        chListMsg.edit({ components: [] }).catch(() => {});
+      }
+    });
+
+    chListCollector.on("end", () => chListMsg.edit({ components: [] }).catch(() => {}));
+    return;
+  }
+
+  // ,rolelist -- alias for roles
+  if (command === "rolelist") {
+    const roles = message.guild.roles.cache.sort((a, b) => b.position - a.position).filter(r => r.id !== message.guild.id);
+    const list = roles.map(r => `<@&${r.id}>`).slice(0, 30).join(", ");
+    return message.reply({ embeds: [{ color: PINK, title: `Roles (${roles.size})`, description: list }] });
+  }
+
+  // ,emojiinfo <emoji>
+  if (command === "emojiinfo") {
+    const emoji = message.guild.emojis.cache.find(e => args[1]?.includes(e.id) || e.name === args[1]);
+    if (!emoji) return err(message, "Emoji not found.");
+    return message.reply({ embeds: [{ color: PINK, title: emoji.name, thumbnail: { url: emoji.url }, fields: [{ name: "ID", value: emoji.id, inline: true }, { name: "Animated", value: `${emoji.animated}`, inline: true }, { name: "Created", value: `<t:${Math.floor(emoji.createdTimestamp / 1000)}:R>`, inline: true }] }] });
+  }
+
+  // ,stickerinfo <name>
+  if (command === "stickerinfo") {
+    const sticker = message.guild.stickers.cache.find(s => s.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
+    if (!sticker) return err(message, "Sticker not found.");
+    return message.reply({ embeds: [{ color: PINK, title: sticker.name, description: sticker.description, thumbnail: { url: sticker.url }, fields: [{ name: "ID", value: sticker.id }, { name: "Format", value: sticker.format }] }] });
+  }
+
+  // ,stickers -- list all stickers
+  if (command === "stickers") {
+    const stickers = message.guild.stickers.cache;
+    if (stickers.size === 0) return message.reply("No custom stickers.");
+    return message.reply({ embeds: [{ color: PINK, title: `Stickers (${stickers.size})`, description: stickers.map(s => `**${s.name}** — ${s.description || "No description"}`).join("\n") }] });
+  }
+
+  // ,permissions <@user|@role> -- check permissions in current channel
+  if (command === "permissions" || command === "perms") {
+    const target = message.mentions.members.first() || message.member;
+    const perms = message.channel.permissionsFor(target);
+    const allowed = perms?.toArray().join(", ") || "None";
+    return message.reply({ embeds: [{ color: PINK, title: `Permissions: ${target.user.username}`, description: allowed.substring(0, 4096) }] });
+  }
+
+  // ,shared <userId> -- mutual servers (can only check if user in cache)
+  if (command === "shared") {
+    const userId = args[1] || message.author.id;
+    const shared = client.guilds.cache.filter(g => g.members.cache.has(userId));
+    return info(message, `Shared servers: **${shared.size}**\n${shared.map(g => g.name).join(", ")}`);
+  }
+
+  // ,joined <@user> -- when did user join
+  if (command === "joined") {
+    const target = message.mentions.members.first() || message.member;
+    return info(message, `**${target.user.username}** joined <t:${Math.floor(target.joinedTimestamp / 1000)}:R>`);
+  }
+
+  // ,created <@user> -- when was account created
+  if (command === "created") {
+    const target = message.mentions.users.first() || message.author;
+    return info(message, `**${target.username}** account created <t:${Math.floor(target.createdTimestamp / 1000)}:R>`);
+  }
+
+  // ,mutual -- check mutual servers with a user
+  if (command === "mutual") {
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    const mutual = client.guilds.cache.filter(g => g.members.cache.has(target.id));
+    if (mutual.size === 0) return message.reply("No mutual servers.");
+    return info(message, `**${mutual.size}** mutual servers with **${target.username}**: ${mutual.map(g => g.name).join(", ")}`);
+  }
+
+  // -- UTILITY EXTRAS ------------------------------------
+
+  // ,timestamp <date> -- convert date to Discord timestamp
+  if (command === "timestamp") {
+    const dateStr = args.slice(1).join(" ");
+    const date = dateStr ? new Date(dateStr) : new Date();
+    if (isNaN(date)) return err(message, "Invalid date.");
+    const ts = Math.floor(date.getTime() / 1000);
+    return message.reply({ embeds: [{ color: PINK, title: "🕐 Timestamps", description: `\`<t:${ts}>\` → <t:${ts}>\n\`<t:${ts}:R>\` → <t:${ts}:R>\n\`<t:${ts}:F>\` → <t:${ts}:F>\n\`<t:${ts}:D>\` → <t:${ts}:D>` }] });
+  }
+
+  // ,charinfo <text> -- unicode info
+  if (command === "charinfo") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const chars = [...text].slice(0, 10).map(c => `\`${c}\` — U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} — ${c.codePointAt(0)}`);
+    return message.reply(chars.join("\n"));
+  }
+
+  // ,color <#hex> -- show color info
+  if (command === "color") {
+    const hex = args[1]?.replace("#", "");
+    if (!hex || !/^[0-9A-Fa-f]{6}$/.test(hex)) return err(message, "missing required argument");
+
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    return message.reply({ embeds: [{ color: parseInt(hex, 16), title: `#${hex.toUpperCase()}`, fields: [{ name: "RGB", value: `${r}, ${g}, ${b}`, inline: true }, { name: "Decimal", value: `${parseInt(hex, 16)}`, inline: true }] }] });
+  }
+
+  // ,encode <text> -- base64 encode
+  if (command === "encode") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return info(message, `encoded: \`${Buffer.from(text).toString("base64")}\``);
+  }
+
+  // ,decode <base64> -- base64 decode
+  if (command === "decode") {
+    const text = args[1];
+    if (!text) return err(message, "missing required argument");
+
+    try {
+      return info(message, `decoded: \`${Buffer.from(text, "base64").toString("utf8")}\``);
+    } catch { return err(message, "Invalid base64."); }
+  }
+
+  // ,binary <text> -- text to binary
+  if (command === "binary") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const bin = text.split("").map(c => c.charCodeAt(0).toString(2).padStart(8, "0")).join(" ");
+    return info(message, `\`${bin.substring(0, 1900)}\``);
+  }
+
+  // ,reverse <text>
+  if (command === "reverse") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return message.reply([...text].reverse().join(""));
+  }
+
+  // ,uppercase <text>
+  if (command === "uppercase") {
+    return message.reply(args.slice(1).join(" ").toUpperCase() || "<:steal:1521327958634135655> No text provided.");
+  }
+
+  // ,lowercase <text>
+  if (command === "lowercase") {
+    return message.reply(args.slice(1).join(" ").toLowerCase() || "<:steal:1521327958634135655> No text provided.");
+  }
+
+  // ,mock <text> -- SpOnGeBoB mOcKiNg
+  if (command === "mock") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return message.reply(text.split("").map((c, i) => i % 2 === 0 ? c.toLowerCase() : c.toUpperCase()).join(""));
+  }
+
+  // ,clap <text> -- add 👏 between words
+  if (command === "clap") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return message.reply(text.split(" ").join(" 👏 "));
+  }
+
+  // ,google <query>
+  if (command === "google") {
+    const query = args.slice(1).join(" ");
+    if (!query) return err(message, "missing required argument");
+
+    return info(message, `https://www.google.com/search?q=${encodeURIComponent(query)}`);
+  }
+
+  // ,youtube <query>
+  if (command === "youtube" || command === "yt") {
+    const query = args.slice(1).join(" ");
+    if (!query) return err(message, "missing required argument");
+
+    return info(message, `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`);
+  }
+
+  // ,spotify <query>
+  if (command === "spotify") {
+    const query = args.slice(1).join(" ");
+    if (!query) return err(message, "missing required argument");
+
+    return info(message, `https://open.spotify.com/search/${encodeURIComponent(query)}`);
+  }
+
+  // ,define <word>
+  if (command === "define") {
+    await message.channel.sendTyping().catch(() => {});
+    const word = args[1];
+    if (!word) return err(message, "missing required argument");
+
+    try {
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`);
+      const data = await res.json();
+      if (!Array.isArray(data)) return err(message, "No definition found.");
+      const entry = data[0];
+      const meaning = entry.meanings[0];
+      const def = meaning.definitions[0];
+      return message.reply({ embeds: [{ color: PINK, title: `📖 ${entry.word}`, fields: [{ name: meaning.partOfSpeech, value: def.definition }, { name: "Example", value: def.example || "None" }] }] });
+    } catch { return err(message, "Could not fetch definition."); }
+  }
+
+  // ,translate <lang> <text>
+  if (command === "translate") {
+    await message.channel.sendTyping().catch(() => {});
+    const lang = args[1];
+    const text = args.slice(2).join(" ");
+    if (!lang || !text) return err(message, "missing required argument");
+
+    try {
+      const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${lang}`);
+      const data = await res.json();
+      return info(message, `**${data.responseData.translatedText}**`);
+    } catch { return err(message, "Translation failed."); }
+  }
+
+  // ,qr <text> -- generate QR code
+  if (command === "qr") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return message.reply({ embeds: [{ color: PINK, title: "QR Code", image: { url: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(text)}` } }] });
+  }
+
+  // ,screenshot <url>
+  if (command === "screenshot") {
+    const url = args[1];
+    if (!url) return err(message, "missing required argument");
+
+    return message.reply({ embeds: [{ color: PINK, title: "📸 Screenshot", image: { url: `https://api.apiflash.com/v1/urltoimage?access_key=free&url=${encodeURIComponent(url)}&width=1280&height=720` } }] });
+  }
+
+  // -- FUN EXTRAS ----------------------------------------
+
+  // ,meme -- random meme
+  if (command === "meme") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://meme-api.com/gimme");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, title: data.title, image: { url: data.url }, footer: { text: `👍 ${data.ups} | r/${data.subreddit} • ${message.guild.name}` } }] });
+    } catch { return err(message, "Could not fetch meme."); }
+  }
+
+  // ,joke -- random joke
+  if (command === "joke") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://official-joke-api.appspot.com/random_joke");
+      const data = await res.json();
+      return info(message, `**${data.setup}**\n||${data.punchline}||`);
+    } catch { return err(message, "Could not fetch joke."); }
+  }
+
+  // ,fact -- random fact
+  if (command === "fact") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://uselessfacts.jsph.pl/api/v2/facts/random?language=en");
+      const data = await res.json();
+      return info(message, `${data.text}`);
+    } catch { return err(message, "Could not fetch fact."); }
+  }
+
+  // ,quote -- random quote
+  if (command === "quote") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://api.quotable.io/random");
+      const data = await res.json();
+      return info(message, `*"${data.content}"*\n— **${data.author}**`);
+    } catch { return err(message, "Could not fetch quote."); }
+  }
+
+  // ,catfact
+  if (command === "catfact") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://catfact.ninja/fact");
+      const data = await res.json();
+      return info(message, `${data.fact}`);
+    } catch { return err(message, "Could not fetch cat fact."); }
+  }
+
+  // ,dogfact
+  if (command === "dogfact") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://dog-api.kinduff.com/api/facts");
+      const data = await res.json();
+      return info(message, `${data.facts[0]}`);
+    } catch { return err(message, "Could not fetch dog fact."); }
+  }
+
+  // ,cat -- random cat image
+  if (command === "cat") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://api.thecatapi.com/v1/images/search");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, image: { url: data[0].url } }] });
+    } catch { return err(message, "Could not fetch cat."); }
+  }
+
+  // ,dog -- random dog image
+  if (command === "dog") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://dog.ceo/api/breeds/image/random");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, image: { url: data.message } }] });
+    } catch { return err(message, "Could not fetch dog."); }
+  }
+
+  // ,fox -- random fox image
+  if (command === "fox") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://randomfox.ca/floof/");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, image: { url: data.image } }] });
+    } catch { return err(message, "Could not fetch fox."); }
+  }
+
+  // ,duck -- random duck image
+  if (command === "duck") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://random-d.uk/api/v2/random");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, image: { url: data.url } }] });
+    } catch { return err(message, "Could not fetch duck."); }
+  }
+
+  // ,panda
+  if (command === "panda") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://some-random-api.com/animal/panda");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, image: { url: data.image }, description: data.fact }] });
+    } catch { return err(message, "Could not fetch panda."); }
+  }
+
+  // ,wyr -- would you rather
+  if (command === "wyr") {
+    const questions = [
+      "Be able to fly or be invisible?",
+      "Live without music or without TV?",
+      "Be the funniest person or the smartest person in the room?",
+      "Have no internet or no phone?",
+      "Be always hot or always cold?",
+      "Be a superhero or a wizard?",
+      "Lose all your money or all your memories?",
+    ];
+    const q = questions[Math.floor(Math.random() * questions.length)];
+    const msg = await message.reply({ embeds: [{ color: PINK, title: "Would you rather...", description: q, footer: { text: message.guild.name } }] });
+    await msg.react("1️⃣");
+    await msg.react("2️⃣");
+  }
+
+  // ,neverhaveiever
+  if (command === "neverhaveiever" || command === "nhie") {
+    const prompts = [
+      "Never have I ever lied to get out of trouble",
+      "Never have I ever stayed up more than 24 hours",
+      "Never have I ever eaten something off the floor",
+      "Never have I ever ghosted someone",
+      "Never have I ever sent a text to the wrong person",
+    ];
+    return info(message, prompts[Math.floor(Math.random() * prompts.length)]);
+  }
+
+  // ,truthordare
+  if (command === "truthordare" || command === "tod") {
+    const truths = ["What's your biggest fear?", "Have you ever lied to a friend?", "What's your most embarrassing moment?"];
+    const dares = ["Send a selfie", "Speak in an accent for 2 minutes", "Do 10 pushups"];
+    const isTruth = Math.random() < 0.5;
+    const list = isTruth ? truths : dares;
+    return info(message, `${isTruth ? "**TRUTH:**" : "**DARE:**"} ${list[Math.floor(Math.random() * list.length)]}`);
+  }
+
+  // ,compliment [user]
+  if (command === "compliment") {
+    const target = message.mentions.users.first() || message.author;
+    const compliments = ["You're an amazing person!", "You light up every room you enter!", "You have an incredible sense of humor!", "Your kindness is truly inspiring!", "You're doing better than you think!"];
+    return info(message, `${target.toString()}: ${compliments[Math.floor(Math.random() * compliments.length)]}`);
+  }
+
+  // ,insult [user] -- fun/silly only
+  if (command === "insult") {
+    const target = message.mentions.users.first() || message.author;
+    const insults = ["You're as useful as a screen door on a submarine!", "You're not stupid, you just have bad luck thinking!", "I'd agree with you but then we'd both be wrong!", "You're not the dumbest person alive, but you better hope they don't die!"];
+    return info(message, `${target.toString()}: ${insults[Math.floor(Math.random() * insults.length)]}`);
+  }
+
+  // ,ascii <text>
+  if (command === "ascii") {
+    const text = args.slice(1).join(" ").toUpperCase().substring(0, 10);
+    if (!text) return err(message, "missing required argument");
+
+    return info(message, `\`\`\`\n${text}\n\`\`\``);
+  }
+
+  // ,slots -- slot machine
+  if (command === "slots") {
+    const symbols = ["🍎", "🍋", "🍇", "<:awhitestar:1521415243954393159>", "💎", "7️⃣"];
+    const s = () => symbols[Math.floor(Math.random() * symbols.length)];
+    const r = [s(), s(), s()];
+    const win = r[0] === r[1] && r[1] === r[2];
+    return info(message, `${r.join(" | ")}\n${win ? "<:RUSH_giveaway:1521415256772186132> **JACKPOT!**" : "😔 Try again!"}`);
+  }
+
+  // ,dice <NdN> -- e.g. ,dice 2d6
+  if (command === "dice") {
+    const notation = args[1] || "1d6";
+    const match = notation.match(/^(\d+)d(\d+)$/i);
+    return err(message, "missing required argument");
+
+
+    const count = Math.min(parseInt(match[1]), 20);
+    const sides = parseInt(match[2]);
+    const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
+    const total = rolls.reduce((a, b) => a + b, 0);
+    return info(message, `Rolled **${notation}**: [${rolls.join(", ")}] = **${total}**`);
+  }
+
+  // ,numberguess -- start a number guessing game
+  if (command === "numberguess" || command === "guess") {
+    const secret = Math.floor(Math.random() * 100) + 1;
+    await message.reply("🔢 I'm thinking of a number between 1-100. You have 10 seconds to guess! Type your number:");
+    const collector = message.channel.createMessageCollector({ filter: m => m.author.id === message.author.id && !isNaN(m.content), time: 10000, max: 5 });
+    let guessed = false;
+    collector.on("collect", m => {
+      const guess = parseInt(m.content);
+      if (guess === secret) { guessed = true; collector.stop(); message.channel.send(`<:RUSH_giveaway:1521415256772186132> Correct! The number was **${secret}**!`); }
+      else if (guess < secret) message.channel.send("⬆️ Higher!");
+      else message.channel.send("⬇️ Lower!");
+    });
+    collector.on("end", () => { if (!guessed) message.channel.send(`<:RUSH_clock:1521415225058791454> Time's up! The number was **${secret}**.`); });
+  }
+
+  // -- APPEAL SYSTEM ------------------------------------─
+
+  // ,appeal <reason> -- submit ban appeal via DM
+  if (command === "appeal") {
+    const reason = args.slice(1).join(" ");
+    if (!reason) return err(message, "missing required argument");
+
+    const guildId2 = args[0]; // not used here, but for structure
+    // Notify owner
+    const owner = await client.users.fetch(message.guild?.ownerId || OWNER_ID).catch(() => null);
+    if (owner) await owner.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Ban Appeal", fields: [{ name: "User", value: `${message.author.username} (${message.author.id})` }, { name: "Reason", value: reason }], timestamp: new Date() }] }).catch(() => {});
+    return ok(message, "Your appeal has been submitted.");
+  }
+});
+
+// ===================================================
+// ===== EXTENSION 2 -- 150+ MORE COMMANDS ============
+// ===================================================
+
+// -- MORE IN-MEMORY STORES ----------------------------
+const pollData = new Map();          // messageId => { question, options, votes: Map<userId, optionIndex> }
+const todoLists = new Map();         // userId => [{ text, done }]
+const tagData = new Map();           // guildId-name => { content, author }
+const highlights = new Map();        // userId => Set<word>
+const tempBans = new Map();          // already handled but extend
+const muteHistory = new Map();       // guildId-userId => [{ duration, reason, mod, date }]
+const channelPerms = new Map();      // saved channel permission snapshots
+const serverStats = new Map();       // guildId => { joins, leaves, bans, kicks }
+const pingRoles = new Map();         // guildId => Set<roleId> — roles allowed to be pinged
+const slowmodeHistory = new Map();   // channelId => previous slowmode
+const memberSearch = new Map();      // cache
+const voiceLogs = new Map();
+const userTimezones = new Map();
+const reactionRoles = new Map();
+const logEvents = new Map();
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  const guildId = message.guild.id;
+
+  // -- POLL SYSTEM (advanced) --------------------------─
+
+  // ,poll create <question> | <opt1> | <opt2> | ...
+  if (command === "poll" && args[1] === "create") {
+    const text = args.slice(2).join(" ");
+    const parts = text.split("|").map(p => p.trim());
+    const question = parts[0];
+    const options = parts.slice(1);
+    if (!question || options.length < 2) return err(message, "missing required argument");
+
+    const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+    const desc = options.map((o, i) => `${emojis[i]} ${o}`).join("\n");
+    const msg = await message.channel.send({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> ${question}`, description: desc, footer: { text: "React to vote!" } }] });
+    for (let i = 0; i < options.length; i++) await msg.react(emojis[i]);
+    pollData.set(msg.id, { question, options, votes: new Map() });
+    savePolls();
+    message.delete().catch(() => {});
+  }
+
+  // ,poll end <messageId>
+  if (command === "poll" && args[1] === "end") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[2];
+    if (!msgId) return err(message, "missing required argument");
+
+    const poll = pollData.get(msgId);
+    if (!poll) return err(message, "Poll not found.");
+    try {
+      const msg = await message.channel.messages.fetch(msgId);
+      const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+      const results = poll.options.map((o, i) => {
+        const reaction = msg.reactions.cache.get(emojis[i]);
+        return { option: o, votes: (reaction?.count || 1) - 1 };
+      }).sort((a, b) => b.votes - a.votes);
+      const winner = results[0];
+      await message.channel.send({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> Poll Ended: ${poll.question}`, description: results.map((r, i) => `${i === 0 ? "<:RUSH_trophy:1521415294441226271>" : `${i+1}.`} **${r.option}** — ${r.votes} votes`).join("\n") }] });
+      pollData.delete(msgId);
+    } catch { return err(message, "Could not fetch poll message."); }
+  }
+
+  // -- TAG SYSTEM --------------------------------------─
+
+  // ,tag <n> -- show tag
+  if (command === "tag") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "create" || sub === "add") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+      const name = args[2]?.toLowerCase();
+      const content = args.slice(3).join(" ");
+      if (!name || !content) return err(message, "missing required argument");
+
+      tagData.set(`${guildId}-${name}`, { content, author: message.author.username });
+    saveTags();
+      return ok(message, `Tag **${name}** created.`);
+    }
+    if (sub === "delete" || sub === "remove") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+      const name = args[2]?.toLowerCase();
+      tagData.delete(`${guildId}-${name}`);
+    saveTags();
+      return ok(message, `Tag **${name}** deleted.`);
+    }
+    if (sub === "list") {
+      const tags = [...tagData.keys()].filter(k => k.startsWith(`${guildId}-`)).map(k => k.replace(`${guildId}-`, ""));
+      if (tags.length === 0) return message.reply("No tags created.");
+      return message.reply({ embeds: [{ color: PINK, title: `Tags (${tags.length})`, description: tags.map(t => `\`,tag ${t}\``).join(", ") }] });
+    }
+    if (sub === "info") {
+      const name = args[2]?.toLowerCase();
+      const tag = tagData.get(`${guildId}-${name}`);
+      if (!tag) return err(message, "Tag not found.");
+      return message.reply({ embeds: [{ color: PINK, title: `Tag: ${name}`, fields: [{ name: "Content", value: tag.content }, { name: "Author", value: tag.author }] }] });
+    }
+    if (sub === "edit") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+      const name = args[2]?.toLowerCase();
+      const content = args.slice(3).join(" ");
+      if (!tagData.has(`${guildId}-${name}`)) return err(message, "Tag not found.");
+      tagData.get(`${guildId}-${name}`).content = content;
+      return ok(message, `Tag **${name}** updated.`);
+    }
+    // Show tag
+    const name = sub;
+    const tag = tagData.get(`${guildId}-${name}`);
+    if (!tag) return err(message, `Tag **${name}** not found.`);
+    return message.channel.send(tag.content.replace("{user}", message.author.toString())).catch(() => null);
+  }
+
+  // -- TODO LIST ----------------------------------------
+
+  // ,todo add <text>
+  if (command === "todo") {
+    const sub = args[1]?.toLowerCase();
+    const list = todoLists.get(message.author.id) || [];
+    if (sub === "add") {
+      const text = args.slice(2).join(" ");
+      if (!text) return err(message, "missing required argument");
+
+      list.push({ text, done: false });
+      todoLists.set(message.author.id, list);
+    saveTodos();
+      return ok(message, `Added to your todo list.`);
+    }
+    if (sub === "done") {
+      const index = parseInt(args[2]) - 1;
+      if (isNaN(index) || !list[index]) return err(message, "Invalid number.");
+      list[index].done = true;
+      todoLists.set(message.author.id, list);
+    saveTodos();
+      return ok(message, `Marked as done.`);
+    }
+    if (sub === "remove" || sub === "delete") {
+      const index = parseInt(args[2]) - 1;
+      if (isNaN(index) || !list[index]) return err(message, "Invalid number.");
+      list.splice(index, 1);
+      todoLists.set(message.author.id, list);
+    saveTodos();
+      return ok(message, `Removed from todo list.`);
+    }
+    if (sub === "clear") { todoLists.delete(message.author.id); return ok(message, "Todo list cleared."); }
+    if (sub === "list" || !sub) {
+      if (list.length === 0) return message.reply("<:RUSH_task:1521415237813665813> Your todo list is empty.");
+      const lines = list.map((t, i) => `${t.done ? "<:019TXTWhite_Yes:1521327983279996999>" : "⬜"} **${i+1}.** ${t.text}`);
+      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Your Todo List", description: lines.join("\n") }] });
+    }
+  }
+
+  // -- HIGHLIGHTS ----------------------------------------
+
+  // ,highlight add <word>
+  if (command === "highlight" || command === "hl") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      const word = args.slice(2).join(" ").toLowerCase();
+      if (!word) return err(message, "missing required argument");
+
+      const set = highlights.get(message.author.id) || new Set();
+      set.add(word);
+      highlights.set(message.author.id, set);
+    saveHighlights();
+      return ok(message, `You'll be notified when **${word}** is mentioned.`);
+    }
+    if (sub === "remove") {
+      const word = args.slice(2).join(" ").toLowerCase();
+      highlights.get(message.author.id)?.delete(word);
+      return ok(message, `Highlight **${word}** removed.`);
+    }
+    if (sub === "list") {
+      const set = highlights.get(message.author.id);
+      if (!set || set.size === 0) return message.reply("No highlights set.");
+      return info(message, `highlights: ${[...set].join(", ")}`);
+    }
+    if (sub === "clear") { highlights.delete(message.author.id); return ok(message, "Highlights cleared."); }
+  }
+
+  // -- SERVER STATS --------------------------------------
+
+  // ,serverstats -- detailed server statistics
+  if (command === "serverstats") {
+    await message.channel.sendTyping().catch(() => {});
+    const g = message.guild;
+    const members = await g.members.fetch();
+    const bots = members.filter(m => m.user.bot).size;
+    const humans = members.size - bots;
+    const online = members.filter(m => m.presence?.status === "online").size;
+    const textChannels = g.channels.cache.filter(c => c.type === 0).size;
+    const voiceChannels = g.channels.cache.filter(c => c.type === 2).size;
+    const categoriess = g.channels.cache.filter(c => c.type === 4).size;
+    const animated = g.emojis.cache.filter(e => e.animated).size;
+    const static_ = g.emojis.cache.filter(e => !e.animated).size;
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> ${g.name} Stats`, thumbnail: { url: g.iconURL() }, fields: [
+      { name: "👥 Members", value: `Total: ${g.memberCount}\nHumans: ${humans}\nBots: ${bots}`, inline: true },
+      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categoriess}`, inline: true },
+      { name: "🏷️ Roles", value: `${g.roles.cache.size}`, inline: true },
+      { name: "😀 Emojis", value: `Static: ${static_}\nAnimated: ${animated}`, inline: true },
+      { name: "💜 Boosts", value: `${g.premiumSubscriptionCount} (Tier ${g.premiumTier})`, inline: true },
+      { name: "📅 Created", value: `<t:${Math.floor(g.createdTimestamp/1000)}:R>`, inline: true },
+    ] }] });
+  }
+
+  // ,joincount -- how many people joined today
+  if (command === "joincount") {
+    await message.channel.sendTyping().catch(() => {});
+    const members = await message.guild.members.fetch();
+    const today = Date.now() - 86400000;
+    const recent = members.filter(m => m.joinedTimestamp > today).size;
+    return info(message, `**${recent}** members joined in the last 24 hours`);
+  }
+
+  // ,boostcount
+  if (command === "boostcount") {
+    return info(message, `**${message.guild.premiumSubscriptionCount}** boosts | Tier **${message.guild.premiumTier}**`);
+  }
+
+  // ,onlinecount
+  if (command === "onlinecount") {
+    const members = message.guild.members.cache;
+    const online = members.filter(m => m.presence?.status === "online").size;
+    const idle = members.filter(m => m.presence?.status === "idle").size;
+    const dnd = members.filter(m => m.presence?.status === "dnd").size;
+    return info(message, `<:019TXTWhite_Yes:1521327983279996999> **${online}** online | 🌙 **${idle}** idle | ⛔ **${dnd}** dnd`);
+  }
+
+  // -- USER SEARCH --------------------------------------─
+
+  // ,find <query> -- search members by name
+  if (command === "find" || command === "search") {
+    const query = args.slice(1).join(" ").toLowerCase();
+    if (!query) return err(message, "missing required argument");
+
+    const members = message.guild.members.cache.filter(m =>
+      m.user.username.toLowerCase().includes(query) ||
+      m.nickname?.toLowerCase().includes(query)
+    ).first(10);
+    if (!members || (Array.isArray(members) ? members.length === 0 : members.size === 0)) return err(message, "No members found.");
+    const list = (Array.isArray(members) ? members : [...members.values()]).map(m => `${m.user.username} (${m.id})`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Search: "${query}"`, description: list }] });
+  }
+
+  // ,rolecount <@role>
+  if (command === "rolecount") {
+    const role = message.mentions.roles.first() || message.guild.roles.cache.find(r => r.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
+    if (!role) return err(message, "missing required argument: **role**");
+    return info(message, `**${role.name}** has **${role.members.size}** members`);
+  }
+
+  // ,admins -- list all server admins
+  if (command === "admins") {
+    const admins = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot);
+    if (admins.size === 0) return message.reply("No admins found.");
+    return message.reply({ embeds: [{ color: PINK, title: `<:b_crownDNS:1521415303714705533> Admins (${admins.size})`, description: admins.map(m => m.user.username).join("\n") }] });
+  }
+
+  // ,mods -- list members with ban/kick permissions
+  if (command === "mods") {
+    const mods = message.guild.members.cache.filter(m => (m.permissions.has(PermissionFlagsBits.BanMembers) || m.permissions.has(PermissionFlagsBits.KickMembers)) && !m.user.bot && !m.permissions.has(PermissionFlagsBits.Administrator));
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_caution:1521415278355808297> Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.username).join("\n") : "None" }] });
+  }
+
+  // ,bots -- list all bots in server
+  if (command === "bots") {
+    const bots = message.guild.members.cache.filter(m => m.user.bot);
+    return message.reply({ embeds: [{ color: PINK, title: `🤖 Bots (${bots.size})`, description: bots.map(m => m.user.username).join("\n").substring(0, 4096) }] });
+  }
+
+  // -- VOICE MANAGEMENT ----------------------------------
+
+  // ,voicelist -- list all voice channels and who's in them
+  if (command === "voicelist" || command === "vc") {
+    const vcs = message.guild.channels.cache.filter(c => c.type === 2 && c.members.size > 0);
+    if (vcs.size === 0) return message.reply("🔇 No one is in a voice channel.");
+    const desc = vcs.map(c => `**${c.name}** (${c.members.size})\n${c.members.map(m => `  └ ${m.user.username}`).join("\n")}`).join("\n\n");
+    return message.reply({ embeds: [{ color: PINK, title: "🔊 Voice Channels", description: desc.substring(0, 4096) }] });
+  }
+
+  // ,vclimit <#channel> <limit>
+  if (command === "vclimit") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.member.voice.channel;
+    const limit = parseInt(args[ch ? 2 : 1]);
+    if (!ch || isNaN(limit)) return err(message, "missing required argument");
+
+    await ch.setUserLimit(limit).catch(() => null);
+    return ok(message, `User limit for **${ch.name}** set to **${limit}**`);
+  }
+
+  // ,vcname <#channel> <n>
+  if (command === "vcname") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.member.voice.channel;
+    const name = args.slice(ch ? 2 : 1).join(" ");
+    if (!ch || !name) return err(message, "missing required argument");
+
+    await ch.setName(name).catch(() => null);
+    return ok(message, `Voice channel renamed to **${name}**`);
+  }
+
+  // ,vclock -- lock voice channel (no one can join)
+  if (command === "vclock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.member.voice.channel;
+    if (!ch) return err(message, "No voice channel specified.");
+    await ch.permissionOverwrites.edit(message.guild.roles.everyone, { Connect: false }).catch(() => null);
+    return ok(message, `Locked **${ch.name}**`);
+  }
+
+  // ,vcunlock
+  if (command === "vcunlock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.member.voice.channel;
+    if (!ch) return err(message, "No voice channel specified.");
+    await ch.permissionOverwrites.edit(message.guild.roles.everyone, { Connect: null }).catch(() => null);
+    return ok(message, `Unlocked **${ch.name}**`);
+  }
+
+  // -- MESSAGE MANAGEMENT --------------------------------
+
+  // ,pin <messageId>
+  if (command === "pin") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    if (!msgId) return err(message, "missing required argument");
+
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await msg.pin().catch(() => null);
+    return ok(message, "Message pinned.");
+  }
+
+  // ,unpin <messageId>
+  if (command === "unpin") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    if (!msgId) return err(message, "missing required argument");
+
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await msg.unpin().catch(() => null);
+    return ok(message, "Message unpinned.");
+  }
+
+  // ,pins -- list pinned messages count
+  if (command === "pins") {
+    await message.channel.sendTyping().catch(() => {});
+    const pins = await message.channel.messages.fetchPinned().catch(() => null);
+    if (!pins) return err(message, "Could not fetch pins.");
+    return info(message, `**${pins.size}** pinned messages in this channel`);
+  }
+
+  // ,movepin <messageId> <#channel>
+  if (command === "movepin") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    const ch = message.mentions.channels.first();
+    if (!msgId || !ch) return err(message, "missing required argument");
+
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await ch.send({ content: `<:RUSH_pin:1521415247183872080> Moved from <#${message.channel.id}>:\n${msg.content}`, embeds: msg.embeds });
+    return ok(message, `Message moved to ${ch}`);
+  }
+
+  // -- THREAD MANAGEMENT --------------------------------─
+
+  // ,thread create <n>
+  if (command === "thread") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "create") {
+      if (!message.member.permissions.has(PermissionFlagsBits.CreatePublicThreads)) return err(message, "Missing permissions.");
+      const name = args.slice(2).join(" ") || "New Thread";
+      const thread = await message.channel.threads.create({ name, autoArchiveDuration: 1440 }).catch(() => null);
+      if (!thread) return err(message, "Could not create thread.");
+      return ok(message, `Thread created: ${thread}`);
+    }
+    if (sub === "close") {
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.setArchived(true).catch(() => null);
+      return ok(message, "Thread closed.");
+    }
+    if (sub === "open") {
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.setArchived(false).catch(() => null);
+      return ok(message, "Thread reopened.");
+    }
+    if (sub === "lock") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageThreads)) return err(message, "Missing permissions.");
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.setLocked(true).catch(() => null);
+      return ok(message, "Thread locked.");
+    }
+    if (sub === "unlock") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageThreads)) return err(message, "Missing permissions.");
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.setLocked(false).catch(() => null);
+      return ok(message, "Thread unlocked.");
+    }
+    if (sub === "rename") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageThreads)) return err(message, "Missing permissions.");
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      const name = args.slice(2).join(" ");
+      await message.channel.setName(name).catch(() => null);
+      return ok(message, `Thread renamed to **${name}**`);
+    }
+    if (sub === "add") {
+      const target = message.mentions.members.first();
+      if (!target) return err(message, "missing required argument");
+
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.members.add(target.id).catch(() => null);
+      return ok(message, `Added **${target.user.username}** to thread.`);
+    }
+    if (sub === "remove") {
+      const target = message.mentions.members.first();
+      if (!target) return err(message, "missing required argument");
+
+      if (!message.channel.isThread()) return err(message, "Not in a thread.");
+      await message.channel.members.remove(target.id).catch(() => null);
+      return ok(message, `Removed **${target.user.username}** from thread.`);
+    }
+  }
+
+  // -- EMOJI MANAGEMENT EXTENDED ------------------------─
+
+  // ,emoji add <n> <url>
+  if (command === "emoji") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "add") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+      const name = args[2];
+      const url = args[3];
+      if (!name || !url) return err(message, "missing required argument");
+
+      const emoji = await message.guild.emojis.create({ attachment: url, name }).catch(() => null);
+      if (!emoji) return err(message, "Could not add emoji.");
+      return ok(message, `Added emoji ${emoji}`);
+    }
+    if (sub === "remove") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+      const emoji = message.guild.emojis.cache.find(e => e.name === args[2] || args[2]?.includes(e.id));
+      if (!emoji) return err(message, "Emoji not found.");
+      await emoji.delete().catch(() => null);
+      return ok(message, `Emoji removed.`);
+    }
+    if (sub === "rename") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
+      const emoji = message.guild.emojis.cache.find(e => e.name === args[2] || args[2]?.includes(e.id));
+      const newName = args[3];
+      if (!emoji || !newName) return err(message, "missing required argument");
+
+      await emoji.setName(newName).catch(() => null);
+      return ok(message, `Emoji renamed to **${newName}**`);
+    }
+    if (sub === "list") {
+      const emojis = message.guild.emojis.cache;
+      return message.reply({ embeds: [{ color: PINK, title: `Emojis (${emojis.size})`, description: emojis.map(e => `${e} \`:${e.name}:\``).slice(0, 40).join(" ") || "None" }] });
+    }
+  }
+
+  // -- WEBHOOK MANAGEMENT --------------------------------
+
+  // ,webhook create <n> [#channel]
+  if (command === "webhook") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "create") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
+      const name = args[2];
+      const ch = message.mentions.channels.first() || message.channel;
+      if (!name) return err(message, "missing required argument");
+
+      const wh = await ch.createWebhook({ name }).catch(() => null);
+      if (!wh) return err(message, "Could not create webhook.");
+      await message.author.send(`<:RUSH_link:1521415290687066212> Webhook URL (keep private!): ${wh.url}`).catch(() => {});
+      return ok(message, "Webhook created. URL sent to your DMs.");
+    }
+    if (sub === "delete") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
+      const whs = await message.channel.fetchWebhooks().catch(() => null);
+      if (!whs || whs.size === 0) return message.reply("No webhooks in this channel.");
+      for (const wh of whs.values()) await wh.delete().catch(() => {});
+      return ok(message, `Deleted **${whs.size}** webhooks.`);
+    }
+    if (sub === "list") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
+      const whs = await message.guild.fetchWebhooks().catch(() => null);
+      if (!whs || whs.size === 0) return message.reply("No webhooks.");
+      return message.reply({ embeds: [{ color: PINK, title: `Webhooks (${whs.size})`, description: whs.map(w => `**${w.name}** — <#${w.channelId}>`).join("\n") }] });
+    }
+  }
+
+  // -- GIVEAWAY EXTENDED --------------------------------─
+
+  // ,giveaway -- alias
+  if (command === "giveaway") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "list") {
+      const active = [...giveaways.entries()].filter(([, g]) => !g.ended && g.guildId === guildId);
+      if (active.length === 0) return message.reply("No active giveaways.");
+      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_giveaway:1521415256772186132> Active Giveaways", description: active.map(([id, g]) => `**${g.prize}** — ends <t:${Math.floor(g.endTime/1000)}:R> — [Jump](https://discord.com/channels/${guildId}/${g.channelId}/${id})`).join("\n") }] });
+    }
+  }
+
+  // -- MODERATION EXTRAS --------------------------------─
+
+  // ,mutehistory <@user>
+  if (command === "mutehistory") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const hist = muteHistory.get(`${guildId}-${target.id}`) || [];
+    if (hist.length === 0) return ok(message, `**${target.username}** has no mute history.`);
+    return message.reply({ embeds: [{ color: PINK, title: `Mute History: ${target.username}`, description: hist.map((h, i) => `**${i+1}.** ${h.duration} — ${h.reason} (${h.mod})`).join("\n") }] });
+  }
+
+  // ,stafflist -- list all staff (admin + mod)
+  if (command === "stafflist") {
+    const staff = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.ModerateMembers) && !m.user.bot);
+    return message.reply({ embeds: [{ color: PINK, title: `👮 Staff (${staff.size})`, description: staff.map(m => `${m.user.username} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
+  }
+
+  // ,slowmodechannel <#channel> <seconds>
+  if (command === "slowmodechannel") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first();
+    const seconds = parseInt(args[2]) ?? 0;
+    if (!ch) return err(message, "missing required argument");
+
+    await ch.setRateLimitPerUser(seconds).catch(() => null);
+    return ok(message, `Slowmode in ${ch}: **${seconds}s**`);
+  }
+
+  // ,banwave <reason> -- ban all recent raiders (users who joined in last 5 min with no messages)
+  if (command === "banwave") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const reason = args.slice(1).join(" ") || "Banwave — suspected raid";
+    const members = await message.guild.members.fetch();
+    const suspects = members.filter(m => !m.user.bot && m.joinedTimestamp > Date.now() - 5 * 60 * 1000);
+    if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Banning **${suspects.size}** suspicious members...` }] });
+    let count = 0;
+    for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Banned **${count}** members.` }] });
+  }
+
+  // ,kick everyone -- kick all non-staff (requires confirmation)
+  if (command === "kickeveryone") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator) || message.author.id !== message.guild.ownerId) return err(message, "Only server owner.");
+    if (args[1] !== "confirm") return message.reply("<:RUSH_warning:1521415214799654985> This will kick ALL non-staff members. Type `,kickeveryone confirm` to confirm.");
+    const members = await message.guild.members.fetch();
+    let count = 0;
+    for (const m of members.values()) {
+      if (m.user.bot || m.id === message.guild.ownerId || m.permissions.has(PermissionFlagsBits.Administrator)) continue;
+      await m.kick("Mass kick by owner").catch(() => {});
+      count++;
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Kicked **${count}** members.` }] });
+  }
+
+  // ,dehoist -- remove hoisted characters from nicknames
+  if (command === "dehoist") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const members = await message.guild.members.fetch();
+    let count = 0;
+    for (const m of members.values()) {
+      const name = m.nickname || m.user.username;
+      if (/^[^a-zA-Z0-9]/.test(name)) {
+        const clean = name.replace(/^[^a-zA-Z0-9]+/, "");
+        await m.setNickname(clean || "Dehoisted").catch(() => {});
+        count++;
+      }
+    }
+    return ok(message, `Dehoisted **${count}** members.`);
+  }
+
+  // ,decancer <@user> -- remove special characters from nickname
+  if (command === "decancer") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const clean = (target.nickname || target.user.username).replace(/[^\x20-\x7E]/g, "").trim() || "Cleaned Nick";
+    await target.setNickname(clean).catch(() => null);
+    return ok(message, `Cleaned nickname: **${clean}**`);
+  }
+
+  // ,dehoistall -- dehoist all members
+  if (command === "dehoistall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const members = await message.guild.members.fetch();
+    let count = 0;
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Dehoisting **${members.size}** members...` }] });
+    for (const m of members.values()) {
+      if (m.user.bot || m.id === message.guild.ownerId) continue;
+      const name = m.nickname || m.user.username;
+      if (/^[^a-zA-Z0-9]/.test(name)) {
+        await m.setNickname(name.replace(/^[^a-zA-Z0-9]+/, "") || "Dehoisted").catch(() => {});
+        count++;
+      }
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Dehoisted **${count}** members.` }] });
+  }
+
+  // ,resetnick <@user>
+  if (command === "resetnick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    await target.setNickname(null).catch(() => null);
+    return ok(message, `Reset nickname for **${target.user.username}**`);
+  }
+
+  // ,resetallnicks -- reset all nicknames
+  if (command === "resetallnicks") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const members = await message.guild.members.fetch();
+    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Resetting ${members.size} nicknames...` }] });
+    let count = 0;
+    for (const m of members.values()) {
+      if (m.nickname) { await m.setNickname(null).catch(() => {}); count++; }
+    }
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Reset **${count}** nicknames.` }] });
+  }
+
+  // -- LOGGING EVENTS EXTENDED --------------------------─
+
+  // ,messagelog <#channel> -- log all deleted/edited messages
+  if (command === "messagelog") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { modlogChannel.delete(`msg-${guildId}`); return ok(message, "Message log disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    modlogChannel.set(`msg-${guildId}`, ch.id);
+    saveAllConfigs();return ok(message, `Message logs → ${ch}`);
+  }
+
+  // ,joinlog <#channel>
+  if (command === "joinlog") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { modlogChannel.delete(`join-${guildId}`); return ok(message, "Join log disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    modlogChannel.set(`join-${guildId}`, ch.id);
+    saveAllConfigs();return ok(message, `Join/leave logs → ${ch}`);
+  }
+
+  // ,voicelog <#channel>
+  if (command === "voicelog") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    if (args[1] === "off") { voiceLogs.delete(guildId); return ok(message, "Voice log disabled."); }
+    const ch = message.mentions.channels.first();
+    if (!ch) return err(message, "missing required argument");
+
+    voiceLogs.set(guildId, ch.id);
+    return ok(message, `Voice logs → ${ch}`);
+  }
+
+  // -- PING ROLES ----------------------------------------
+
+  // ,pingrole <@role> -- toggle pingable role
+  if (command === "pingrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    const set = pingRoles.get(guildId) || new Set();
+    if (set.has(role.id)) {
+      set.delete(role.id);
+      await role.setMentionable(false).catch(() => {});
+      return ok(message, `**${role.name}** is no longer pingable.`);
+    }
+    set.add(role.id);
+    pingRoles.set(guildId, set);
+    await role.setMentionable(true).catch(() => {});
+    return ok(message, `**${role.name}** is now pingable.`);
+  }
+
+  // -- INFO EXTRAS ----------------------------------------
+
+  // ,id [user|role|channel] -- get ID
+  if (command === "id") {
+    const user = message.mentions.users.first();
+    const role = message.mentions.roles.first();
+    const ch = message.mentions.channels.first();
+    if (user) return info(message, `**${user.username}** — \`${user.id}\``);
+    if (role) return info(message, `**${role.name}** — \`${role.id}\``);
+    if (ch) return info(message, `**${ch.name}** — \`${ch.id}\``);
+    return info(message, `your ID: \`${message.author.id}\` | server: \`${guildId}\` | channel: \`${message.channel.id}\``);
+  }
+
+  // ,icon [user]
+  if (command === "icon") {
+    const target = message.mentions.users.first() || message.author;
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, image: { url: target.displayAvatarURL({ size: 1024, dynamic: true }) }, footer: { text: message.guild.name } }] });
+  }
+
+  // ,banner [user]
+  if (command === "banner") {
+    await message.channel.sendTyping().catch(() => {});
+    const target = await client.users.fetch(message.mentions.users.first()?.id || message.author.id, { force: true }).catch(() => null);
+    if (!target) return err(message, "missing required argument: **user**");
+    const url = target.bannerURL({ size: 1024 });
+    if (!url) return info(message, `**${target.username}** has no banner`);
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, image: { url }, footer: { text: message.guild.name } }] });
+  }
+
+  // ,hex <color> -- convert color name to hex
+  if (command === "hex") {
+    const color = args.slice(1).join(" ");
+    if (!color) return err(message, "missing required argument");
+
+    const colors = { red: "#FF0000", blue: "#0000FF", green: "#00FF00", yellow: "#FFFF00", purple: "#800080", orange: "#FFA500", pink: "#FFC0CB", white: "#FFFFFF", black: "#000000", cyan: "#00FFFF", gold: "#FFD700", silver: "#C0C0C0" };
+    const hex = colors[color.toLowerCase()];
+    if (!hex) return err(message, "Color not found. Try: red, blue, green, etc.");
+    const int = parseInt(hex.replace("#", ""), 16);
+    return message.reply({ embeds: [{ color: int, title: `${color} = ${hex}` }] });
+  }
+
+  // ,snowflake <id> -- decode Discord snowflake
+  if (command === "snowflake") {
+    const id = args[1];
+    if (!id || !/^\d+$/.test(id)) return err(message, "missing required argument");
+
+    const timestamp = BigInt(id) >> 22n;
+    const date = new Date(Number(timestamp) + 1420070400000);
+    return info(message, `**${id}**\nCreated: <t:${Math.floor(date.getTime()/1000)}:F>\nTimestamp: ${date.getTime()}`);
+  }
+
+  // ,discrim <discriminator> -- find users with same discriminator
+  if (command === "discrim") {
+    const discrim = args[1];
+    if (!discrim) return err(message, "missing required argument");
+
+    const members = message.guild.members.cache.filter(m => m.user.discriminator === discrim);
+    if (members.size === 0) return info(message, `no members with discriminator **#${discrim}**`);
+    return message.reply({ embeds: [{ color: PINK, title: `Users with #${discrim}`, description: members.map(m => m.user.username).join("\n") }] });
+  }
+
+  // ,copycat <@user> -- mimic a user's name and avatar for a webhook message
+  if (command === "copycat") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const text = args.slice(2).join(" ");
+    if (!target || !text) return err(message, "missing required argument");
+
+    const wh = await message.channel.createWebhook({ name: target.username, avatar: target.displayAvatarURL() }).catch(() => null);
+    if (!wh) return err(message, "Could not create webhook.");
+    await wh.send(text);
+    await wh.delete().catch(() => {});
+    message.delete().catch(() => {});
+  }
+
+  // -- ECONOMY EXTRAS ------------------------------------
+
+  // ,weekly -- weekly reward
+  if (command === "weekly") {
+    const key = `weekly-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 604800000) {
+      const remaining = Math.ceil((604800000 - (now - last)) / 3600000);
+      return info(message, `<:RUSH_clock:1521415225058791454> Come back in **${remaining}h** for your weekly reward.`);
+    }
+    const current = economy.get(message.author.id) || 0;
+    economy.set(message.author.id, current + 2500);
+    economy.set(key, now);
+    return ok(message, `You claimed your weekly **2500 coins**! Balance: **${current + 2500}**`);
+  }
+
+  // ,monthly
+  if (command === "monthly") {
+    const key = `monthly-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 2592000000) {
+      const remaining = Math.ceil((2592000000 - (now - last)) / 86400000);
+      return info(message, `<:RUSH_clock:1521415225058791454> Come back in **${remaining}d** for your monthly reward.`);
+    }
+    const current = economy.get(message.author.id) || 0;
+    economy.set(message.author.id, current + 10000);
+    economy.set(key, now);
+    return ok(message, `You claimed your monthly **10,000 coins**! Balance: **${current + 10000}**`);
+  }
+
+  // ,give <@user> <amount> -- admin give coins
+  if (command === "give") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const amount = parseInt(args[2]);
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
+
+    economy.set(target.id, (economy.get(target.id) || 0) + amount);
+    return ok(message, `Gave **${amount} coins** to **${target.username}**`);
+  }
+
+  // ,take <@user> <amount>
+  if (command === "take") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const amount = parseInt(args[2]);
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
+
+    const bal = economy.get(target.id) || 0;
+    economy.set(target.id, Math.max(0, bal - amount));
+    return ok(message, `Took **${amount} coins** from **${target.username}**`);
+  }
+
+  // ,resetbal <@user>
+  if (command === "resetbal") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    economy.set(target.id, 0);
+    return ok(message, `Reset **${target.username}**'s balance.`);
+  }
+
+  // ,setbal <@user> <amount>
+  if (command === "setbal") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const amount = parseInt(args[2]);
+    if (!target || isNaN(amount)) return err(message, "missing required argument");
+
+    economy.set(target.id, amount);
+    return ok(message, `Set **${target.username}**'s balance to **${amount}**`);
+  }
+
+  // ,work -- earn coins by working
+  if (command === "work") {
+    const key = `work-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 3600000) {
+      const remaining = Math.ceil((3600000 - (now - last)) / 60000);
+      return info(message, `<:RUSH_clock:1521415225058791454> You can work again in **${remaining} minutes**.`);
+    }
+    const jobs = ["mowed the lawn", "delivered pizza", "wrote some code", "walked dogs", "fixed a computer"];
+    const job = jobs[Math.floor(Math.random() * jobs.length)];
+    const earned = Math.floor(Math.random() * 200) + 50;
+    economy.set(message.author.id, (economy.get(message.author.id) || 0) + earned);
+    economy.set(key, now);
+    return ok(message, `You ${job} and earned **${earned} coins**!`);
+  }
+
+  // ,crime -- risky way to earn coins
+  if (command === "crime") {
+    const key = `crime-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 7200000) return info(message, `<:RUSH_clock:1521415225058791454> Too risky right now. Wait **${Math.ceil((7200000 - (now - last)) / 60000)} minutes**.`);
+    economy.set(key, now);
+    const success = Math.random() > 0.4;
+    const amount = Math.floor(Math.random() * 500) + 100;
+    const bal = economy.get(message.author.id) || 0;
+    if (success) {
+      economy.set(message.author.id, bal + amount);
+      return ok(message, `You committed a crime and got away with **${amount} coins**!`);
+    } else {
+      economy.set(message.author.id, Math.max(0, bal - amount));
+      return info(message, `You got caught! You lost **${amount} coins**.`);
+    }
+  }
+
+  // ,rob <@user>
+  if (command === "rob") {
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,rob @user`");
+    if (target.id === message.author.id) return err(message, "You can't rob yourself.");
+    const key = `rob-${message.author.id}`;
+    const last = economy.get(key);
+    const now = Date.now();
+    if (last && now - last < 3600000) return info(message, `<:RUSH_clock:1521415225058791454> Wait **${Math.ceil((3600000 - (now - last)) / 60000)} minutes** before robbing again.`);
+    economy.set(key, now);
+    const targetBal = economy.get(target.id) || 0;
+    if (targetBal < 100) return err(message, `**${target.username}** is too poor to rob.`);
+    const success = Math.random() > 0.5;
+    const amount = Math.floor(targetBal * 0.2);
+    if (success) {
+      economy.set(target.id, targetBal - amount);
+      economy.set(message.author.id, (economy.get(message.author.id) || 0) + amount);
+      return ok(message, `You robbed **${target.username}** and stole **${amount} coins**!`);
+    } else {
+      const fine = Math.floor(amount / 2);
+      economy.set(message.author.id, Math.max(0, (economy.get(message.author.id) || 0) - fine));
+      return info(message, `You got caught robbing **${target.username}** and paid a **${fine} coin** fine!`);
+    }
+  }
+
+  // ,shop -- show economy shop
+  if (command === "shop") {
+    return info(message, "shop coming soon! Use `,work` `,daily` `,crime` to earn coins");
+  }
+
+  // -- FUN EXTRAS ----------------------------------------
+
+  // ,emojify <text>
+  if (command === "emojify") {
+    const text = args.slice(1).join(" ").toLowerCase();
+    if (!text) return err(message, "missing required argument");
+
+    const result = text.split("").map(c => {
+      if (/[a-z]/.test(c)) return `:regional_indicator_${c}: `;
+      if (c === " ") return "  ";
+      return c;
+    }).join("");
+    return message.reply(result.substring(0, 2000) || "<:steal:1521327958634135655>");
+  }
+
+  // ,spoiler <text>
+  if (command === "spoiler") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    message.delete().catch(() => {});
+    return message.channel.send(`||${text}||`).catch(() => null);
+  }
+
+  // ,zalgo <text>
+  if (command === "zalgo") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const zalgoChars = ["̴","̵","̶","̷","̸","̡","̢","̧","̨","͜","͝","͞","͟","͠","͡"];
+    const result = text.split("").map(c => c + zalgoChars[Math.floor(Math.random() * zalgoChars.length)].repeat(3)).join("");
+    return message.reply(result.substring(0, 2000));
+  }
+
+  // ,leet <text>
+  if (command === "leet") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const map = { a: "4", e: "3", i: "1", o: "0", s: "5", t: "7", b: "8", g: "9" };
+    return message.reply(text.toLowerCase().split("").map(c => map[c] || c).join(""));
+  }
+
+  // ,vaporwave <text>
+  if (command === "vaporwave") {
+    const text = args.slice(1).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    const result = text.split("").map(c => {
+      const code = c.charCodeAt(0);
+      if (code >= 33 && code <= 126) return String.fromCharCode(code + 65248);
+      return c;
+    }).join("");
+    return message.reply(result);
+  }
+
+  // ,countdown <n> -- counts down in chat
+  if (command === "countdown") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const n = Math.min(parseInt(args[1]) || 5, 10);
+    if (isNaN(n) || n < 1) return err(message, "missing required argument");
+
+    const msg = await message.channel.send(`<a:Loading:1521415253982969898> **${n}**`);
+    let current = n - 1;
+    const interval = setInterval(async () => {
+      if (current <= 0) { clearInterval(interval); await msg.edit({ embeds: [{ color: PINK, description: "<:RUSH_giveaway:1521415256772186132> **GO!**" }] }).catch(() => {}); return; }
+      await msg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> **${current}**` }] }).catch(() => { clearInterval(interval); });
+      current--;
+    }, 1000);
+  }
+
+  // ,math advanced
+  if (command === "calc") {
+    const expr = args.slice(1).join(" ");
+    if (!expr) return err(message, "missing required argument");
+
+    try {
+      const result = Function(`"use strict"; return (${expr.replace(/[^0-9+\-*/().\s%^]/g, "")})`)();
+      return info(message, `**${expr}** = **${result}**`);
+    } catch { return err(message, "Invalid expression."); }
+  }
+
+  // ,tinytext <text>
+  if (command === "tinytext") {
+    const text = args.slice(1).join(" ").toLowerCase();
+    const tiny = { a:"ᵃ",b:"ᵇ",c:"ᶜ",d:"ᵈ",e:"ᵉ",f:"ᶠ",g:"ᵍ",h:"ʰ",i:"ⁱ",j:"ʲ",k:"ᵏ",l:"ˡ",m:"ᵐ",n:"ⁿ",o:"ᵒ",p:"ᵖ",r:"ʳ",s:"ˢ",t:"ᵗ",u:"ᵘ",v:"ᵛ",w:"ʷ",x:"ˣ",y:"ʸ",z:"ᶻ" };
+    return message.reply(text.split("").map(c => tiny[c] || c).join(""));
+  }
+
+  // ,bold <text>
+  if (command === "bold") {
+    const text = args.slice(1).join(" ");
+    message.delete().catch(() => {});
+    return message.channel.send(`**${text}**`).catch(() => null);
+  }
+
+  // ,italic <text>
+  if (command === "italic") {
+    const text = args.slice(1).join(" ");
+    message.delete().catch(() => {});
+    return message.channel.send(`*${text}*`).catch(() => null);
+  }
+
+  // ,strikethrough <text>
+  if (command === "strikethrough") {
+    const text = args.slice(1).join(" ");
+    message.delete().catch(() => {});
+    return message.channel.send(`~~${text}~~`).catch(() => null);
+  }
+
+  // ,underline <text>
+  if (command === "underline") {
+    const text = args.slice(1).join(" ");
+    message.delete().catch(() => {});
+    return message.channel.send(`__${text}__`).catch(() => null);
+  }
+
+  // ,codeblock <text>
+  if (command === "codeblock") {
+    const text = args.slice(1).join(" ");
+    message.delete().catch(() => {});
+    return message.channel.send(`\`\`\`\n${text}\n\`\`\``).catch(() => null);
+  }
+
+  // ,repeat <n> <text>
+  if (command === "repeat") {
+    const n = Math.min(parseInt(args[1]) || 1, 10);
+    const text = args.slice(2).join(" ");
+    if (!text) return err(message, "missing required argument");
+
+    return message.reply(Array(n).fill(text).join("\n").substring(0, 2000));
+  }
+
+  // ,toss -- heads or tails (alias coinflip)
+  if (command === "toss") {
+    return info(message, `**${Math.random() < 0.5 ? "Heads" : "Tails"}!**`);
+  }
+
+  // ,yesno -- yes or no random
+  if (command === "yesno") {
+    return message.reply(Math.random() < 0.5 ? "<:019TXTWhite_Yes:1521327983279996999> **Yes**" : "<:steal:1521327958634135655> **No**");
+  }
+
+  // ,decide <option1> | <option2> | ...
+  if (command === "decide") {
+    const options = args.slice(1).join(" ").split("|").map(o => o.trim()).filter(Boolean);
+    if (options.length < 2) return err(message, "missing required argument");
+
+    return info(message, `I pick: **${options[Math.floor(Math.random() * options.length)]}**`);
+  }
+
+  // ,number <min> <max>
+  if (command === "number") {
+    const min = parseInt(args[1]) || 1;
+    const max = parseInt(args[2]) || 100;
+    return info(message, `**${Math.floor(Math.random() * (max - min + 1)) + min}**`);
+  }
+
+  // ,team <size> <@user1> <@user2> ... -- split into teams
+  if (command === "team") {
+    const size = parseInt(args[1]);
+    const members = [...message.mentions.users.values()];
+    if (isNaN(size) || members.length < size) return err(message, "missing required argument");
+
+    const shuffled = members.sort(() => Math.random() - 0.5);
+    const teams = [];
+    for (let i = 0; i < shuffled.length; i += size) teams.push(shuffled.slice(i, i + size));
+    const desc = teams.map((t, i) => `**Team ${i+1}:** ${t.map(u => u.username).join(", ")}`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: "⚽ Teams", description: desc }] });
+  }
+
+  // ,shuffle <item1> | <item2> | ...
+  if (command === "shuffle") {
+    const items = args.slice(1).join(" ").split("|").map(i => i.trim()).filter(Boolean);
+    if (items.length < 2) return err(message, "missing required argument");
+
+    const shuffled = items.sort(() => Math.random() - 0.5);
+    return info(message, `${shuffled.join(", ")}`);
+  }
+
+  // ,password <length> -- generate random password
+  if (command === "password") {
+    const length = Math.min(parseInt(args[1]) || 16, 64);
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+    const password = Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    try { await message.author.send(`<:RUSH_unlock:1521415218037526641> Generated password: \`${password}\``); } catch {}
+    return ok(message, "Password sent to your DMs!");
+  }
+
+  // ,token -- generate random token-like string
+  if (command === "token") {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const token = Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    return info(message, `token: \`${token}\``);
+  }
+
+  // -- UTILITY EXTRAS ------------------------------------
+
+  // ,news -- latest Discord status
+  if (command === "news") {
+    await message.channel.sendTyping().catch(() => {});
+    try {
+      const res = await fetch("https://discordstatus.com/api/v2/status.json");
+      const data = await res.json();
+      return message.reply({ embeds: [{ color: PINK, title: "📡 Discord Status", description: data.status.description }] });
+    } catch { return err(message, "Could not fetch Discord status."); }
+  }
+
+  // ,serverage -- how old is the server
+  if (command === "serverage") {
+    const created = message.guild.createdTimestamp;
+    const days = Math.floor((Date.now() - created) / 86400000);
+    return info(message, `Server is **${days} days** old (created <t:${Math.floor(created/1000)}:R>)`);
+  }
+
+  // ,accountage [user]
+  if (command === "accountage") {
+    const target = message.mentions.users.first() || message.author;
+    const days = Math.floor((Date.now() - target.createdTimestamp) / 86400000);
+    return info(message, `**${target.username}**'s account is **${days} days** old`);
+  }
+
+  // ,invitebot -- get bot invite link
+  if (command === "invitebot") {
+    return info(message, `[Invite me!](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot)`);
+  }
+
+  // ,support -- support server
+  if (command === "support") {
+    return message.reply("<:RUSH_comment:1491884212297531572> Join our support server for help!");
+  }
+
+  // ,source -- show bot source info
+  if (command === "source") {
+    return message.reply({ embeds: [{ color: PINK, title: "📦 Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }], footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // ,shards -- shard info
+  if (command === "shards") {
+    return info(message, `shard **${client.shard?.ids[0] ?? 0}** | guilds: **${client.guilds.cache.size}**`);
+  }
+
+  // ,leave -- make bot leave server (owner only)
+  if (command === "leave") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    await message.reply("<a:009Cinnamoroll_Wave:1265534373873320047> Leaving server...");
+    await message.guild.leave();
+  }
+
+  // ,guilds -- list all guilds bot is in (owner only)
+  if (command === "guilds") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    const list = client.guilds.cache.map(g => `**${g.name}** (${g.memberCount})`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `Guilds (${client.guilds.cache.size})`, description: list.substring(0, 4096) }] });
+  }
+
+  // ,eval <code> -- owner only
+  if (command === "eval") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    const code = args.slice(1).join(" ");
+    try {
+      let result = eval(code);
+      if (result instanceof Promise) result = await result;
+      const output = typeof result === "object" ? JSON.stringify(result, null, 2) : String(result);
+      return message.reply({ embeds: [{ color: PINK, description: `\`\`\`js\n${output.substring(0, 1900)}\n\`\`\`` }] });
+    } catch (e) { return message.reply({ embeds: [{ color: PINK, description: `\`\`\`js\n${e.message}\n\`\`\`` }] }); }
+  }
+
+  // ,exec <command> -- owner only shell (disabled for safety)
+  if (command === "exec") {
+    return err(message, "exec is disabled for security reasons.");
+  }
+
+  // ,status <online|idle|dnd|invisible> -- set bot status
+  if (command === "status") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    const status = args[1];
+    if (!["online","idle","dnd","invisible"].includes(status)) return err(message, "missing required argument");
+
+    client.user.setStatus(status);
+    return ok(message, `Status set to **${status}**`);
+  }
+
+  // ,activity <type> <text> -- set bot activity
+  if (command === "activity") {
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+    const types = {
+      playing: ActivityType.Playing,
+      streaming: ActivityType.Streaming,
+      listening: ActivityType.Listening,
+      watching: ActivityType.Watching,
+      competing: ActivityType.Competing
+    };
+    const type = args[1]?.toLowerCase();
+    const text = args.slice(2).join(" ");
+    if (!types[type] || !text) return err(message, "usage: `,activity <playing|streaming|listening|watching|competing> <text>`");
+    const opts = { type: types[type] };
+    if (type === "streaming") opts.url = "https://www.twitch.tv/sensational";
+    client.user.setActivity(text, opts);
+    return ok(message, `activity set to **${type}** ${text}`);
+  }
+
+  // ,say2 <#channel> <message> -- send to different channel
+  if (command === "say2") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first();
+    const text = args.slice(2).join(" ");
+    if (!ch || !text) return err(message, "missing required argument");
+
+    await ch.send(text);
+    return ok(message, `Sent to ${ch}`);
+  }
+
+  // ,react <messageId> <emoji>
+  if (command === "react") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    const emoji = args[2];
+    if (!msgId || !emoji) return err(message, "missing required argument");
+
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await msg.react(emoji).catch(() => null);
+    message.delete().catch(() => {});
+  }
+
+  // ,unreact <messageId> -- remove all bot reactions
+  if (command === "unreact") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await msg.reactions.removeAll().catch(() => null);
+    return ok(message, "Reactions removed.");
+  }
+
+  // ,editbot <text> -- edit last bot message
+  if (command === "editbot") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const text = args.slice(1).join(" ");
+    const msgs = await message.channel.messages.fetch({ limit: 20 });
+    const botMsg = msgs.filter(m => m.author.id === client.user.id).first();
+    if (!botMsg) return err(message, "No recent bot message found.");
+    await botMsg.edit(text).catch(() => null);
+    message.delete().catch(() => {});
+  }
+
+  // ,deletebot -- delete last bot message
+  if (command === "deletebot") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 20 });
+    const botMsg = msgs.filter(m => m.author.id === client.user.id).first();
+    if (!botMsg) return err(message, "No recent bot message found.");
+    await botMsg.delete().catch(() => null);
+    message.delete().catch(() => {});
+  }
+});
+
+// ===== FINAL COMMANDS TO REACH 450+ =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+
+  if (command === "whitelistcheck") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const cfg = getAntiNuke(message.guild.id);
+    const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "Empty";
+    return info(message, `antinuke whitelist: ${wl}`);
+  }
+  if (command === "temprole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const role = message.mentions.roles.first();
+    const timeStr = args[3];
+    if (!target || !role || !timeStr) return err(message, "missing required argument");
+
+    const match = timeStr.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return err(message, "Invalid time.");
+    const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    await target.roles.add(role).catch(() => null);
+    ok(message, `<:019TXTWhite_Yes:1521327983279996999> Gave **${role.name}** to **${target.user.username}** for **${timeStr}**`);
+    setTimeout(async () => { await target.roles.remove(role).catch(() => {}); message.channel.send(`<:RUSH_clock:1521415225058791454> Removed **${role.name}** from **${target.user.username}**`).catch(() => {}); }, ms);
+  }
+  if (command === "muterole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument");
+
+    muteRole.set(message.guild.id, role.id);
+    saveAllConfigs();return ok(message, `Mute role set to **${role.name}**`);
+  }
+  if (command === "imagemute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    if (!target) return err(message, "missing required argument");
+
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
+    if (!role) return err(message, "No 'Image Muted' role. Run `,setupmute` first.");
+    await target.roles.add(role).catch(() => null);
+    return ok(message, `Image muted **${target.user.username}**`);
+  }
+  if (command === "reactionmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    if (!target) return err(message, "missing required argument");
+
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "reaction muted");
+    if (!role) return err(message, "No 'Reaction Muted' role. Run `,setupmute` first.");
+    await target.roles.add(role).catch(() => null);
+    return ok(message, `Reaction muted **${target.user.username}**`);
+  }
+  if (command === "reactionunmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "reaction muted");
+    if (target && role) await target.roles.remove(role).catch(() => null);
+    return ok(message, `Reaction unmuted **${target?.user.username}**`);
+  }
+  if (command === "imageunmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === "image muted");
+    if (target && role) await target.roles.remove(role).catch(() => null);
+    return ok(message, `Image unmuted **${target?.user.username}**`);
+  }
+  if (command === "serverrules") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const rules = args.slice(1).join(" ").split("|").map((r, i) => `**${i+1}.** ${r.trim()}`).filter(Boolean);
+    if (rules.length === 0) return err(message, "missing required argument");
+
+    return message.channel.send({ embeds: [{ color: PINK, title: `📜 ${message.guild.name} Rules`, description: rules.join("\n") }] });
+  }
+  if (command === "inviteinfo2") {
+    const code = args[1];
+    if (!code) return err(message, "missing required argument");
+
+    const invite = await client.fetchInvite(code).catch(() => null);
+    if (!invite) return err(message, "Invite not found.");
+    return message.reply({ embeds: [{ color: PINK, title: `Invite: ${code}`, fields: [{ name: "Server", value: invite.guild?.name || "Unknown", inline: true }, { name: "Channel", value: invite.channel?.name || "Unknown", inline: true }, { name: "Uses", value: `${invite.uses ?? "?"}`, inline: true }, { name: "Inviter", value: invite.inviter?.username || "Unknown", inline: true }, { name: "Max Uses", value: `${invite.maxUses || "∞"}`, inline: true }, { name: "Expires", value: invite.expiresAt ? `<t:${Math.floor(invite.expiresAt.getTime()/1000)}:R>` : "Never", inline: true }] }] });
+  }
+  if (command === "memberpos") {
+    const target = message.mentions.members.first() || message.member;
+    const members = (await message.guild.members.fetch()).sort((a, b) => a.joinedTimestamp - b.joinedTimestamp);
+    const pos = [...members.values()].findIndex(m => m.id === target.id) + 1;
+    return info(message, `**${target.user.username}** is member **#${pos}** to join`);
+  }
+  if (command === "permissions2") {
+    const target = message.mentions.members.first() || message.member;
+    const perms = target.permissions.toArray();
+    return message.reply({ embeds: [{ color: PINK, title: `All Permissions: ${target.user.username}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
+  }
+  if (command === "channelpermissions") {
+    const ch = message.mentions.channels.first() || message.channel;
+    const target = message.mentions.members.first() || message.member;
+    const perms = ch.permissionsFor(target)?.toArray() || [];
+    return message.reply({ embeds: [{ color: PINK, title: `Channel Perms: ${target.user.username} in #${ch.name}`, description: perms.join(", ").substring(0, 4096) || "None" }] });
+  }
+  if (command === "guildicon") {
+    const url = message.guild.iconURL({ size: 2048, dynamic: true });
+    if (!url) return err(message, "No icon.");
+    return message.reply({ embeds: [{ color: PINK, image: { url } }] });
+  }
+  if (command === "guildbanner") {
+    const url = message.guild.bannerURL({ size: 2048 });
+    if (!url) return err(message, "No banner.");
+    return message.reply({ embeds: [{ color: PINK, image: { url } }] });
+  }
+  if (command === "guildsplash") {
+    const url = message.guild.splashURL({ size: 2048 });
+    if (!url) return err(message, "No splash.");
+    return message.reply({ embeds: [{ color: PINK, image: { url } }] });
+  }
+  if (command === "cleardm") {
+    return message.author.send("📬 Discord does not allow bots to delete DMs.").catch(() => err(message, "Could not DM you."));
+  }
+  if (command === "userperms") {
+    const target = message.mentions.members.first() || message.member;
+    const dangerous = [];
+    if (target.permissions.has(PermissionFlagsBits.Administrator)) dangerous.push("Administrator");
+    if (target.permissions.has(PermissionFlagsBits.BanMembers)) dangerous.push("Ban Members");
+    if (target.permissions.has(PermissionFlagsBits.KickMembers)) dangerous.push("Kick Members");
+    if (target.permissions.has(PermissionFlagsBits.ManageGuild)) dangerous.push("Manage Server");
+    if (target.permissions.has(PermissionFlagsBits.ManageRoles)) dangerous.push("Manage Roles");
+    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_warning:1521415214799654985> Key Perms: ${target.user.username}`, description: dangerous.length > 0 ? dangerous.join(", ") : "No dangerous permissions" }] });
+  }
+  if (command === "vcrename") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const vc = message.member.voice.channel;
+    if (!vc) return err(message, "Join a voice channel first.");
+    const name = args.slice(1).join(" ");
+    if (!name) return err(message, "missing required argument");
+
+    await vc.setName(name).catch(() => null);
+    return ok(message, `Renamed to **${name}**`);
+  }
+  if (command === "vcinfo") {
+    const vc = message.mentions.channels.first() || message.member.voice.channel;
+    if (!vc) return err(message, "No voice channel found.");
+    return message.reply({ embeds: [{ color: PINK, title: `🔊 ${vc.name}`, fields: [{ name: "Members", value: `${vc.members.size}`, inline: true }, { name: "User Limit", value: `${vc.userLimit || "∞"}`, inline: true }, { name: "Bitrate", value: `${vc.bitrate / 1000}kbps`, inline: true }, { name: "ID", value: vc.id }] }] });
+  }
+  if (command === "afklist") {
+    const list = [...afkUsers.entries()].filter(([k]) => k.startsWith(message.guild.id));
+    if (list.length === 0) return message.reply("No AFK users.");
+    return message.reply({ embeds: [{ color: PINK, title: "💤 AFK Users", description: list.map(([k, v]) => `<@${k.split("-")[1]}> — ${v}`).join("\n") }] });
+  }
+  if (command === "removeafk") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument");
+
+    afkUsers.delete(`${message.guild.id}-${target.id}`);
+    return ok(message, `Removed AFK from **${target.username}**`);
+  }
+  if (command === "censor") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = args[1]?.toLowerCase();
+    const cfg = getFilter(message.guild.id);
+    if (sub === "add") {
+      const word = args.slice(2).join(" ");
+      if (!word) return err(message, "missing required argument");
+
+      cfg.words.push(word.toLowerCase());
+      cfg.enabled = true;
+      return ok(message, `Word **${word}** added to censor list.`);
+    }
+    if (sub === "remove") {
+      const word = args.slice(2).join(" ").toLowerCase();
+      cfg.words = cfg.words.filter(w => w !== word);
+      return ok(message, `Word **${word}** removed from censor.`);
+    }
+    if (sub === "list") return info(message, `censored words: ${cfg.words.join(", ") || "None"}`);
+    return err(message, "missing required argument");
+
+  }
+  if (command === "unmutechat") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null }).catch(() => null);
+    return ok(message, "Chat unmuted.");
+  }
+  if (command === "mutechat") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false }).catch(() => null);
+    return ok(message, "Chat muted.");
+  }
+  if (command === "archive") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    if (!message.channel.isThread()) return err(message, "Not a thread.");
+    await message.channel.setArchived(true).catch(() => null);
+  }
+  if (command === "unarchive") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    if (!message.channel.isThread()) return err(message, "Not a thread.");
+    await message.channel.setArchived(false).catch(() => null);
+    return ok(message, "Thread unarchived.");
+  }
+  if (command === "export") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const text = msgs.reverse().map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.username}: ${m.content}`).join("\n");
+    await message.author.send(`<:RUSH_comment:1491884212297531572> Chat log from #${message.channel.name} sent!`).catch(() => err(message, "Could not DM you."));
+    return ok(message, "Chat log sent to your DMs.");
+  }
+  if (command === "nsfwcheck") {
+    return info(message, `this channel is ${message.channel.nsfw ? "**NSFW**" : "**SFW**"}`);
+  }
+  if (command === "nsfw") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    await message.channel.setNSFW(!message.channel.nsfw).catch(() => null);
+    return ok(message, `NSFW: **${!message.channel.nsfw}**`);
+  }
+  if (command === "setbitrate") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.member.voice.channel;
+    const bitrate = parseInt(args[ch ? 2 : 1]) * 1000;
+    if (!ch || isNaN(bitrate)) return err(message, "missing required argument");
+
+    await ch.setBitrate(bitrate).catch(() => null);
+    return ok(message, `Bitrate set to **${bitrate/1000}kbps**`);
+  }
+  if (command === "audit") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ViewAuditLog)) return err(message, "Missing permissions.");
+    const logs = await message.guild.fetchAuditLogs({ limit: 5 }).catch(() => null);
+    if (!logs) return err(message, "Could not fetch audit logs.");
+    const lines = [...logs.entries.values()].map(e => `**${e.action}** by ${e.executor?.username || "Unknown"} — ${e.reason || "No reason"}`);
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Recent Audit Log", description: lines.join("\n") }] });
+  }
+  if (command === "clearreactions") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgId = args[1];
+    const msg = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return err(message, "Message not found.");
+    await msg.reactions.removeAll().catch(() => null);
+    return ok(message, "Reactions cleared.");
+  }
+  if (command === "serverfeatures") {
+    const features = message.guild.features;
+    return message.reply({ embeds: [{ color: PINK, title: `<a:014White_Spark2:1491251181840891996> ${message.guild.name} Features`, description: features.length > 0 ? features.join(", ") : "No special features" }] });
+  }
+  if (command === "boostgoal") {
+    const current = message.guild.premiumSubscriptionCount;
+    const goals = [0, 2, 7, 14];
+    const tier = message.guild.premiumTier;
+    const nextGoal = goals[tier + 1] || 14;
+    return info(message, `**${current}/${nextGoal}** boosts for Tier **${Math.min(tier + 1, 3)}**`);
+  }
+  if (command === "prune") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+    const days = parseInt(args[1]) || 7;
+    const pruned = await message.guild.members.prune({ days, dry: false }).catch(() => null);
+    return ok(message, `Pruned **${pruned}** members inactive for **${days}** days.`);
+  }
+  if (command === "prunedry") {
+    if (!message.member.permissions.has(PermissionFlagsBits.KickMembers)) return err(message, "Missing permissions.");
+    const days = parseInt(args[1]) || 7;
+    const pruned = await message.guild.members.prune({ days, dry: true }).catch(() => null);
+    return info(message, `**${pruned}** members would be pruned (inactive ${days}d) — use \`,prune ${days}\` to confirm`);
+  }
+  if (command === "antilinks") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cfg = getFilter(message.guild.id);
+    cfg.links = !cfg.links;
+    cfg.enabled = true;
+    return ok(message, `Anti-links: **${cfg.links ? "on" : "off"}**`);
+  }
+  if (command === "antiinvites") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cfg = getFilter(message.guild.id);
+    cfg.invites = !cfg.invites;
+    cfg.enabled = true;
+    return ok(message, `Anti-invites: **${cfg.invites ? "on" : "off"}**`);
+  }
+  if (command === "antispam") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cfg = getFilter(message.guild.id);
+    cfg.spam = !cfg.spam;
+    cfg.enabled = true;
+    return ok(message, `Anti-spam: **${cfg.spam ? "on" : "off"}**`);
+  }
+  if (command === "anticaps") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const cfg = getFilter(message.guild.id);
+    cfg.caps = !cfg.caps;
+    cfg.enabled = true;
+    return ok(message, `Anti-caps: **${cfg.caps ? "on" : "off"}**`);
+  }
+});
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  if (command === "hackban2") {
+    if (!message.member.permissions.has(PermissionFlagsBits.BanMembers)) return err(message, "Missing permissions.");
+    const ids = args.slice(1).filter(id => /^\d+$/.test(id));
+    if (ids.length === 0) return err(message, "missing required argument: **userId**\nusage: `,hackban2 <id1> <id2> ...`");
+    for (const id of ids) await message.guild.members.ban(id, { reason: `Hackban by ${message.author.username}` }).catch(() => {});
+    return ok(message, `hackbanned **${ids.length}** users`);
+  }
+  if (command === "modnick") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const t = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null);
+    if (!t) return err(message, "missing required argument: **user**\nusage: `,modnick @user <nick>`");
+    const nick = args.slice(2).join(" ");
+    if (!nick) return err(message, "missing required argument: **nick**\nusage: `,modnick @user <nick>`");
+    await t.setNickname(nick).catch(() => null);
+    return ok(message, `nickname set to **${nick}** for **${t.user.username}**`);
+  }
+  if (command === "roleaddall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,roleaddall @role`");
+    const members = await message.guild.members.fetch();
+    for (const m of members.values()) await m.roles.add(role).catch(() => {});
+    return ok(message, `added **${role.name}** to **${members.size}** members`);
+  }
+  if (command === "roleremoveall") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,roleremoveall @role`");
+    const members = await message.guild.members.fetch();
+    for (const m of members.values()) await m.roles.remove(role).catch(() => {});
+    return ok(message, `removed **${role.name}** from **${members.size}** members`);
+  }
+  if (command === "tempchannel") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const mins = parseInt(args[1]) || 60;
+    const name = args.slice(2).join(" ") || "temp-channel";
+    const ch = await message.guild.channels.create({ name, type: 0 }).catch(() => null);
+    if (!ch) return err(message, "Failed to create channel.");
+    setTimeout(() => ch.delete().catch(() => {}), mins * 60000);
+    return ok(message, `temp channel ${ch} created — deletes in **${mins} min**`);
+  }
+  if (command === "channelpos") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    const pos = parseInt(args[message.mentions.channels.first() ? 2 : 1]);
+    if (isNaN(pos)) return err(message, "missing required argument: **position**\nusage: `,channelpos [#channel] <position>`");
+    await ch.setPosition(pos).catch(() => null);
+    return ok(message, `moved **${ch.name}** to position **${pos}**`);
+  }
+  if (command === "rolepos") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    const pos = parseInt(args[2]);
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,rolepos @role <position>`");
+    if (isNaN(pos)) return err(message, "missing required argument: **position**\nusage: `,rolepos @role <position>`");
+    await role.setPosition(pos).catch(() => null);
+    return ok(message, `moved **${role.name}** to position **${pos}**`);
+  }
+  if (command === "unignore") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const t = message.mentions.users.first();
+    if (!t) return err(message, "missing required argument: **user**\nusage: `,unignore @user`");
+    ignoreList.get(message.guild.id)?.delete(t.id);
+    return ok(message, `unignored **${t.username}**`);
+  }
+  if (command === "staffrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,staffrole @role`");
+    getAntiNuke(message.guild.id).whitelist.add(role.id);
+    return ok(message, `**${role.name}** set as staff role`);
+  }
+  if (command === "modconfig") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const an = getAntiNuke(message.guild.id);
+    const ar = getAntiRaid(message.guild.id);
+    const fl = getFilter(message.guild.id);
+    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Mod Config", fields: [
+      { name: "AntiNuke", value: an.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
+      { name: "AntiRaid", value: ar.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
+      { name: "AutoMod", value: fl.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
+      { name: "AN Punishment", value: an.punishment, inline: true },
+      { name: "AR Action", value: ar.action, inline: true },
+      { name: "AR Threshold", value: `${ar.joinThreshold} joins`, inline: true }
+    ] }] });
+  }
+  if (command === "botperms") {
+    const perms = message.guild.members.me?.permissions.toArray() || [];
+    return message.reply({ embeds: [{ color: PINK, title: "🤖 My Permissions", description: perms.length > 0 ? perms.join(", ") : "None" }] });
+  }
+  if (command === "cleanup") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const msgs = await message.channel.messages.fetch({ limit: 100 });
+    const botMsgs = msgs.filter(m => m.author.id === client.user.id);
+    await message.channel.bulkDelete(botMsgs, true).catch(() => null);
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${botMsgs.size}** bot messages` }] });
+    setTimeout(() => m.delete().catch(() => {}), 3000);
+  }
+});
+
+
+// ===== TIMEZONE COMMANDS =====
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  // ,settz <timezone> or ,set tz <timezone>
+  if (command === "settz" || (command === "set" && args[1]?.toLowerCase() === "tz")) {
+    const tz = command === "settz" ? args[1] : args[2];
+    if (!tz) return err(message, "missing required argument: **timezone**\nusage: `,settz <timezone>` (e.g. `,settz America/New_York`, `,settz Europe/Rome`)");
+    // Validate timezone
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      return err(message, `**${tz}** is not a valid timezone\nExamples: \`America/New_York\`, \`Europe/London\`, \`Europe/Rome\`, \`Asia/Tokyo\`, \`UTC\``);
+    }
+    userTimezones.set(message.author.id, tz);
+    const now = new Date().toLocaleString("en-US", { timeZone: tz, weekday: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    return ok(message, `timezone set to **${tz}** — current time: **${now}**`);
+  }
+
+  // ,tz [user]
+  if (command === "tz") {
+    const target = message.mentions.users.first() || message.author;
+    const tz = userTimezones.get(target.id);
+    if (!tz) return info(message, `**${target.username}** hasn't set a timezone — use \`,settz <timezone>\` to set one`);
+    const now = new Date().toLocaleString("en-US", { timeZone: tz, weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, description: `🕐 **${now}**`, footer: { text: `Timezone: ${tz}` } }] });
+  }
+
+  // ,tzlist -- list all timezones set in this server
+  if (command === "tzlist") {
+    const members = await message.guild.members.fetch().catch(() => null);
+    if (!members) return err(message, "could not fetch members");
+    const list = [];
+    for (const [userId, tz] of userTimezones.entries()) {
+      if (!members.has(userId)) continue;
+      const member = members.get(userId);
+      const now = new Date().toLocaleString("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+      list.push({ name: member.user.username, tz, now });
+    }
+    if (list.length === 0) return info(message, "no members have set a timezone — use `,settz <timezone>`");
+    list.sort((a, b) => a.tz.localeCompare(b.tz));
+    const desc = list.map(l => `**${l.name}** — ${l.tz} (${l.now})`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: "🌍 Server Timezones", description: desc, footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+});
+
+// ===================================================
+// ===== ,separate COMMAND — 3-CATEGORY SPLITTER =====
+// ===================================================
+// Usage: ,separate
+// Opens an interactive panel to distribute all server channels into 2 or 3 categories.
+// Supports 200+ channels — creates overflow categories at every 50 channels automatically.
+
+const separateSessions = new Map(); // userId => { cat1, cat2, cat3, msgId, channelId }
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "separate") return;
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions — Administrator required.");
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  // Build the panel embed
+  function buildSepEmbed(s) {
+    const ready = s.cat1 && s.cat2;
+    return {
+      color: PINK,
+      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      description: [
+        "Distribute **all server channels** evenly across **2 or 3 categories**.",
+        "Each category supports up to 50 channels — overflow categories are created automatically.",
+        "",
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${s.cat1 ? `\`${s.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${s.cat2 ? `\`${s.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${s.cat3 ? `\`${s.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        "",
+        ready
+          ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
+          : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+      ].join("\n"),
+      footer: { text: `✨ sensational • white edition • ${message.guild.name}` },
+      timestamp: new Date(),
+    };
+  }
+
+  function buildSepRow(userId) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+      ),
+    ];
+  }
+
+  const session = { cat1: null, cat2: null, cat3: null, msgId: null, channelId: message.channel.id };
+  const sentMsg = await message.reply({
+    embeds: [buildSepEmbed(session)],
+    components: buildSepRow(message.author.id),
+  });
+  session.msgId = sentMsg.id;
+  separateSessions.set(message.author.id, session);
+});
+
+// -- Separate interaction handler --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.guild) return;
+  const id = interaction.customId;
+  if (!id?.startsWith("sep_")) return;
+
+  const [action, userId] = id.split(":");
+  if (interaction.user.id !== userId) {
+    return interaction.reply({ content: "<:steal:1521327958634135655> This panel belongs to someone else.", flags: 64 });
+  }
+
+  const s = separateSessions.get(userId);
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  function buildSepEmbed(sess) {
+    const ready = sess.cat1 && sess.cat2;
+    return {
+      color: PINK,
+      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      description: [
+        "Distribute **all server channels** evenly across **2 or 3 categories**.",
+        "Each category supports up to 50 channels — overflow categories are created automatically.",
+        "",
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        "",
+        ready
+          ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
+          : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+      ].join("\n"),
+      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
+      timestamp: new Date(),
+    };
+  }
+
+  function buildSepRow(uid) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+      ),
+    ];
+  }
+
+  // Cancel
+  if (action === "sep_cancel") {
+    separateSessions.delete(userId);
+    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Channel separation cancelled." }], components: [] });
+  }
+
+  // Open modal to set category names
+  if (action === "sep_setnames") {
+    const modal = new ModalBuilder().setCustomId(`sep_modal:${userId}`).setTitle("Set Category Names");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("sep_cat1").setLabel("Category 1 name (required)").setStyle(TextInputStyle.Short)
+          .setRequired(true).setPlaceholder("e.g. 🔥 Premium Channels").setValue(s?.cat1 || "")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("sep_cat2").setLabel("Category 2 name (required)").setStyle(TextInputStyle.Short)
+          .setRequired(true).setPlaceholder("e.g. 💎 Exclusive Content").setValue(s?.cat2 || "")
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("sep_cat3").setLabel("Category 3 name (optional — leave blank for 2)").setStyle(TextInputStyle.Short)
+          .setRequired(false).setPlaceholder("e.g. 🌟 Special Access").setValue(s?.cat3 || "")
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // Preview channel count
+  if (action === "sep_preview") {
+    await interaction.deferReply({ flags: 64 });
+    const allChans = interaction.guild.channels.cache.filter(c => c && c.type !== 4);
+    const numCats = s?.cat3 ? 3 : 2;
+    const perCat = Math.ceil(allChans.size / numCats);
+    const cats = [s?.cat1 || "Category 1", s?.cat2 || "Category 2"];
+    if (s?.cat3) cats.push(s.cat3);
+    const lines = cats.map((name, i) => {
+      const start = i * perCat;
+      const count = Math.min(perCat, allChans.size - start);
+      const overflow = count > 50 ? ` (+ ${Math.ceil(count / 50) - 1} overflow ${count > 50 ? "categories" : "category"})` : "";
+      return `**${name}** → ~${count} channels${overflow}`;
+    });
+    return interaction.editReply({
+      content: `<:RUSH_task:1521415237813665813> **Preview** — **${allChans.size}** total channels split into **${numCats}** groups:\n\n${lines.join("\n")}`,
+    });
+  }
+
+  // Run separation
+  if (action === "sep_run") {
+    if (!s?.cat1 || !s?.cat2) {
+      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set category names first using **✏ Set Category Names**.", flags: 64 });
+    }
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: "<:steal:1521327958634135655> Administrator permission required.", flags: 64 });
+    }
+
+    // Lock panel
+    await interaction.update({
+      embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> **Running channel separation — please wait...**" }],
+      components: [],
+    });
+    separateSessions.delete(userId);
+
+    const statusMsg = await interaction.channel.send({
+      embeds: [{ color: PINK, description: "<:019TXTWhite_Yes:1521327983279996999> Fetching channels..." }],
+    }).catch(() => null);
+
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      const guild = interaction.guild;
+      await guild.channels.fetch();
+
+      const allChans = [...guild.channels.cache
+        .filter(c => c && c.type !== 4)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .values()
+      ];
+
+      const numCats = s.cat3 ? 3 : 2;
+      await updateStatus(`Found **${allChans.length}** channels. Creating **${numCats}** categories...`);
+
+      async function getOrCreate(name) {
+        const ex = guild.channels.cache.find(c => c.type === 4 && c.name === name);
+        if (ex) return ex.id;
+        const nc = await guild.channels.create({ name, type: 4, reason: "[,separate]" });
+        await new Promise(r => setTimeout(r, 800));
+        return nc.id;
+      }
+
+      async function moveToTracker(ch, tracker) {
+        if (tracker.count >= 50) {
+          const overflowNum = Math.floor(tracker.count / 50) + 1;
+          const nc = await guild.channels.create({ name: `${tracker.baseName} ${overflowNum + 1}`, type: 4, reason: "[,separate overflow]" });
+          await new Promise(r => setTimeout(r, 800));
+          tracker.currentCatId = nc.id;
+          tracker.count = 0;
+        }
+        await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[,separate]" });
+        tracker.count++;
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      const slice1 = Math.ceil(allChans.length / numCats);
+      const slice2 = s.cat3 ? Math.ceil((allChans.length - slice1) / 2) : allChans.length - slice1;
+      const batch1 = allChans.slice(0, slice1);
+      const batch2 = allChans.slice(slice1, slice1 + slice2);
+      const batch3 = s.cat3 ? allChans.slice(slice1 + slice2) : [];
+
+      const t1 = { baseName: s.cat1, currentCatId: await getOrCreate(s.cat1), count: 0 };
+      const t2 = { baseName: s.cat2, currentCatId: await getOrCreate(s.cat2), count: 0 };
+      const t3 = s.cat3 ? { baseName: s.cat3, currentCatId: await getOrCreate(s.cat3), count: 0 } : null;
+
+      await updateStatus(`Moving **${batch1.length}** channels → **${s.cat1}**...`);
+      for (const ch of batch1) { try { await moveToTracker(ch, t1); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
+
+      await updateStatus(`Moving **${batch2.length}** channels → **${s.cat2}**...`);
+      for (const ch of batch2) { try { await moveToTracker(ch, t2); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
+
+      if (t3 && batch3.length > 0) {
+        await updateStatus(`Moving **${batch3.length}** channels → **${s.cat3}**...`);
+        for (const ch of batch3) { try { await moveToTracker(ch, t3); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
+      }
+
+      const fields = [
+        { name: s.cat1, value: `${t1.count} channels`, inline: true },
+        { name: s.cat2, value: `${t2.count} channels`, inline: true },
+      ];
+      if (t3) fields.push({ name: s.cat3, value: `${t3.count} channels`, inline: true });
+
+      await statusMsg?.edit({
+        embeds: [{
+          color: PINK,
+          title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separation Complete",
+          description: `**${guild.name}** — **${allChans.length}** channels distributed across **${numCats}** categories`,
+          fields,
+          footer: { text: "sensational • white edition" },
+          timestamp: new Date(),
+        }],
+      }).catch(() => {});
+
+    } catch (e) {
+      log(`[separate] error: ${e.message}`, "error");
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: \`${e.message}\`` }] }).catch(() => {});
+    }
+  }
+});
+
+// -- Separate modal submit handler --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  if (!interaction.customId.startsWith("sep_modal:")) return;
+
+  const userId = interaction.customId.split(":")[1];
+  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+
+  const cat1 = interaction.fields.getTextInputValue("sep_cat1").trim();
+  const cat2 = interaction.fields.getTextInputValue("sep_cat2").trim();
+  const cat3Raw = interaction.fields.getTextInputValue("sep_cat3").trim();
+  const cat3 = cat3Raw || null;
+
+  if (!cat1 || !cat2) return interaction.reply({ content: "<:steal:1521327958634135655> Category 1 and Category 2 are required.", flags: 64 });
+
+  const s = separateSessions.get(userId) || { cat1: null, cat2: null, cat3: null, msgId: null, channelId: interaction.channelId };
+  s.cat1 = cat1;
+  s.cat2 = cat2;
+  s.cat3 = cat3;
+  separateSessions.set(userId, s);
+
+  function buildSepEmbed(sess) {
+    const ready = sess.cat1 && sess.cat2;
+    return {
+      color: PINK,
+      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      description: [
+        "Distribute **all server channels** evenly across **2 or 3 categories**.",
+        "Each category supports up to 50 channels — overflow categories are created automatically.",
+        "",
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
+        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        "",
+        ready ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start" : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+      ].join("\n"),
+      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
+      timestamp: new Date(),
+    };
+  }
+
+  function buildSepRow(uid) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("<:RUSH_task:1521415237813665813> Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("<:RUSH_rocket:1521415262384160778> Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("<:steal:1521327958634135655> Cancel").setStyle(ButtonStyle.Danger),
+      ),
+    ];
+  }
+
+  // Try to update the original panel message
+  try {
+    const ch = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+    const msg = s.msgId && ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+    if (msg) await msg.edit({ embeds: [buildSepEmbed(s)], components: buildSepRow(userId) }).catch(() => {});
+  } catch (_) {}
+
+  return interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Category names saved:\n<:019TXTWhite_Yes:1521327983279996999> **${cat1}** | **${cat2}**${cat3 ? ` | **${cat3}**` : ""}`, flags: 64 });
+});
+
+// -- CONFIG (only OWNER_ID can modify) --------------
+const antiMinorsConfig = new Map();
+
+function getAMConfig(guildId) {
+  if (!antiMinorsConfig.has(guildId)) {
+    antiMinorsConfig.set(guildId, { logChannelId: null, modRoleId: null, channels: new Set(), requireAttach: new Set() });
+  }
+  const cfg = antiMinorsConfig.get(guildId);
+  // Ensure channels and requireAttach are always proper Sets (survives JSON reload)
+  if (!(cfg.channels instanceof Set)) cfg.channels = new Set(Array.isArray(cfg.channels) ? cfg.channels : []);
+  if (!(cfg.requireAttach instanceof Set)) cfg.requireAttach = new Set(Array.isArray(cfg.requireAttach) ? cfg.requireAttach : []);
+  return cfg;
+}
+
+// -- REGEX ENGINE (from old bot, extended) ----------─
+function checkForMinor(text) {
+  if (!text || text.trim().length < 1) return { flag: false };
+
+  // Step 1: normalize emoji numbers
+  const emojiMap = {
+    '0️⃣':'0','1️⃣':'1','2️⃣':'2','3️⃣':'3','4️⃣':'4',
+    '5️⃣':'5','6️⃣':'6','7️⃣':'7','8️⃣':'8','9️⃣':'9',
+    '🔢':'','#️⃣':'',
+  };
+  let t = text;
+  for (const [e, n] of Object.entries(emojiMap)) t = t.replace(new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'), n);
+
+  // Step 1b: remove Discord mentions before any processing (they contain large IDs)
+  t = t.replace(/<[@#][!&]?\d+>/g, '');   // remove <#channelId>, <@userId>, <@&roleId>
+  t = t.replace(/https?:\/\/\S+/g, '');  // remove URLs
+  t = t.replace(/\b1[,.]\d{2}\s*m\b/gi, ''); // European heights 1,78m
+  t = t.replace(/\b\d+[,.]\d+\s*m\b/gi, ''); // decimal meters
+
+  // Step 2: normalize leet/special bypass chars (digits only, don't touch letters)
+  t = t.replace(/[|!¡](\d)/g, '$1')   // !6 → 6
+       .replace(/(\d)[|!¡]/g, '$1');   // 6! → 6
+  // Note: intentionally NOT replacing o->0 as it breaks "yo", "top", "bottom" etc
+
+  const lower = t.toLowerCase();
+
+  // Step 3: check reversed ages (61 m reversed = 16m)
+  const reversedPatterns = [
+    /(\d{2,3})\s*(reversed?|flip(ped)?|swap(ped)?)/i,
+    /(reversed?|flip(ped)?|swap(ped)?)\s*(\d{2,3})/i,
+    /(\d{2,3})\s*[🔁🔄↩️🔃⤴️⤵️⬆️⬇️↕️]/,
+    /[🔁🔄↩️🔃⤴️⤵️⬆️⬇️↕️]\s*(\d{2,3})/,
+  ];
+  for (const p of reversedPatterns) {
+    const m = t.match(p);
+    if (m) {
+      const raw = (m[1] || m[3] || '').replace(/\D/g,'');
+      if (!raw) continue;
+      const original = parseInt(raw);
+      // If already a valid adult age (18-70), NEVER treat as reversed bypass
+      if (original >= 18 && original <= 70) continue;
+      const reversed = parseInt(raw.split('').reverse().join('').replace(/^0+/,'') || '0');
+      if (reversed < 18) return { flag: true, reason: `Reversed age bypass: ${raw} → ${reversed} (minor)`, confidence: 'high' };
+      return { flag: true, reason: `Age bypass attempt detected (reversed: ${raw} → ${reversed})`, confidence: 'high' };
+    }
+  }
+
+  // Step 4: suspiciously high ages (bypass with 99, 100, etc.)
+  // Exclude: weights (lbs/kg/pounds), heights (cm after number), years (2014 etc)
+  const highAgeRegex = /\b([7-9]\d|1\d{2,})\s*[mfMF]?\b/g;
+  let highMatch;
+  while ((highMatch = highAgeRegex.exec(t)) !== null) {
+    const age = parseInt(highMatch[1]);
+    if (age < 70) continue;
+    const before = t.substring(Math.max(0, highMatch.index - 15), highMatch.index).toLowerCase();
+    const after = t.substring(highMatch.index + highMatch[0].length, highMatch.index + highMatch[0].length + 15).toLowerCase();
+    // Skip if it's a weight (lbs, kg, pounds, lb)
+    if (/\d$/.test(before) || /^\s*(lbs?|kg|pounds?|lb)/.test(after) || /(lbs?|kg|pounds?|lb)\s*$/.test(before)) continue;
+    // Skip if it's a height in cm
+    if (/^\s*cm/.test(after)) continue;
+    // Skip years (4 digits)
+    if (highMatch[1].length === 4) continue;
+    // Skip 3-digit body stats (100-250 range = weight/height)
+    if (age >= 100 && age <= 250) continue;
+    // Skip Discord snowflake IDs (15+ digit numbers)
+    if (highMatch[1].length >= 15) continue;
+    // Skip if preceded by # : , . (discriminator, height, channel ref)
+    const beforeHigh = t.substring(Math.max(0, highMatch.index - 3), highMatch.index);
+    if (beforeHigh.includes('#') || beforeHigh.includes(':') || 
+        beforeHigh.includes(',') || beforeHigh.includes('.')) continue;
+    // Skip 2-digit numbers 70-99 if they appear right after a number+comma (height notation)
+    if (/\d[,.]\s*$/.test(beforeHigh)) continue;
+    return { flag: true, is_minor: false, reason: `Suspiciously high age: ${age} (possible bypass)`, confidence: 'medium' };
+  }
+
+  // Step 5: direct minor age patterns (10–17) -- exact from original script
+  const minorPatterns = [
+    /\b(1[0-7])\s*[mfMF]\b/,
+    /\b[mfMF]\s*(1[0-7])(?!\s*(cm|inch(es)?|in|"|'))\b/,
+    /\b(1[0-7])(?!\s*(cm|inch(es)?|in|"|'|\.\d))\s*(yo|year|yr|male|female|boy|girl|enby|nb|top|bottom|vers|bttm|btm|skinny|chubby|twink|bear)\b/i,
+    /\baged?\s*(1[0-7])\b/i,
+    /\b(1[0-7])\s*aged?\b/i,
+    /\bi'?m\s*(1[0-7])\b/i,
+    /\bturned\s*(1[0-7])\b/i,
+    /\b(1[0-7])\s*today\b/i,
+    /\bunderage\b.*\b(1[0-7])\b/i,
+    /\b(1[0-7])\b.*\bunderage\b/i,
+    /\b(1[0-7])\s*m(?!\s*(cm|inch(es)?))\b/i,
+    /\b(1[0-7])\s*[mfMF]\s+\w+/i,
+    /[mfMF]\s*(1[0-7])\s+\w+/i,
+  ];
+
+  // Check with hasAdultAge logic from original script
+  const adultPreCheck = [
+    /\b(1[8-9]|[2-6]\d)\s*[mfMF]\b/,
+    /\b[mfMF]\s*(1[8-9]|[2-6]\d)\b/,
+    /\b(1[8-9]|[2-6]\d)\s*(yo|year|yr|y\.o|y\/o|male|female|man|woman|boy|girl|lf|lm|top|bottom|vers|masc|femme|here|looking|latino|latina|black|white|asian|mixed|bi|gay|str8|straight|curious|sub|dom|twink|bear|masc|femme)\b/i,
+    /\bi'?m\s*(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*years?\s*old\b/i,
+    /\bturned\s*(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*today\b/i,
+    // standalone number at start of message
+    /^(1[8-9]|[2-9]\d)\s+/,
+    /\bhii?\s+(1[8-9]|[2-9]\d)\b/i,
+    /\bhey\s+(1[8-9]|[2-9]\d)\b/i,
+    /\bim\s+(1[8-9]|[2-9]\d)\b/i,
+    /\b(male|female|boy|girl|man|woman|guy|dude)\s+(1[8-9]|[2-6]\d)\b/i,
+    /\b(1[8-9]|[2-6]\d)\s*[😊😁😉🔥💕<:RUSH_heart:1521415287344468029>🌸<a:014White_Spark2:1491251181840891996>💜🖤]$/,
+  ];
+  let hasAdultAge = false;
+  for (const p of adultPreCheck) {
+    const match = t.match(p);
+    if (match) {
+      // Try all capture groups to find the age (some patterns have word before age)
+      const ageStr = [match[1], match[2], match[3]].find(g => g && /^\d+$/.test(g));
+      const age = parseInt(ageStr || '0');
+      if (age >= 18 && age <= 70) { hasAdultAge = true; break; }
+    }
+  }
+
+  if (hasAdultAge) {
+    // With an adult age present, only flag strict minor patterns
+    const strictMinor = [
+      /\b(1[0-7])\s*[mfMF]\b/,
+      /\b[mfMF]\s*(1[0-7])\b/,
+      /\bi'?m\s*(1[0-7])\b/i,
+    ];
+    for (const p of strictMinor) {
+      const m = t.match(p);
+      if (m) {
+        const age = parseInt(m[1] || m[2]);
+        return { flag: true, is_minor: true, reason: `Minor detected: ${age} (despite adult age)`, confidence: 'high' };
+      }
+    }
+  } else {
+    // No adult age -- check standalone minor patterns first
+    const standaloneMinor = [
+      /^\s*(1[0-7])\s*$/,
+      // standalone at start, but not followed by measurement words
+      /^\s*(1[0-7])\s+(?!inch(es)?|cm|in\b|'|")/,
+      // standalone at end, but not preceded by measurement context
+      /(?<!inch(es)?\s|cm\s|\d\.\d)\s+(1[0-7])\s*$/,
+    ];
+    for (const p of standaloneMinor) {
+      const m = t.match(p);
+      if (m) return { flag: true, is_minor: true, reason: `Minor detected: ${parseInt(m[1])} years old`, confidence: 'high' };
+    }
+    // Then check full minor patterns with afterMatch exclusion
+    for (const p of minorPatterns) {
+      const m = t.match(p);
+      if (m) {
+        const age = parseInt(m[1] || m[2]);
+        const fullMatch = m[0];
+        const afterMatch = t.substring(m.index + fullMatch.length, m.index + fullMatch.length + 10);
+        if (!/^\s*(cm|inch(es)?|in|"|')/.test(afterMatch) && !isNaN(age) && age < 18) {
+          return { flag: true, is_minor: true, reason: `Minor detected: ${age} years old`, confidence: 'high' };
+        }
+      }
+    }
+  }
+
+  // Step 6: banned bypass keywords
+  const bannedKeywords = [
+    /\breversed?\b/i, /\bswap(ped)?\b/i, /\bflip(ped)?\b/i,
+    /check\s+(my\s+)?bio/i, /in\s+(my\s+)?bio/i, /see\s+(my\s+)?bio/i,
+    /selling\s+content/i, /buy\s+content/i, /dm\s+for\s+content/i,
+    /\bunderage\b/i,
+    /\bminor\b/i,
+    /\bstill\s+in\s+(high\s*school|hs|school)\b/i,
+  ];
+  for (const p of bannedKeywords) {
+    if (p.test(lower)) return { flag: true, reason: `Banned keyword: "${t.match(p)?.[0]}"`, confidence: 'high' };
+  }
+
+  // Step 7: no valid 18+ age mentioned -- silent delete
+  if (!hasAdultAge) return { flag: true, noAge: true, reason: 'No valid 18+ age mentioned', confidence: 'low' };
+
+  return { flag: false };
+}
+
+// -- ANTI-MINORS MESSAGE HANDLER --------------------
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const cfg = getAMConfig(message.guild.id);
+
+  // Check require-attachment channels
+  if (cfg.requireAttach.has(message.channel.id)) {
+    const hasMedia = message.attachments.size > 0 &&
+      [...message.attachments.values()].some(a => a.contentType?.startsWith('image/') || a.contentType?.startsWith('video/'));
+    if (!hasMedia && message.content) {
+      await message.delete().catch(() => {});
+      return; // silently delete text-only messages
+    }
+  }
+
+  // Check monitored channels
+  if (!cfg.channels.has(message.channel.id)) return;
+  if (!message.content?.trim()) return;
+
+  const result = checkForMinor(message.content);
+  if (!result.flag) return;
+
+  // Delete the message
+  await message.delete().catch(() => {});
+
+  // If just no age mentioned -- silent delete, no log
+  if (result.noAge) return;
+
+  // Minor detected -- send to log channel
+  const logCh = cfg.logChannelId ? message.guild.channels.cache.get(cfg.logChannelId) : null;
+  if (!logCh) return;
+
+  const modPing = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : '';
+
+  const embed = {
+    color: PINK,
+    author: { name: message.author.username, icon_url: message.author.displayAvatarURL() },
+    title: "<:RUSH_warning:1521415214799654985> Minor Detected",
+    description: `**Message:**\n\`\`\`${message.content.substring(0, 800)}\`\`\``,
+    fields: [
+      { name: "Reason", value: result.reason, inline: false },
+      { name: "Confidence", value: result.confidence === 'high' ? '<:steal:1521327958634135655> High' : '🟡 Medium', inline: true },
+      { name: "User ID", value: `\`${message.author.id}\``, inline: true },
+      { name: "Channel", value: `<#${message.channel.id}>`, inline: true },
+    ],
+    footer: { text: message.guild.name },
+    timestamp: new Date(),
+  };
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`am_ban_${message.author.id}`).setLabel("ban").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`am_ignore_${message.author.id}`).setLabel("ignore").setStyle(ButtonStyle.Secondary)
+  );
+
+  await logCh.send({ content: modPing || undefined, embeds: [embed], components: [row], allowedMentions: { roles: cfg.modRoleId ? [cfg.modRoleId] : [] } }).catch(() => {});
+});
+
+// -- ANTI-MINORS BUTTON HANDLER --------------------─
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("am_")) return;
+
+  const [, action, userId] = interaction.customId.split("_");
+  const guild = interaction.guild;
+  const mod = interaction.user;
+
+  try {
+    if (action === "ban") {
+      // Try to ban -- works even if user already left (hackban)
+      const banResult = await guild.members.ban(userId, {
+        reason: `[Anti-Minors] underage — banned by ${mod.username}`,
+        deleteMessageSeconds: 604800 // delete 7 days of messages
+      }).catch(() => null);
+
+      const updatedEmbed = {
+        ...interaction.message.embeds[0].data,
+        color: PINK,
+        footer: { text: `banned by ${mod.username} • ${new Date().toLocaleString()}` }
+      };
+
+      if (banResult) {
+        // Track in modstats
+        const guildId = guild.id;
+        const modId = mod.id;
+        if (!banStats[guildId]) banStats[guildId] = {};
+        if (!banStats[guildId][modId]) {
+          banStats[guildId][modId] = { username: mod.username, actions: 0, bans: 0, ignores: 0 };
+        }
+        banStats[guildId][modId].username = mod.username;
+        banStats[guildId][modId].actions += 1;
+        banStats[guildId][modId].bans += 1;
+    saveModStats();
+
+        // Add case to mod cases
+        addCase(guildId, "ban", userId, modId, "[Anti-Minors] underage");
+
+        await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+      } else {
+        // Ban failed -- user may already be banned
+        const failEmbed = {
+          ...interaction.message.embeds[0].data,
+          color: PINK,
+          footer: { text: `ban failed (already banned or left?) • attempted by ${mod.username}` }
+        };
+        await interaction.update({ embeds: [failEmbed], components: [] }).catch(() => {});
+      }
+
+    } else if (action === "ignore") {
+      // Track ignore in modstats
+      const guildId = guild.id;
+      const modId = mod.id;
+      if (!banStats[guildId]) banStats[guildId] = {};
+      if (!banStats[guildId][modId]) {
+        banStats[guildId][modId] = { username: mod.username, actions: 0, bans: 0, ignores: 0 };
+      }
+      banStats[guildId][modId].username = mod.username;
+      banStats[guildId][modId].actions += 1;
+      banStats[guildId][modId].ignores += 1;
+
+      const updatedEmbed = {
+        ...interaction.message.embeds[0].data,
+        color: 0x808080,
+        footer: { text: `ignored by ${mod.username} • ${new Date().toLocaleString()}` }
+      };
+      await interaction.update({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+    }
+  } catch (e) {
+    interaction.update({ components: [] }).catch(() => {});
+  }
+});
+
+// -- PING ON JOIN BUTTON HANDLERS --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  const id = interaction.customId;
+  if (!id.startsWith("poj_")) return;
+
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild))
+    return interaction.reply({ content: "<:steal:1521327958634135655> Missing permissions.", flags: 64 });
+
+  const [action, guildId] = id.split(":");
+  if (guildId !== interaction.guild.id) return;
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+
+  function pojEmbed(cfg) {
+    const channels = (cfg?.channels ?? []).map(chId => `<#${chId}>`).join(", ") || "*None*";
+    return {
+      color: 0x2B2D31,
+      title: "Ping on join",
+      description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.",
+      fields: [
+        { name: "Status",   value: cfg?.enabled ? "Enabled" : "Disabled", inline: false },
+        { name: "Channels", value: channels,                               inline: false },
+      ],
+    };
+  }
+
+  function pojRows(gId) {
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${gId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${gId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${gId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )];
+  }
+
+  let cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  pingOnJoinConfig.set(guildId, cfg);
+
+  // Toggle on/off
+  if (action === "poj_toggle") {
+    cfg.enabled = !cfg.enabled;
+    saveAllConfigs();
+    return interaction.update({ embeds: [pojEmbed(cfg)], components: pojRows(guildId) });
+  }
+
+  // Add channel — show modal with channel ID or mention input
+  if (action === "poj_add") {
+    const modal = new ModalBuilder().setCustomId(`poj_add_modal:${guildId}`).setTitle("Add Channel");
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId("poj_channel_input")
+        .setLabel("Channel ID or #mention")
+        .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder("123456789 or paste channel ID")
+    ));
+    return interaction.showModal(modal);
+  }
+
+  // Remove channel — show select if channels exist
+  if (action === "poj_remove") {
+    if (!cfg.channels.length) return interaction.reply({ content: "<:steal:1521327958634135655> No channels configured.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const options = cfg.channels.map(chId => {
+      const ch = interaction.guild.channels.cache.get(chId);
+      return { label: ch ? `#${ch.name}` : chId, value: chId };
+    });
+    return interaction.reply({
+      content: "Select a channel to remove:",
+      components: [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`poj_remove_pick:${guildId}`).setPlaceholder("Choose channel...").addOptions(options)
+      )],
+      flags: 64,
+    });
+  }
+});
+
+// poj_add modal submit
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  if (!interaction.customId.startsWith("poj_add_modal:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const input   = interaction.fields.getTextInputValue("poj_channel_input").trim();
+  // Accept raw ID or <#ID> mention
+  const chId    = input.replace(/[<#>]/g, "");
+  const ch      = interaction.guild.channels.cache.get(chId);
+  if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${chId}\` not found in this server.`, flags: 64 });
+
+  const cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
+  if (cfg.channels.includes(chId)) return interaction.reply({ content: `<:steal:1521327958634135655> <#${chId}> is already added.`, flags: 64 });
+  cfg.channels.push(chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+  function pojEmbed2(c) {
+    return { color: 0x2B2D31, title: "Ping on join", description: "The bot will ghost ping users in these channels once they join, and delete the ping immediately.", fields: [{ name: "Status", value: c?.enabled ? "Enabled" : "Disabled", inline: false }, { name: "Channels", value: (c?.channels ?? []).map(id => `<#${id}>`).join(", ") || "*None*", inline: false }] };
+  }
+  return interaction.update({
+    embeds: [pojEmbed2(cfg)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`poj_toggle:${guildId}`).setLabel("Toggle").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`poj_add:${guildId}`).setLabel("Add Channel").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`poj_remove:${guildId}`).setLabel("Remove Channel").setStyle(ButtonStyle.Danger),
+    )],
+  });
+});
+
+// poj_remove select
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (!interaction.customId.startsWith("poj_remove_pick:")) return;
+
+  const guildId = interaction.customId.split(":")[1];
+  const chId    = interaction.values[0];
+  const cfg     = pingOnJoinConfig.get(guildId);
+  if (!cfg) return interaction.reply({ content: "<:steal:1521327958634135655> Config not found.", flags: 64 });
+  cfg.channels   = cfg.channels.filter(id => id !== chId);
+  pingOnJoinConfig.set(guildId, cfg);
+  saveAllConfigs();
+
+  const ch = interaction.guild.channels.cache.get(chId);
+  return interaction.update({
+    content: `<:019TXTWhite_Yes:1521327983279996999> Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
+    components: [],
+  });
+});
+
+// -- ANTI-MINORS COMMANDS (OWNER ONLY) ------------─
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  if (!isOwner(message.author.id)) return; // only owner
+
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  const cfg = getAMConfig(message.guild.id);
+
+  // ,addc #channel -- add channel to monitor
+  if (command === "addc") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,addc #channel`");
+    cfg.channels.add(ch.id);
+    saveAllConfigs();
+    return ok(message, `now monitoring **#${ch.name}** for minors`);
+  }
+
+  // ,delc #channel -- remove channel from monitor
+  if (command === "delc") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,delc #channel`");
+    cfg.channels.delete(ch.id);
+    saveAllConfigs();
+    return ok(message, `stopped monitoring **#${ch.name}**`);
+  }
+
+  // ,list -- show monitored channels
+  if (command === "list" || command === "amlist") {
+    const monitored = [...cfg.channels].map(id => `<#${id}>`).join(", ") || "none";
+    const reqAttach = [...cfg.requireAttach].map(id => `<#${id}>`).join(", ") || "none";
+    const logCh = cfg.logChannelId ? `<#${cfg.logChannelId}>` : "not set";
+    const modRole = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "not set";
+    return message.reply({ embeds: [{ color: PINK, title: "<:18plus:1521415320538054748> Anti-Minors Config", fields: [
+      { name: "Monitored Channels", value: monitored, inline: false },
+      { name: "Require Attachment", value: reqAttach, inline: false },
+      { name: "Log Channel", value: logCh, inline: true },
+      { name: "Mod Role", value: modRole, inline: true },
+    ], footer: { text: message.guild.name }, timestamp: new Date() }] });
+  }
+
+  // ,reqattach #channel -- require attachments
+  if (command === "reqattach") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,reqattach #channel`");
+    cfg.requireAttach.add(ch.id);
+    saveAllConfigs();
+    return ok(message, `**#${ch.name}** now requires attachments — text-only messages will be deleted`);
+  }
+
+  // ,unreqattach #channel -- remove attachment requirement
+  if (command === "unreqattach") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,unreqattach #channel`");
+    cfg.requireAttach.delete(ch.id);
+    saveAllConfigs();
+    return ok(message, `**#${ch.name}** no longer requires attachments`);
+  }
+
+  // ,modr @role -- set mod role to ping
+  if (command === "modr") {
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,modr @role`");
+    cfg.modRoleId = role.id;
+    saveAllConfigs();
+    return ok(message, `mod role set to **${role.name}** — will be pinged on minor detections`);
+  }
+
+  // ,logs #channel -- set log channel
+  if (command === "logs") {
+    const ch = message.mentions.channels.first() || message.guild.channels.cache.get(args[1]);
+    if (!ch) return err(message, "missing required argument: **channel**\nusage: `,logs #channel`");
+    cfg.logChannelId = ch.id;
+    saveAllConfigs();
+    return ok(message, `minor warnings will be sent to **#${ch.name}**`);
+  }
+});
+
+
+// ===================================================
+// ===== UNIFIED CONFIG PANEL (OWNER ONLY) ===========
+// ===================================================
+//
+//  ,setup -> Apre il Config Panel interattivo Discord
+//
+//  Sostituisce completamente:
+//    ,cloneperks          -> Full server clone
+//    ,cloneperks channel  -> Clone singolo canale
+//    ,clonecategoryperks  -> Clone categoria + video
+//    ,setuppaidperks      -> Setup paid perks complete
+//    ,hidepaidperks       -> Nascondi canali
+//    ,sortchannels        -> Ordina canali in categories
+//
+// ===================================================
+
+// Session storage (userId -> session config)
+// (setupSessions declared at top of file)
+
+function defaultSession() {
+  return {
+    operation:        "cloneperks",
+    sourceId:         "",
+    targetId:         "",
+    extraParam:       "",
+    msgId:            null,
+    channelId:        null,
+    // Selected channels/categoriess
+    selectedSrcIds:   [],   // specific source channel/category IDs (empty = all)
+    selectedTgtCatId: "",   // target category ID to put clones into (empty = root)
+    selectedSrcName:  "",   // display name for selected source
+    selectedTgtName:  "",   // display name for selected target category
+    // Clone options
+    cloneRoles:       true,
+    cloneCategories:  true,
+    cloneChannels:    true,
+    clonePermissions: true,
+    cloneMessages:    false,
+    skipExisting:     true,
+    maintainOrder:    true,
+    // Video rename
+    videoRenameMode:    "prefix",
+    videoPattern:       "SENSATIONAL",
+    videoPadZeros:      2,
+    videoCounterStart:  1,
+    videoExtension:     "keep",
+    exclusiveName:      "exclusive",
+  };
+}
+
+// -- Build panel embed — clean, help-style design ----------------------------
+function buildPanelEmbed(s) {
+  const pad = n => String(n).padStart(s.videoPadZeros, "0");
+  const ext = s.videoExtension === "keep" ? ".mp4" : `.${s.videoExtension}`;
+  const p1  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart)}${ext}`
+            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+            :                                     `${pad(s.videoCounterStart)}_${s.videoPattern}${ext}`;
+  const p2  = s.videoRenameMode === "prefix"   ? `${s.videoPattern}${pad(s.videoCounterStart+1)}${ext}`
+            : s.videoRenameMode === "numbered"  ? `${pad(s.videoCounterStart+1)}${ext}`
+            : s.videoRenameMode === "replace"   ? `${s.videoPattern}${ext}`
+            :                                     `${pad(s.videoCounterStart+1)}_${s.videoPattern}${ext}`;
+
+  const srcOk = s.sourceId.length > 5;
+  const dstOk = s.targetId.length > 5;
+  const ready = srcOk && dstOk;
+
+  // ── Operation metadata ────────────────────────────────────────────────────
+  const opLabels = {
+    cloneperks:         { e: "<:RUSH_globe:1521415284496273489>", n: "Full Server Clone",    hint: "Copies roles, categories, channels + videos from one server to another." },
+    cloneperks_channel: { e: "<:RUSH_comment:1491884212297531572>", n: "Single Channel Clone", hint: "Copies all media from one specific channel to another." },
+    clonecategoryperks: { e: "<:RUSH_folder:1521415227495940096>", n: "Category + Videos",    hint: "Clones a whole category and distributes its videos." },
+    setuppaidperks:     { e: "<:RUSH_maintenance:1521415300254404648>", n: "Paid Perks Setup",     hint: "Full premium setup — clone everything + distribute videos into exclusive channels." },
+    hidepaidperks:      { e: "🙈", n: "Hide Channels",        hint: "Removes @everyone ViewChannel permission on a random set of channels." },
+    sortchannels:       { e: "🔀", n: "Sort Channels",        hint: "Distributes all channels into 2–3 named categories evenly." },
+  };
+  const op = opLabels[s.operation] ?? { e: "<:RUSH_gear:1521415230184489061>", n: s.operation, hint: "Custom operation." };
+
+  // ── Toggle row ────────────────────────────────────────────────────────────
+  const t = (v, l) => v ? `<:019TXTWhite_Yes:1521327983279996999> ${l}` : `<:steal:1521327958634135655> ${l}`;
+  const toggleLine = [
+    t(s.cloneRoles,       "Roles"),
+    t(s.cloneCategories,  "Cats"),
+    t(s.cloneChannels,    "Channels"),
+    t(s.clonePermissions, "Perms"),
+    t(s.cloneMessages,    "Messages"),
+    t(s.skipExisting,     "Skip dup"),
+  ].join("  ·  ");
+
+  // ── Source / Target ───────────────────────────────────────────────────────
+  const srcLine = srcOk
+    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.sourceId}\`` + (s.selectedSrcName ? `  ·  **${s.selectedSrcName}**` : "")
+    : "<:RUSH_warning:1521415214799654985> *Not set — press <:RUSH_folder:1521415227495940096> Source below*";
+  const tgtLine = dstOk
+    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.targetId}\`` + (s.selectedTgtName ? `  ·  **${s.selectedTgtName}**` : "")
+    : "<:RUSH_warning:1521415214799654985> *Not set — press <:RUSH_folder:1521415227495940096> Target below*";
+
+  // ── Extra param ───────────────────────────────────────────────────────────
+  const extraNeeded = ["clonecategoryperks", "sortchannels"].includes(s.operation);
+  const extraLine   = s.extraParam
+    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.extraParam}\``
+    : extraNeeded
+      ? "<:RUSH_warning:1521415214799654985> *Required for this operation — press ✏ Extra*"
+      : "*(optional — press ✏ Extra)*";
+
+  // ── Status callout ────────────────────────────────────────────────────────
+  const statusLine = ready
+    ? "> <:019TXTWhite_Yes:1521327983279996999> **All set!** Press **<:RUSH_rocket:1521415262384160778> Launch** to run."
+    : "> <:RUSH_warning:1521415214799654985> **Not ready** — configure Source and Target, then press **<:RUSH_rocket:1521415262384160778> Launch**.";
+
+  return {
+    color: PINK,
+    title: "<:019TXTWhite_Yes:1521327983279996999>  Setup Panel  ·  owner only",
+    description: [
+      "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **<:RUSH_rocket:1521415262384160778> Launch**.",
+      "",
+      statusLine,
+    ].join("\n"),
+    fields: [
+      { name: `${op.e}  Operation`,  value: `**${op.n}**\n*${op.hint}*`, inline: false },
+      { name: "<:RUSH_comment:1491884212297531572>  Source",          value: srcLine,                       inline: true  },
+      { name: "<:RUSH_comment:1491884212297531572>  Target",          value: tgtLine,                       inline: true  },
+      { name: "<:RUSH_gear:1521415230184489061>  Clone options",   value: toggleLine,                    inline: false },
+      { name: "<:movieslotbluedns:1414214240218120295>  Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
+      { name: "✏️  Extra param",     value: extraLine,                     inline: false },
+    ],
+    footer: { text: "sensational  ·  setup panel  ·  all changes apply instantly" },
+    timestamp: new Date(),
+  };
+}
+
+// -- Build panel components (4 rows) ------------------------------------------
+function buildPanelComponents(s) {
+  const bs = v => v ? ButtonStyle.Success : ButtonStyle.Secondary;
+
+  // ── ROW 1: Operation selector ─────────────────────────────────────────────
+  const row1 = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("sp_op")
+      .setPlaceholder("<:RUSH_gear:1521415230184489061>  Step 1 — Choose an operation...")
+      .addOptions([
+        { label: "Full Server Clone",   value: "cloneperks",         emoji: "<:RUSH_globe:1521415284496273489>",
+          description: "Copies roles, categories, channels + all videos",    default: s.operation === "cloneperks"         },
+        { label: "Single Channel Clone", value: "cloneperks_channel", emoji: "<:RUSH_comment:1491884212297531572>",
+          description: "Copies media from one channel into another",         default: s.operation === "cloneperks_channel" },
+        { label: "Category + Videos",   value: "clonecategoryperks", emoji: "<:RUSH_folder:1521415227495940096>",
+          description: "Clones a category and distributes its videos",       default: s.operation === "clonecategoryperks" },
+        { label: "Paid Perks Setup",     value: "setuppaidperks",     emoji: "<:RUSH_maintenance:1521415300254404648>",
+          description: "Premium setup — clone everything + exclusive chans", default: s.operation === "setuppaidperks"     },
+        { label: "Hide Channels",        value: "hidepaidperks",      emoji: "🙈",
+          description: "Removes @everyone view access from random channels", default: s.operation === "hidepaidperks"      },
+        { label: "Sort Channels",        value: "sortchannels",       emoji: "🔀",
+          description: "Distributes channels into 2–3 categories evenly",    default: s.operation === "sortchannels"       },
+      ])
+  );
+
+  // ── ROW 2: What to clone — toggles ───────────────────────────────────────
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_t_roles").setLabel(`Roles ${s.cloneRoles      ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneRoles)),
+    new ButtonBuilder().setCustomId("sp_t_cats" ).setLabel(`Cats  ${s.cloneCategories ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneCategories)),
+    new ButtonBuilder().setCustomId("sp_t_chans").setLabel(`Chans ${s.cloneChannels   ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneChannels)),
+    new ButtonBuilder().setCustomId("sp_t_perms").setLabel(`Perms ${s.clonePermissions? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.clonePermissions)),
+    new ButtonBuilder().setCustomId("sp_t_msgs" ).setLabel(`Msgs  ${s.cloneMessages   ? "<:019TXTWhite_Yes:1521327983279996999>":"<:steal:1521327958634135655>"}`).setStyle(bs(s.cloneMessages)),
+  );
+
+  // ── ROW 3: Video rename mode ──────────────────────────────────────────────
+  const row3 = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("sp_vid_mode")
+      .setPlaceholder("<:movieslotbluedns:1414214240218120295>  Step 2 — Choose how to name the videos...")
+      .addOptions([
+        { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   emoji: "🔤",
+          description: "Pattern followed by an incrementing number",  default: s.videoRenameMode === "prefix"   },
+        { label: "Numbers only  (e.g. 01.mp4)",         value: "numbered", emoji: "🔢",
+          description: "Clean sequential numbering, no prefix",       default: s.videoRenameMode === "numbered" },
+        { label: "Fixed name  (e.g. CLIP.mp4 every)",   value: "replace",  emoji: "<:RUSH_task:1521415237813665813>",
+          description: "Every file gets the exact same name",         default: s.videoRenameMode === "replace"  },
+        { label: "Number + Suffix  (e.g. 01_CLIP.mp4)", value: "suffix",   emoji: "🔚",
+          description: "Number first, then your pattern",             default: s.videoRenameMode === "suffix"   },
+      ])
+  );
+
+  // ── ROW 4: Source / Target pickers + extra param ──────────────────────────
+  const browseConfig = {
+    cloneperks:         { srcLabel: "<:RUSH_comment:1491884212297531572> Source Server",   tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
+    cloneperks_channel: { srcLabel: "<:RUSH_comment:1491884212297531572> Source Channel",  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Channel"  },
+    clonecategoryperks: { srcLabel: "<:RUSH_comment:1491884212297531572> Source Category", tgtLabel: "<:RUSH_comment:1491884212297531572> Target Category" },
+    setuppaidperks:     { srcLabel: "<:RUSH_comment:1491884212297531572> Source Server",   tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
+    hidepaidperks:      { srcLabel: null,                  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
+    sortchannels:       { srcLabel: null,                  tgtLabel: "<:RUSH_comment:1491884212297531572> Target Server"   },
+  };
+  const bc = browseConfig[s.operation] ?? browseConfig.cloneperks;
+  const browseButtons = [];
+  if (bc.srcLabel) browseButtons.push(
+    new ButtonBuilder().setCustomId("sp_browse_src").setLabel(bc.srcLabel).setStyle(ButtonStyle.Primary)
+  );
+  browseButtons.push(
+    new ButtonBuilder().setCustomId("sp_browse_tgt").setLabel(bc.tgtLabel).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_extra"     ).setLabel("✏ Extra param" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_clr_sel"   ).setLabel("<:RUSH_trash_can:1521415241190215721> Clear"       ).setStyle(ButtonStyle.Secondary),
+  );
+  const row4 = new ActionRowBuilder().addComponents(...browseButtons);
+
+  // ── ROW 5: Action bar ─────────────────────────────────────────────────────
+  const row5 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("sp_ids"   ).setLabel("<:RUSH_task:1521415237813665813> Manual IDs" ).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("sp_video" ).setLabel("<:movieslotbluedns:1414214240218120295> Video opts" ).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("sp_launch").setLabel("<:RUSH_rocket:1521415262384160778> Launch"     ).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("sp_cancel").setLabel("<:steal:1521327958634135655> Cancel"      ).setStyle(ButtonStyle.Danger),
+  );
+
+  return [row1, row2, row3, row4, row5];
+}
+
+// -- Interaction handler for the Config Panel ----------------------------------
+client.on("interactionCreate", async (interaction) => {
+  try {
+  // Only owner can use the setup panel
+  if (!isOwner(interaction.user.id)) return;
+
+  // Only handle setup panel interactions
+  // Accept any setup-panel interaction (prefix check is safer than a static list)
+  const id = interaction.customId;
+  if (!id) return;
+  const isSpId = id.startsWith("sp_");
+  if (!isSpId) return;
+
+  const s = setupSessions.get(interaction.user.id);
+
+  // -- Select: operation --
+  if (interaction.isStringSelectMenu() && id === "sp_op") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired. Type `,clone` again.", flags: 64 });
+    s.operation = interaction.values[0];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // -- Select: video rename mode --
+  if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.videoRenameMode = interaction.values[0];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // -- Toggle buttons --
+  const toggleMap = {
+    sp_t_roles: "cloneRoles",
+    sp_t_cats:  "cloneCategories",
+    sp_t_chans: "cloneChannels",
+    sp_t_perms: "clonePermissions",
+    sp_t_msgs:  "cloneMessages",
+  };
+  if (interaction.isButton() && toggleMap[id]) {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s[toggleMap[id]] = !s[toggleMap[id]];
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // -- Button: browse source server + channels --
+  if (interaction.isButton() && id === "sp_browse_src") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guilds = [...client.guilds.cache.values()].slice(0, 25);
+    if (guilds.length === 0) return interaction.reply({ content: "<:steal:1521327958634135655> No servers found in the bot cache.", flags: 64 });
+    const options = guilds.map(g => ({
+      label: g.name.slice(0, 100),
+      value: g.id,
+      description: `ID: ${g.id}`,
+      default: g.id === s.sourceId,
+    }));
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_src_guild_pick")
+        .setPlaceholder("<:RUSH_globe:1521415284496273489> Select SOURCE server...")
+        .addOptions(options)
+    );
+    return interaction.reply({ content: "**Step 1/2 — Source** — Choose the source server:", components: [selRow], flags: 64 });
+  }
+
+  // -- Select: source guild picked → fetch channels → show channel picker --
+  if (interaction.isStringSelectMenu() && id === "sp_src_guild_pick") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guildId = interaction.values[0];
+    s.sourceId = guildId;
+    // Silently update the panel
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    // Fetch channels via REST
+    let rawChannels;
+    try {
+      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
+      rawChannels = await res.json();
+    } catch (e) {
+      return interaction.update({ content: `<:steal:1521327958634135655> Failed to load channels: \`${e.message}\``, components: [] });
+    }
+    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
+    // Store rawChannels in session so the search modal can filter them
+    s._srcRawChannels = rawChannels;
+    s._srcGuildName   = guildName;
+    // Show a button so the user can open the search modal (modals require a button/slash interaction)
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("<:awhitestar:1521415243954393159> All Channels").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress 🔍 to search or <:awhitestar:1521415243954393159> to clone all:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open source search modal --
+  if (interaction.isButton() && id === "sp_btn_src_search") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`<:RUSH_folder:1521415227495940096> Search — ${s._srcGuildName ?? "source"}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("src_search_query")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, premium...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Button: select all channels (no filter) --
+  if (interaction.isButton() && id === "sp_btn_src_all") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.selectedSrcIds  = [];
+    s.selectedSrcName = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `<:019TXTWhite_Yes:1521327983279996999> **Source set:** all channels — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      components: [],
+    });
+  }
+
+  // -- Modal submit: source channel search --
+  if (interaction.isModalSubmit() && id === "sp_modal_src_search") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("src_search_query").trim().toLowerCase();
+    const rawChannels = s._srcRawChannels ?? [];
+    const guildName   = s._srcGuildName ?? s.sourceId;
+    const isCatOp = s.operation === "clonecategoryperks";
+
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    let chans = isCatOp ? [] : rawChannels.filter(c => [0, 5].includes(c.type)).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    if (query) {
+      cats  = cats.filter(c => c.name.toLowerCase().includes(query));
+      chans = chans.filter(c => c.name.toLowerCase().includes(query));
+    }
+
+    const options = [
+      { label: "<:awhitestar:1521415243954393159> All Channels (no filter)", value: "__all__", description: "Clone the entire server without filters" },
+      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `<:RUSH_folder:1521415227495940096> ${c.name}`.slice(0, 100), value: c.id, description: `Category · ${c.id}` })),
+      ...chans.slice(0, 12).map(c => ({ label: `<:RUSH_comment:1491884212297531572> ${c.name}`.slice(0, 100), value: c.id, description: `Channel · ${c.id}` })),
+    ].slice(0, 25);
+
+    if (options.length === 1) {
+      // Only "__all__" means no match — let user search again
+      return interaction.reply({
+        content: `<:steal:1521327958634135655> No results for **"${query}"** in **${guildName}**. Click <:RUSH_folder:1521415227495940096> Source Category again to search.`,
+        flags: 64,
+      });
+    }
+
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_src_ch_pick")
+        .setPlaceholder("<:RUSH_folder:1521415227495940096> Choose source channel/category...")
+        .addOptions(options)
+    );
+    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
+    return interaction.reply({
+      content: `**Step 2/2 — Source** — Server: **${guildName}**\n${hint} — choose:`,
+      components: [selRow],
+      flags: 64,
+    });
+  }
+
+  // -- Select: source channel/category picked --
+  if (interaction.isStringSelectMenu() && id === "sp_src_ch_pick") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const val = interaction.values[0];
+    if (val === "__all__") {
+      s.selectedSrcIds  = [];
+      s.selectedSrcName = "";
+    } else {
+      s.selectedSrcIds  = [val];
+      const g = client.guilds.cache.get(s.sourceId);
+      const ch = g?.channels.cache.get(val);
+      // If not in cache, try to build name from the REST result stored in session
+      s.selectedSrcName = ch?.name ?? val;
+    }
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `<:019TXTWhite_Yes:1521327983279996999> **Source set:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "all channels"} — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      components: [],
+    });
+  }
+
+  // -- Button: browse target server + category --
+  if (interaction.isButton() && id === "sp_browse_tgt") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guilds = [...client.guilds.cache.values()].slice(0, 25);
+    if (guilds.length === 0) return interaction.reply({ content: "<:steal:1521327958634135655> No servers found in the bot cache.", flags: 64 });
+    const options = guilds.map(g => ({
+      label: g.name.slice(0, 100),
+      value: g.id,
+      description: `ID: ${g.id}`,
+      default: g.id === s.targetId,
+    }));
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_tgt_guild_pick")
+        .setPlaceholder("<:RUSH_globe:1521415284496273489> Select TARGET server...")
+        .addOptions(options)
+    );
+    return interaction.reply({ content: "**Step 1/2 — Target** — Choose the target server:", components: [selRow], flags: 64 });
+  }
+
+  // -- Select: target guild picked → fetch categoriess → show category picker --
+  if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const guildId = interaction.values[0];
+    s.targetId = guildId;
+    // Silently update the panel
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    // Fetch channels via REST
+    let rawChannels;
+    try {
+      const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
+      rawChannels = await res.json();
+    } catch (e) {
+      return interaction.update({ content: `<:steal:1521327958634135655> Failed to load channels: \`${e.message}\``, components: [] });
+    }
+    const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
+    // Store raw channels in session for the search modal
+    s._tgtRawChannels = rawChannels;
+    s._tgtGuildName   = guildName;
+    const { ButtonBuilder, ButtonStyle } = require("discord.js");
+    const searchBtn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("<:RUSH_pin:1521415247183872080> Root (no category)").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({
+      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress 🔍 to search or <:RUSH_pin:1521415247183872080> for Root:`,
+      components: [searchBtn],
+    });
+  }
+
+  // -- Button: open target search modal --
+  if (interaction.isButton() && id === "sp_btn_tgt_search") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`<:RUSH_folder:1521415227495940096> Search — ${s._tgtGuildName ?? "target"}`);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("tgt_search_query")
+          .setLabel("Category name (empty = first 24)")
+          .setStyle(TextInputStyle.Short).setRequired(false).setPlaceholder("e.g. exclusive, vip, paid...")
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // -- Button: target root (no category) --
+  if (interaction.isButton() && id === "sp_btn_tgt_root") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.selectedTgtCatId = "";
+    s.selectedTgtName  = "";
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({ content: `<:019TXTWhite_Yes:1521327983279996999> **Target set:** Root (no category) — go back to the panel and press <:RUSH_rocket:1521415262384160778>`, components: [] });
+  }
+
+  // -- Modal submit: target category search --
+  if (interaction.isModalSubmit() && id === "sp_modal_tgt_search") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { StringSelectMenuBuilder } = require("discord.js");
+    const query = interaction.fields.getTextInputValue("tgt_search_query").trim().toLowerCase();
+    const rawChannels = s._tgtRawChannels ?? [];
+    const guildName   = s._tgtGuildName ?? s.targetId;
+    let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    if (query) cats = cats.filter(c => c.name.toLowerCase().includes(query));
+    const options = [
+      { label: "<:RUSH_pin:1521415247183872080> Root — no category", value: "__root__", description: "Places cloned channels without a category" },
+      ...cats.slice(0, 24).map(c => ({ label: `<:RUSH_folder:1521415227495940096> ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
+    ].slice(0, 25);
+    if (options.length === 1 && query) {
+      return interaction.reply({ content: `<:steal:1521327958634135655> No categories found for **"${query}"** in **${guildName}**. Click 🎯 Target Category again to search.`, flags: 64 });
+    }
+    const selRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("sp_tgt_cat_pick")
+        .setPlaceholder("<:RUSH_folder:1521415227495940096> Choose target category...")
+        .addOptions(options)
+    );
+    const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
+    return interaction.reply({ content: `**Target** — Server: **${guildName}**\n${hint} — choose:`, components: [selRow], flags: 64 });
+  }
+
+  // -- Select: target category picked --
+  if (interaction.isStringSelectMenu() && id === "sp_tgt_cat_pick") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const val = interaction.values[0];
+    if (val === "__root__") {
+      s.selectedTgtCatId = "";
+      s.selectedTgtName  = "";
+    } else {
+      s.selectedTgtCatId = val;
+      const g   = client.guilds.cache.get(s.targetId);
+      const cat = g?.channels.cache.get(val);
+      s.selectedTgtName  = cat?.name ?? val;
+    }
+    try {
+      const panelCh  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
+      if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.update({
+      content: `<:019TXTWhite_Yes:1521327983279996999> **Target set:** ${s.selectedTgtName ? `category \`${s.selectedTgtName}\`` : "root server"} — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      components: [],
+    });
+  }
+
+  // -- Button: clear all selection --
+  if (interaction.isButton() && id === "sp_clr_sel") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.selectedSrcIds   = [];
+    s.selectedSrcName  = "";
+    s.selectedTgtCatId = "";
+    s.selectedTgtName  = "";
+    return interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
+  }
+
+  // -- Button: open IDs modal --
+  if (interaction.isButton() && id === "sp_ids") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder()
+      .setCustomId("sp_modal_ids")
+      .setTitle("<:019TXTWhite_Yes:1521327983279996999> Configure IDs & Parameters")
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("src_id").setLabel("Source Server / Channel ID")
+            .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+            .setValue(s.sourceId).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("dst_id").setLabel("Target Server / Channel ID")
+            .setStyle(TextInputStyle.Short).setPlaceholder("123456789012345678")
+            .setValue(s.targetId).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("excl_name").setLabel("Exclusive channel name (default: exclusive)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("exclusive")
+            .setValue(s.exclusiveName).setRequired(false)
+        ),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // -- Button: open video options modal --
+  if (interaction.isButton() && id === "sp_video") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+    const modal = new ModalBuilder()
+      .setCustomId("sp_modal_video")
+      .setTitle("<:movieslotbluedns:1414214240218120295> Video & Rename Options")
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
+            .setStyle(TextInputStyle.Short).setPlaceholder("SENSATIONAL")
+            .setValue(s.videoPattern).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_counter").setLabel("Counter start number")
+            .setStyle(TextInputStyle.Short).setPlaceholder("1")
+            .setValue(String(s.videoCounterStart)).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_pad").setLabel("Zero padding  (1 → 1  |  2 → 01  |  3 → 001)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("2")
+            .setValue(String(s.videoPadZeros)).setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId("vid_ext").setLabel("Extension  (keep / mp4 / mov / webm)")
+            .setStyle(TextInputStyle.Short).setPlaceholder("keep")
+            .setValue(s.videoExtension).setRequired(true)
+        ),
+      );
+    return interaction.showModal(modal);
+  }
+
+  // -- Modal submit: IDs & params --
+  if (interaction.isModalSubmit() && id === "sp_modal_ids") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
+    s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
+    const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
+    if (rawExcl) s.exclusiveName = rawExcl;
+    // Update the panel message
+    try {
+      const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> IDs and parameters updated!", flags: 64 });
+  }
+
+  // -- Modal submit: video options --
+  if (interaction.isModalSubmit() && id === "sp_modal_video") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
+    s.videoCounterStart = parseInt(interaction.fields.getTextInputValue("vid_counter")) || 1;
+    s.videoPadZeros     = Math.min(4, Math.max(1, parseInt(interaction.fields.getTextInputValue("vid_pad")) || 2));
+    const rawExt = interaction.fields.getTextInputValue("vid_ext").trim().toLowerCase().replace(/^\./, "");
+    s.videoExtension = ["mp4","mov","webm"].includes(rawExt) ? rawExt : "keep";
+    // Update panel message
+    try {
+      const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
+    } catch (_) {}
+    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Video options updated!", flags: 64 });
+  }
+
+  // -- Button: cancel --
+  if (interaction.isButton() && id === "sp_cancel") {
+    setupSessions.delete(interaction.user.id);
+    return interaction.update({
+      embeds:     [{ color: PINK, description: "<:steal:1521327958634135655> Config Panel cancelled." }],
+      components: [],
+    });
+  }
+
+  // -- Button: launch --
+  if (interaction.isButton() && id === "sp_launch") {
+    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired. Use `,clone` again.", flags: 64 });
+    if (!s.sourceId || !s.targetId) {
+      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set **Source ID** and **Target ID** first using the <:RUSH_task:1521415237813665813> Set IDs button.", flags: 64 });
+    }
+    // Lock panel -- disable all components
+    const lockedEmbed = buildPanelEmbed(s);
+    lockedEmbed.description += "\n\n<a:Loading:1521415253982969898> **Operation started — running...**";
+    await interaction.update({ embeds: [lockedEmbed], components: [] }).catch(() => {});
+
+    const sessionCopy = { ...s };
+    setupSessions.delete(interaction.user.id);
+
+    const statusCh  = interaction.channel;
+    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Initializing..." }] }).catch(() => null);
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      await executeSetupOperation(sessionCopy, statusMsg, updateStatus);
+    } catch (e) {
+      log(`[setup panel] fatal: ${e.message}`, "error");
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Operation failed: \`${e.message}\`` }] }).catch(() => {});
+    }
+  }
+
+  } catch (e) {
+    log(`[clone interaction] unhandled error id=${interaction.customId}: ${e.message}\n${e.stack}`, "error");
+    try {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: `<:steal:1521327958634135655> Error: \`${e.message}\``, flags: 64 });
+      }
+    } catch (_) {}
+  }
+});
+
+// -- Unified execution engine --------------------------------------------------
+async function executeSetupOperation(s, statusMsg, updateStatus) {
+
+  const MAX_FILE_BYTES = 24 * 1024 * 1024; // 24 MB — safe Discord limit
+  const VIDEO_RE = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
+  const MEDIA_RE = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i;
+
+  // ── REST helper ─────────────────────────────────────────────────────────────
+  async function discordREST(path) {
+    const res = await fetch(`https://discord.com/api/v10${path}`, {
+      headers: { Authorization: `Bot ${process.env.TOKEN}` }
+    });
+    if (!res.ok) throw new Error(`REST ${path} → ${res.status}`);
+    return res.json();
+  }
+
+  // ── Re-fetch a single message to get a FRESH (non-expired) CDN URL ──────────
+  // Discord CDN URLs contain ?ex=...&is=...&hm=... expiry tokens that expire
+  // in minutes. Always re-fetch the message right before downloading.
+  async function getFreshUrl(channelId, messageId, filename) {
+    const msg = await discordREST(`/channels/${channelId}/messages/${messageId}`);
+    const att = (msg.attachments ?? []).find(a => a.filename === filename)
+             ?? msg.attachments?.[0];
+    if (!att?.url) throw new Error(`attachment not found in message ${messageId}`);
+    return { url: att.url, size: att.size ?? 0 };
+  }
+
+  // ── Scan a channel for ALL video/media refs (attachments + CDN links + embed videos) ─
+  // Returns: Array<{ type:'attachment'|'link', messageId, channelId, filename, size, directUrl? }>
+  async function scanChannelVideos(channelId) {
+    const items = [];
+    const seen  = new Set();
+
+    // Patterns
+    const VIDEO_PAT  = /\.(mp4|mov|webm|mkv|avi|gif)($|\?)/i;
+    // Discord CDN link anywhere in message content
+    const CDN_URL_RE = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+    // Any direct video link in message content (non-Discord)
+    const EXT_URL_RE = /https?:\/\/\S+\.(?:mp4|mov|webm|mkv|avi|gif)(?:[?#]\S*)?/gi;
+
+    let before;
+    while (true) {
+      const q     = before ? `?limit=100&before=${before}` : '?limit=100';
+      const batch = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages${q}`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (!batch || batch.length === 0) break;
+
+      for (const msg of batch) {
+        // 1. Standard attachments (re-fetch URL at download time to avoid expiry)
+        for (const att of (msg.attachments ?? [])) {
+          const fn  = att.filename ?? '';
+          const key = `att:${msg.id}:${fn}`;
+          if (VIDEO_PAT.test(fn) && !seen.has(key)) {
+            seen.add(key);
+            items.push({ type: 'attachment', messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+          }
+        }
+
+        // 2. Embed video/image URLs
+        for (const emb of (msg.embeds ?? [])) {
+          for (const urlField of [emb.video?.url, emb.image?.url, emb.thumbnail?.url]) {
+            if (!urlField) continue;
+            const clean = urlField.split('?')[0];
+            const key   = `emb:${clean}`;
+            if (VIDEO_PAT.test(clean) && !seen.has(key)) {
+              seen.add(key);
+              const fn = clean.split('/').pop() || 'video.mp4';
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: urlField });
+            }
+          }
+        }
+
+        // 3. Discord CDN links in message content (may be videos posted as links)
+        const content   = msg.content ?? '';
+        const cdnLinks  = [...new Set((content.match(CDN_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        const extLinks  = [...new Set((content.match(EXT_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        for (const url of [...cdnLinks, ...extLinks]) {
+          const clean = url.split('?')[0];
+          const key   = `link:${clean}`;
+          if (VIDEO_PAT.test(clean) && !seen.has(key)) {
+            seen.add(key);
+            const fn  = clean.split('/').pop() || 'video.mp4';
+            // Discord CDN links need re-fetch at download time; external links are direct
+            const isCDN = /cdn\.discordapp\.com|media\.discordapp\.net/i.test(url);
+            if (isCDN) {
+              items.push({ type: 'attachment_link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
+            } else {
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
+            }
+          }
+        }
+      }
+
+      const last = batch[batch.length - 1]?.id;
+      if (!last || last === before || batch.length < 100) break;
+      before = last;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return items;
+  }
+
+  // ── Scan a channel for ALL media (video + images) — same logic ───────────────
+  async function scanChannelMedia(channelId) {
+    const items = [];
+    const seen  = new Set();
+    const MEDIA_PAT = /\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)($|\?)/i;
+    const CDN_URL_RE = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+
+    let before;
+    while (true) {
+      const q     = before ? `?limit=100&before=${before}` : '?limit=100';
+      const batch = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages${q}`, {
+        headers: { Authorization: `Bot ${process.env.TOKEN}` }
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (!batch || batch.length === 0) break;
+
+      for (const msg of batch) {
+        for (const att of (msg.attachments ?? [])) {
+          const fn = att.filename ?? '';
+          const key = `att:${msg.id}:${fn}`;
+          if (MEDIA_PAT.test(fn) && !seen.has(key)) {
+            seen.add(key);
+            items.push({ type: 'attachment', messageId: msg.id, channelId, filename: fn, size: att.size ?? 0 });
+          }
+        }
+        for (const emb of (msg.embeds ?? [])) {
+          for (const urlField of [emb.video?.url, emb.image?.url]) {
+            if (!urlField) continue;
+            const clean = urlField.split('?')[0];
+            const key = `emb:${clean}`;
+            if (MEDIA_PAT.test(clean) && !seen.has(key)) {
+              seen.add(key);
+              const fn = clean.split('/').pop() || 'file';
+              items.push({ type: 'link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: urlField });
+            }
+          }
+        }
+        const cdnLinks = [...new Set((( msg.content ?? '').match(CDN_URL_RE) ?? []).map(u => u.replace(/[)>\.,]+$/, '')))];
+        for (const url of cdnLinks) {
+          const clean = url.split('?')[0];
+          const key = `cdn:${clean}`;
+          if (MEDIA_PAT.test(clean) && !seen.has(key)) {
+            seen.add(key);
+            const fn = clean.split('/').pop() || 'file';
+            items.push({ type: 'attachment_link', messageId: msg.id, channelId, filename: fn, size: 0, directUrl: url });
+          }
+        }
+      }
+
+      const last = batch[batch.length - 1]?.id;
+      if (!last || last === before || batch.length < 100) break;
+      before = last;
+      await new Promise(r => setTimeout(r, 300));
+    }
+    return items;
+  }
+
+  // ── Generate renamed filename ────────────────────────────────────────────────
+  function makeVideoName(index, origExt) {
+    const pad = n => String(n).padStart(s.videoPadZeros, '0');
+    const num = s.videoCounterStart + index;
+    const ext = s.videoExtension === 'keep' ? origExt : `.${s.videoExtension}`;
+    switch (s.videoRenameMode) {
+      case 'prefix':   return `${s.videoPattern}${pad(num)}${ext}`;
+      case 'numbered': return `${pad(num)}${ext}`;
+      case 'replace':  return `${s.videoPattern}${ext}`;
+      case 'suffix':   return `${pad(num)}_${s.videoPattern}${ext}`;
+      default:         return `${s.videoPattern}${pad(num)}${ext}`;
+    }
+  }
+
+  // ── Download a file ref — re-fetches message for fresh URL (attachments) or uses directUrl (links) ─
+  // Returns: AttachmentBuilder, OR throws { fallbackUrl } if the file is too big (send link instead)
+  async function downloadFresh(ref, vidIndex) {
+    const { AttachmentBuilder } = require('discord.js');
+
+    let url;
+
+    if (ref.type === 'attachment') {
+      // Standard attachment — re-fetch message to get fresh CDN URL
+      if (ref.size > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: null, tooBig: true });
+      const fresh = await getFreshUrl(ref.channelId, ref.messageId, ref.filename);
+      url = fresh.url;
+    } else if (ref.type === 'attachment_link') {
+      // Discord CDN URL from message content — re-fetch message to find fresh URL in content
+      try {
+        const msg        = await discordREST(`/channels/${ref.channelId}/messages/${ref.messageId}`);
+        const CDN_RE     = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
+        const cdnMatches = (msg.content ?? '').match(CDN_RE) ?? [];
+        const freshCDN   = cdnMatches.find(u => u.includes(ref.filename.split('.')[0])) ?? cdnMatches[0];
+        if (!freshCDN) throw Object.assign(new Error('no fresh CDN URL'), { fallbackUrl: ref.directUrl });
+        url = freshCDN;
+      } catch (e) {
+        if (e.fallbackUrl !== undefined) throw e;
+        throw Object.assign(new Error('attachment_link re-fetch failed'), { fallbackUrl: ref.directUrl });
+      }
+    } else {
+      // External link — use directUrl as-is
+      url = ref.directUrl;
+      if (!url) throw new Error(`no directUrl for ref ${ref.filename}`);
+    }
+
+    // Check Content-Length before downloading the whole thing
+    let headSize = 0;
+    try {
+      const head = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' } });
+      headSize   = parseInt(head.headers.get('content-length') ?? '0') || 0;
+    } catch { /* ignore HEAD failures */ }
+    if (headSize > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { fallbackUrl: url });
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_FILE_BYTES) throw Object.assign(new Error('too_large'), { fallbackUrl: url, tooBig: true });
+
+    const extMatch = ref.filename.match(/\.(mp4|mov|webm|mkv|avi|gif|png|jpg|jpeg|webp|heic)$/i);
+    const origExt  = extMatch ? extMatch[0].toLowerCase() : '.mp4';
+    const name     = makeVideoName(vidIndex, origExt);
+    return new AttachmentBuilder(buf, { name });
+  }
+
+  // ── Rate-limit-safe channel creation ────────────────────────────────────────
+  async function createChWithRetry(guild, opts, retries = 4) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await guild.channels.create(opts);
+      } catch (e) {
+        const isRL = e.code === 429 || e.message?.includes('rate limit');
+        const wait = ((e.retryAfter ?? 3) * 1000) + 800;
+        if (isRL && attempt < retries - 1) {
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          log(`[setup] failed to create #${opts.name}: ${e.message}`, 'error');
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  // ── Clone roles from rawRoles into targetGuild ───────────────────────────────
+  async function cloneRolesHelper(rawRoles, targetGuild) {
+    const roleMap = new Map();
+    if (!s.cloneRoles) return roleMap;
+    const srcRoles = rawRoles
+      .filter(r => !r.managed && r.name !== '@everyone')
+      .sort((a, b) => b.position - a.position);
+    for (const role of srcRoles) {
+      try {
+        const existing = targetGuild.roles.cache.find(r => r.name === role.name && !r.managed);
+        if (existing) { roleMap.set(role.id, existing.id); continue; }
+        const newRole = await targetGuild.roles.create({
+          name: role.name, color: role.color, hoist: role.hoist,
+          mentionable: role.mentionable, permissions: BigInt(role.permissions),
+          reason: '[setup panel]',
+        });
+        roleMap.set(role.id, newRole.id);
+        await new Promise(r => setTimeout(r, 350));
+      } catch (e) { log(`[setup] role ${role.name}: ${e.message}`, 'error'); }
+    }
+    return roleMap;
+  }
+
+  // ── Build permission overwrite array ────────────────────────────────────────
+  function buildPermOW(rawOW, roleMap, targetGuild) {
+    if (!s.clonePermissions) return [];
+    return (rawOW || []).filter(ow => ow.type === 0).map(ow => ({
+      id:    roleMap.get(ow.id) ?? targetGuild.roles.everyone.id,
+      type:  0,
+      allow: BigInt(String(ow.allow || '0')),
+      deny:  BigInt(String(ow.deny  || '0')),
+    }));
+  }
+
+  // ── Clone categories from rawChannels into targetGuild ───────────────────────
+  async function cloneCategoriesHelper(rawChannels, targetGuild, roleMap) {
+    const categoryMap = new Map();
+    if (!s.cloneCategories) return categoryMap;
+    const srcCats = rawChannels.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
+    for (const cat of srcCats) {
+      try {
+        const existing = targetGuild.channels.cache.find(c => c.type === 4 && c.name === cat.name);
+        if (existing) { categoryMap.set(cat.id, existing.id); continue; }
+        const newCat = await targetGuild.channels.create({
+          name: cat.name, type: 4,
+          permissionOverwrites: buildPermOW(cat.permission_overwrites, roleMap, targetGuild),
+          reason: '[setup panel]',
+        });
+        categoryMap.set(cat.id, newCat.id);
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (e) { log(`[setup] cat ${cat.name}: ${e.message}`, 'error'); }
+    }
+    return categoryMap;
+  }
+
+  // ── Clone channels from rawChannels into targetGuild ────────────────────────
+  // Returns { channelMap: Map<srcId, newChannel>, channelCount }
+  async function cloneChannelsHelper(rawChannels, targetGuild, roleMap, categoryMap, forcedParentId = null) {
+    if (!s.cloneChannels) return { channelMap: new Map(), channelCount: 0 };
+    const channelMap  = new Map();
+    let channelCount  = 0;
+    const srcChans    = rawChannels.filter(c => c.type !== 4 && ![10,11,12,13,14,15].includes(c.type))
+                                   .sort((a, b) => a.position - b.position);
+    // Overflow tracking: prevents >50 channels per Discord category
+    const catChildCount  = new Map();
+    const catOverflowMap = new Map();
+
+    for (const ch of srcChans) {
+      try {
+        const existing = s.skipExisting
+          ? targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type)
+          : null;
+        let newCh = existing ?? null;
+        if (!newCh) {
+          const opts = {
+            name: ch.name, type: ch.type,
+            permissionOverwrites: buildPermOW(ch.permission_overwrites, roleMap, targetGuild),
+            reason: '[setup panel]',
+          };
+          if (ch.topic)               opts.topic            = ch.topic;
+          if (ch.nsfw)                opts.nsfw             = ch.nsfw;
+          if (ch.rate_limit_per_user) opts.rateLimitPerUser = ch.rate_limit_per_user;
+          if (ch.bitrate)             opts.bitrate          = ch.bitrate;
+          if (ch.user_limit)          opts.userLimit        = ch.user_limit;
+
+          // Determine parent category
+          if (forcedParentId) {
+            opts.parent = forcedParentId;
+          } else if (ch.parent_id && categoryMap.has(ch.parent_id)) {
+            let targetCatId = catOverflowMap.get(ch.parent_id) ?? categoryMap.get(ch.parent_id);
+            const count = catChildCount.get(targetCatId) ?? 0;
+            if (count >= 50) {
+              const srcCat = rawChannels.find(c => c.id === ch.parent_id);
+              const overflowNum = Math.floor(count / 50) + 1;
+              const overflowCat = await targetGuild.channels.create({
+                name: `${srcCat?.name ?? 'overflow'} ${overflowNum + 1}`, type: 4,
+                reason: '[setup panel overflow]',
+              }).catch(() => null);
+              await new Promise(r => setTimeout(r, 1000));
+              if (overflowCat) {
+                targetCatId = overflowCat.id;
+                catOverflowMap.set(ch.parent_id, targetCatId);
+                catChildCount.set(targetCatId, 0);
+              }
+            }
+            opts.parent = targetCatId;
+            catChildCount.set(targetCatId, (catChildCount.get(targetCatId) ?? 0) + 1);
+          }
+
+          newCh = await createChWithRetry(targetGuild, opts);
+          if (newCh) channelCount++;
+          await new Promise(r => setTimeout(r, 900));
+        }
+        if (newCh) channelMap.set(ch.id, newCh);
+      } catch (e) { log(`[setup] ch ${ch.name}: ${e.message}`, 'error'); }
+    }
+    return { channelMap, channelCount };
+  }
+
+  // ── Upload a list of media refs into a target channel ───────────────────────
+  // If a file is too large: sends the direct URL as a message instead (fallback)
+  // Returns { uploaded, failed, linked }
+  async function uploadRefs(refs, targetChannel, startVidIndex = 0, batchSize = 1) {
+    let uploaded = 0, failed = 0, linked = 0, vidIndex = startVidIndex;
+    for (let i = 0; i < refs.length; i += batchSize) {
+      const batch = refs.slice(i, i + batchSize);
+      const attachments = [];
+      const fallbackUrls = [];
+
+      for (const ref of batch) {
+        try {
+          const att = await downloadFresh(ref, vidIndex++);
+          attachments.push(att);
+        } catch (e) {
+          if (e.tooBig && e.fallbackUrl) {
+            // Too large — send URL directly instead of uploading
+            fallbackUrls.push(e.fallbackUrl);
+            log(`[setup] too large, will link: ${ref.filename}`, 'info');
+          } else {
+            log(`[setup] download ${ref.filename}: ${e.message}`, 'error');
+            failed++;
+          }
+          vidIndex++;
+        }
+      }
+
+      // Upload attachments
+      if (attachments.length > 0) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await targetChannel.send({ files: attachments });
+            uploaded += attachments.length;
+            break;
+          } catch (e) {
+            if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
+              await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+            } else {
+              failed += attachments.length;
+              log(`[setup] upload to #${targetChannel.name}: ${e.message}`, 'error');
+              break;
+            }
+          }
+        }
+      }
+
+      // Send fallback URLs
+      for (const url of fallbackUrls) {
+        try {
+          await targetChannel.send({ content: url });
+          linked++;
+          await new Promise(r => setTimeout(r, 500));
+        } catch { failed++; }
+      }
+
+      await new Promise(r => setTimeout(r, 800));
+    }
+    return { uploaded, failed, linked };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: cloneperks — full server clone (roles + categories + channels)
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'cloneperks') {
+    await updateStatus('Fetching server data via REST...');
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
+
+    // Filter channels by selection if set
+    let filteredChannels = rawChannels;
+    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
+      const selId  = s.selectedSrcIds[0];
+      const selCh  = rawChannels.find(c => c.id === selId);
+      filteredChannels = selCh?.type === 4
+        ? rawChannels.filter(c => c.id === selId || c.parent_id === selId)
+        : rawChannels.filter(c => c.id === selId);
+    }
+
+    const rCount  = rawRoles.filter(r => !r.managed && r.name !== '@everyone').length;
+    const cCount  = filteredChannels.filter(c => c.type === 4).length;
+    const chCount = filteredChannels.filter(c => c.type !== 4).length;
+    await updateStatus(`Found **${rCount}** roles, **${cCount}** categories, **${chCount}** channels → **${targetGuild.name}**`);
+
+    await updateStatus('[1/3] Cloning roles...');
+    const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
+
+    await updateStatus(`[2/3] <:019TXTWhite_Yes:1521327983279996999> Roles (${roleMap.size}). Cloning categories...`);
+    const categoryMap = await cloneCategoriesHelper(filteredChannels, targetGuild, roleMap);
+
+    await updateStatus(`[3/3] <:019TXTWhite_Yes:1521327983279996999> Categories (${categoryMap.size}). Cloning channels...`);
+    // NOTE: selectedTgtCatId is NOT applied for full server clone — it would flatten all categories
+    // into one, losing the structure. Use cloneperks_channel or clonecategoryperks for targeted placement.
+    const { channelMap, channelCount } = await cloneChannelsHelper(filteredChannels, targetGuild, roleMap, categoryMap);
+
+    // Optional: copy message content/files
+    let filesCopied = 0;
+    if (s.cloneMessages) {
+      await updateStatus('Copying message content...');
+      for (const [srcId, newCh] of channelMap.entries()) {
+        if (![0, 5].includes(newCh.type)) continue;
+        // Scan source channel for media using REST (works cross-server)
+        const refs = await scanChannelMedia(srcId);
+        if (refs.length === 0) continue;
+        await updateStatus(`Copying **${refs.length}** files from **#${newCh.name}**...`);
+        const { uploaded } = await uploadRefs(refs, newCh, filesCopied, 1);
+        filesCopied += uploaded;
+      }
+    }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Clone Complete',
+        description: `**${s.sourceId}** → **${targetGuild.name}**`,
+        fields: [
+          { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
+          { name: 'Categories',    value: `${categoryMap.size}`, inline: true },
+          { name: 'Channels',      value: `${channelCount}`,     inline: true },
+          { name: 'Files copied',  value: `${filesCopied}`,      inline: true },
+        ],
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: cloneperks_channel — copy all media from one channel to another
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'cloneperks_channel') {
+    // Resolve source channel ID
+    const srcChId = (s.selectedSrcIds && s.selectedSrcIds.length > 0) ? s.selectedSrcIds[0] : s.sourceId;
+    if (!srcChId || srcChId.length < 5) throw new Error('Source channel not set — use <:RUSH_folder:1521415227495940096> Source Channel to select one');
+
+    // Verify source channel exists via REST
+    let srcChMeta;
+    try {
+      srcChMeta = await discordREST(`/channels/${srcChId}`);
+    } catch (e) {
+      throw new Error(`Source channel \`${srcChId}\` not accessible — is the bot in that server? (${e.message})`);
+    }
+    const srcChName = srcChMeta.name ?? srcChId;
+
+    // Resolve destination channel
+    let dstCh;
+    if (!s.targetId || s.targetId.length < 5) throw new Error('Target not set — use <:RUSH_folder:1521415227495940096> Target Server to select one');
+    // Try as direct channel ID first
+    const maybeChannel = client.channels.cache.get(s.targetId)
+      ?? await client.channels.fetch(s.targetId).catch(() => null);
+    if (maybeChannel?.isTextBased?.()) {
+      dstCh = maybeChannel;
+    } else {
+      // Target is a guild — create the destination channel inside it
+      const tg = await client.guilds.fetch(s.targetId).catch(() => null);
+      if (!tg) throw new Error(`Target guild \`${s.targetId}\` not accessible — is the bot in that server?`);
+      await tg.channels.fetch().catch(() => {});
+      const opts = { name: srcChName, type: 0, reason: '[setup panel channel clone]' };
+      if (s.selectedTgtCatId) opts.parent = s.selectedTgtCatId;
+      dstCh = await tg.channels.create(opts).catch(() => null);
+      if (!dstCh) throw new Error('Could not create destination channel');
+    }
+
+    await updateStatus(`Scanning **#${srcChName}** for media...`);
+    const refs = await scanChannelMedia(srcChId);
+
+    if (refs.length === 0) {
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> No media found in **#${srcChName}**.` }] }).catch(() => {});
+      return;
+    }
+
+    await updateStatus(`Found **${refs.length}** files. Uploading to **#${dstCh.name}**...`);
+
+    let uploaded = 0, failed = 0, linked = 0, vidIndex = 0;
+    for (let i = 0; i < refs.length; i++) {
+      const ref = refs[i];
+      try {
+        const att = await downloadFresh(ref, vidIndex++);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await dstCh.send({ files: [att] });
+            uploaded++;
+            break;
+          } catch (e) {
+            if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
+              await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+            } else { failed++; break; }
+          }
+        }
+      } catch (e) {
+        if (e.tooBig && e.fallbackUrl) {
+          try { await dstCh.send({ content: e.fallbackUrl }); linked++; }
+          catch { failed++; }
+        } else {
+          failed++;
+          log(`[setup] ch-clone ${ref.filename}: ${e.message}`, 'error');
+        }
+      }
+
+      if ((i + 1) % 5 === 0 || i === refs.length - 1) {
+        const pct = Math.round(((i + 1) / refs.length) * 100);
+        await updateStatus(`Uploading... <:019TXTWhite_Yes:1521327983279996999> **${uploaded}** sent  <:RUSH_link:1521415290687066212> **${linked}** linked  <:steal:1521327958634135655> **${failed}** failed  (${pct}%)`);
+      }
+      await new Promise(r => setTimeout(r, 700));
+    }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Channel Clone Complete',
+        fields: [
+          { name: 'Source',    value: `#${srcChName} (\`${srcChId}\`)`,   inline: true },
+          { name: 'Target',    value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
+          { name: '\u200b',    value: '\u200b',                            inline: true },
+          { name: 'Scanned',   value: `${refs.length}`,   inline: true },
+          { name: 'Uploaded',  value: `${uploaded}`,      inline: true },
+          { name: 'Linked',    value: `${linked}`,        inline: true },
+          { name: 'Failed',    value: `${failed}`,        inline: true },
+        ],
+        footer: { text: `pattern: ${s.videoPattern} (${s.videoRenameMode})` },
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: clonecategoryperks — clone one category + send each channel's
+  //            videos into its own cloned counterpart channel
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'clonecategoryperks') {
+    await updateStatus('Fetching channels via REST...');
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
+
+    // Resolve source category
+    let srcCat;
+    if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.id === s.selectedSrcIds[0]);
+      if (!srcCat) throw new Error(`Category ID \`${s.selectedSrcIds[0]}\` not found — use <:RUSH_folder:1521415227495940096> Source Category to select one`);
+    } else if (s.extraParam) {
+      srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === s.extraParam.toLowerCase());
+      if (!srcCat) throw new Error(`Category "${s.extraParam}" not found in source server`);
+    } else {
+      throw new Error('No category selected — use <:RUSH_folder:1521415227495940096> Source Category to select one');
+    }
+
+    const catChans = rawChannels
+      .filter(c => c.type !== 4 && c.parent_id === srcCat.id && ![10,11,12,13,14,15].includes(c.type))
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    await updateStatus(`Category **${srcCat.name}** — **${catChans.length}** channels. Cloning roles...`);
+    const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
+
+    // Resolve or create target category
+    let tgtCat;
+    if (s.selectedTgtCatId) {
+      tgtCat = targetGuild.channels.cache.get(s.selectedTgtCatId)
+        ?? await targetGuild.channels.fetch(s.selectedTgtCatId).catch(() => null);
+      if (!tgtCat) throw new Error(`Target category \`${s.selectedTgtCatId}\` not found in target server`);
+    } else {
+      tgtCat = targetGuild.channels.cache.find(c => c.type === 4 && c.name === srcCat.name);
+      if (!tgtCat) {
+        tgtCat = await targetGuild.channels.create({
+          name: srcCat.name, type: 4,
+          permissionOverwrites: buildPermOW(srcCat.permission_overwrites, roleMap, targetGuild),
+          reason: '[setup panel]',
+        });
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    let clonedCount = 0, totalVideosSent = 0;
+    const sentPerChannel = new Map();
+    let globalVidIndex   = 0;
+
+    for (const ch of catChans) {
+      try {
+        // Create or find the cloned channel inside target category
+        let newCh = s.skipExisting
+          ? targetGuild.channels.cache.find(c => c.name === ch.name && c.type === ch.type && c.parentId === tgtCat.id)
+          : null;
+        if (!newCh) {
+          newCh = await createChWithRetry(targetGuild, {
+            name: ch.name, type: ch.type, parent: tgtCat.id,
+            permissionOverwrites: buildPermOW(ch.permission_overwrites, roleMap, targetGuild),
+            reason: '[setup panel]',
+          });
+          if (newCh) { clonedCount++; await new Promise(r => setTimeout(r, 900)); }
+        }
+
+        // Scan source channel for videos via REST (bot must be in source guild)
+        if ([0, 5].includes(ch.type) && newCh) {
+          await updateStatus(`🔍 Scanning **#${ch.name}** for videos...`);
+          const refs = await scanChannelVideos(ch.id);
+
+          if (refs.length > 0) {
+            await updateStatus(`<:RUSH_comment:1491884212297531572> Uploading **${refs.length}** videos → **#${newCh.name}**...`);
+            const { uploaded, linked: linkedCount } = await uploadRefs(refs, newCh, globalVidIndex, 2);
+            globalVidIndex    += refs.length;
+            sentPerChannel.set(newCh.name, { uploaded, linked: linkedCount });
+            totalVideosSent   += uploaded + linkedCount;
+          }
+        }
+      } catch (e) { log(`[setup] clonecategoryperks ch ${ch.name}: ${e.message}`, 'error'); }
+    }
+
+    const channelSummary = [...sentPerChannel.entries()]
+      .map(([name, counts]) => `#${name}: ${counts.uploaded} uploaded${counts.linked ? ` + ${counts.linked} linked` : ''}`)
+      .join('\n') || 'no videos found';
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Category Clone Complete',
+        description: `**${srcCat.name}** → **${targetGuild.name}**`,
+        fields: [
+          { name: 'Channels cloned', value: `${clonedCount}`,      inline: true },
+          { name: 'Videos sent',     value: `${totalVideosSent}`,  inline: true },
+          { name: 'Distribution',    value: `\`\`\`${channelSummary}\`\`\``, inline: false },
+          { name: 'Video pattern',   value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: false },
+        ],
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: setuppaidperks — full clone + collect all videos + distribute into
+  //            two exclusive channels in alternating pairs
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'setuppaidperks') {
+    await updateStatus('Fetching server data...');
+    const [rawChannels, rawRoles, targetGuild] = await Promise.all([
+      discordREST(`/guilds/${s.sourceId}/channels`),
+      discordREST(`/guilds/${s.sourceId}/roles`),
+      client.guilds.fetch(s.targetId),
+    ]);
+    await targetGuild.roles.fetch();
+    await targetGuild.channels.fetch();
+
+    await updateStatus('[1/3] Cloning roles...');
+    const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
+
+    await updateStatus(`[2/3] <:019TXTWhite_Yes:1521327983279996999> Roles (${roleMap.size}). Cloning categories + channels...`);
+    const categoryMap = await cloneCategoriesHelper(rawChannels, targetGuild, roleMap);
+    const { channelCount } = await cloneChannelsHelper(rawChannels, targetGuild, roleMap, categoryMap);
+
+    await updateStatus('[3/3] Scanning all channels for videos...');
+    const allVideoRefs = [];
+    const textChans = rawChannels.filter(c => [0, 5].includes(c.type));
+    for (const ch of textChans) {
+      await updateStatus(`🔍 Scanning **#${ch.name}** (${allVideoRefs.length} found so far)...`);
+      const refs = await scanChannelVideos(ch.id);
+      allVideoRefs.push(...refs);
+    }
+
+    // Fisher-Yates shuffle
+    for (let i = allVideoRefs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [allVideoRefs[i], allVideoRefs[j]] = [allVideoRefs[j], allVideoRefs[i]];
+    }
+
+    await updateStatus(`Distributing **${allVideoRefs.length}** videos into exclusive channels...`);
+    const excl1Name = s.exclusiveName;
+    const excl2Name = `${s.exclusiveName}-2`;
+    let excl1 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl1Name.toLowerCase() && [0,5].includes(c.type))
+      ?? await targetGuild.channels.create({ name: excl1Name, type: 0, reason: '[setup panel]' }).catch(() => null);
+    let excl2 = targetGuild.channels.cache.find(c => c.name.toLowerCase() === excl2Name.toLowerCase() && [0,5].includes(c.type))
+      ?? await targetGuild.channels.create({ name: excl2Name, type: 0, reason: '[setup panel]' }).catch(() => null);
+
+    let sent1 = 0, sent2 = 0, linked1 = 0, linked2 = 0, vidIndex = 0;
+    for (let i = 0; i < allVideoRefs.length; i += 2) {
+      const group  = allVideoRefs.slice(i, i + 2);
+      const isSlot1 = Math.floor(i / 2) % 2 === 0;
+      const target  = isSlot1 ? excl1 : excl2;
+      if (!target) { vidIndex += group.length; continue; }
+      const attachments  = [];
+      const fallbackUrls = [];
+      for (const ref of group) {
+        try {
+          const att = await downloadFresh(ref, vidIndex++);
+          attachments.push(att);
+        } catch (e) {
+          if (e.tooBig && e.fallbackUrl) { fallbackUrls.push(e.fallbackUrl); }
+          else { log(`[setup] paidperks video ${ref.filename}: ${e.message}`, 'error'); }
+          vidIndex++;
+        }
+      }
+      if (attachments.length > 0) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await target.send({ files: attachments });
+            if (isSlot1) sent1 += attachments.length; else sent2 += attachments.length;
+            break;
+          } catch (e) {
+            if ((e.code === 429 || e.message?.includes('rate limit')) && attempt < 2) {
+              await new Promise(r => setTimeout(r, ((e.retryAfter ?? 3) * 1000) + 800));
+            } else { log(`[setup] paidperks send: ${e.message}`, 'error'); break; }
+          }
+        }
+      }
+      for (const url of fallbackUrls) {
+        try {
+          await target.send({ content: url });
+          if (isSlot1) linked1++; else linked2++;
+        } catch { /* skip */ }
+      }
+      await new Promise(r => setTimeout(r, 900));
+      if ((i / 2 + 1) % 10 === 0) {
+        await updateStatus(`Distributing... <:019TXTWhite_Yes:1521327983279996999> **${sent1 + sent2}** uploaded  <:RUSH_link:1521415290687066212> **${linked1 + linked2}** linked`);
+      }
+    }
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Paid Perks Setup Complete',
+        description: `**${targetGuild.name}** ready as a premium server.`,
+        fields: [
+          { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
+          { name: 'Categories',    value: `${categoryMap.size}`, inline: true },
+          { name: 'Channels',      value: `${channelCount}`,     inline: true },
+          { name: `#${excl1Name}`, value: `${sent1} uploaded${linked1 ? ` + ${linked1} linked` : ''}`, inline: true },
+          { name: `#${excl2Name}`, value: `${sent2} uploaded${linked2 ? ` + ${linked2} linked` : ''}`, inline: true },
+          { name: 'Video pattern', value: `\`${s.videoPattern}\` (${s.videoRenameMode})`, inline: true },
+        ],
+        footer: { text: 'use ,setup → Hide Channels to hide channels after setup' },
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: hidepaidperks — deny ViewChannel to @everyone on N random channels
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'hidepaidperks') {
+    const count = Math.min(parseInt(s.extraParam) || 20, 200);
+    await updateStatus(`Hiding **${count}** channels in \`${s.targetId}\`...`);
+    const targetGuild = await client.guilds.fetch(s.targetId);
+    const allCh = await targetGuild.channels.fetch();
+    const pool = [...allCh
+      .filter(c => c && [0, 5].includes(c.type) && !hiddenPaidPerksChannels.has(c.id))
+      .sort(() => Math.random() - 0.5)
+      .values()
+    ].slice(0, count);
+
+    let hidden = 0;
+    const nameList = [];
+    for (const ch of pool) {
+      try {
+        await ch.permissionOverwrites.edit(targetGuild.roles.everyone, { ViewChannel: false }, { reason: '[setup panel hidepaidperks]' });
+        hiddenPaidPerksChannels.add(ch.id);
+        saveBooster();
+        nameList.push(`#${ch.name}`);
+        hidden++;
+        await new Promise(r => setTimeout(r, 300));
+      } catch (e) { log(`[setup] hide ${ch.name}: ${e.message}`, 'error'); }
+    }
+    const preview = nameList.slice(0, 15).join(', ') + (hidden > 15 ? ` + ${hidden - 15} more` : '');
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '🙈 Hidden Channels',
+        description: `Hidden **${hidden}** channels in **${targetGuild.name}**\n\`\`\`${preview || 'none'}\`\`\``,
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // OPERATION: sortchannels — distribute channels into 2 or 3 categories
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (s.operation === 'sortchannels') {
+    const parts    = (s.extraParam || '').split('|').map(x => x.trim()).filter(Boolean);
+    const cat1Name = parts[0];
+    const cat2Name = parts[1];
+    const cat3Name = parts[2] || null;
+    if (!cat1Name || !cat2Name)
+      throw new Error('In the Extra field specify: `Category1 | Category2` or `Category1 | Category2 | Category3`');
+
+    const guild = await client.guilds.fetch(s.targetId);
+    await guild.channels.fetch();
+    const allChans = [...guild.channels.cache
+      .filter(c => c && c.type !== 4)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .values()
+    ];
+    const numCats = cat3Name ? 3 : 2;
+    await updateStatus(`Found **${allChans.length}** channels. Creating **${numCats}** categories...`);
+
+    async function getOrCreateCat(name) {
+      const ex = guild.channels.cache.find(c => c.type === 4 && c.name === name);
+      if (ex) return ex.id;
+      const nc = await guild.channels.create({ name, type: 4, reason: '[setup panel sortchannels]' });
+      await new Promise(r => setTimeout(r, 800));
+      return nc.id;
+    }
+    async function moveToTracker(ch, tracker) {
+      if (tracker.count >= 50) {
+        const overflowNum = Math.floor(tracker.count / 50) + 1;
+        const nc = await guild.channels.create({ name: `${tracker.baseName} ${overflowNum + 1}`, type: 4, reason: '[setup panel overflow]' });
+        await new Promise(r => setTimeout(r, 800));
+        tracker.currentCatId = nc.id;
+        tracker.count = 0;
+      }
+      await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: '[setup panel sortchannels]' });
+      tracker.count++;
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    const slice1 = Math.ceil(allChans.length / numCats);
+    const slice2 = cat3Name ? Math.ceil((allChans.length - slice1) / 2) : allChans.length - slice1;
+    const batch1 = allChans.slice(0, slice1);
+    const batch2 = allChans.slice(slice1, slice1 + slice2);
+    const batch3 = cat3Name ? allChans.slice(slice1 + slice2) : [];
+
+    const t1 = { baseName: cat1Name, currentCatId: await getOrCreateCat(cat1Name), count: 0 };
+    const t2 = { baseName: cat2Name, currentCatId: await getOrCreateCat(cat2Name), count: 0 };
+    const t3 = cat3Name ? { baseName: cat3Name, currentCatId: await getOrCreateCat(cat3Name), count: 0 } : null;
+
+    await updateStatus(`Moving **${batch1.length}** channels → **${cat1Name}**...`);
+    for (const ch of batch1) { try { await moveToTracker(ch, t1); } catch (e) { log(`[setup] sort ${ch.name}: ${e.message}`, 'error'); } }
+
+    await updateStatus(`Moving **${batch2.length}** channels → **${cat2Name}**...`);
+    for (const ch of batch2) { try { await moveToTracker(ch, t2); } catch (e) { log(`[setup] sort ${ch.name}: ${e.message}`, 'error'); } }
+
+    if (t3 && batch3.length > 0) {
+      await updateStatus(`Moving **${batch3.length}** channels → **${cat3Name}**...`);
+      for (const ch of batch3) { try { await moveToTracker(ch, t3); } catch (e) { log(`[setup] sort ${ch.name}: ${e.message}`, 'error'); } }
+    }
+
+    const fields = [
+      { name: cat1Name, value: `${t1.count} channels`, inline: true },
+      { name: cat2Name, value: `${t2.count} channels`, inline: true },
+    ];
+    if (t3) fields.push({ name: cat3Name, value: `${t3.count} channels`, inline: true });
+
+    await statusMsg?.edit({
+      embeds: [{
+        color: PINK, title: '🔀 Channel Sort Complete',
+        description: `**${guild.name}** — ${allChans.length} channels distributed across **${numCats}** categories`,
+        fields,
+        timestamp: new Date(),
+      }],
+    }).catch(() => {});
+    return;
+  }
+
+  throw new Error(`Unknown operation: "${s.operation}"`);
+}
+
+
+// ===== ERROR HANDLING =====
+client.on("error", (error) => {
+  log(`Client error: ${error.message}`, "error");
+});
+
+// Prevent crashes from unhandled promise rejections
+process.on("unhandledRejection", (error) => {
+  log(`Unhandled rejection: ${error?.message || error}`, "error");
+  // Do NOT exit — just log it
+});
+
+process.on("uncaughtException", (error) => {
+  log(`Uncaught exception: ${error?.message || error}`, "error");
+  // Do NOT exit
+});
+
+// Clean up handled messages cache every 30 seconds
+
+
+// ============================================================
+// ===== VIDEO SCRAPER SYSTEM  ================================
+// ============================================================
+
+// guildId → ScraperConfig
+const videoScraperCfg = new Map();
+// guildId → Map<channelId, lastSeenMsgId>  (cursor — one snowflake per source)
+const scraperCursors  = new Map();
+// guildId → NodeJS.Timeout
+const scraperTimers   = new Map();
+const scraperNextRunAt = new Map(); // guildId → timestamp of next scheduled post
+const scraperHourlyStats = new Map(); // guildId → { count, windowStart }
+const scraperLastPosted  = new Map(); // guildId → { name: string, ts: number }
+// msgId → { guildId, authorId }  (live panel sessions)
+const configSessions  = new Map();
+// `userId:guildId` → Message  (lets sc_del_pick find the panel from an ephemeral)
+const scraperUserPanel = new Map();
+
+// Default config factory
+function getScraperCfg(guildId) {
+  if (!videoScraperCfg.has(guildId)) {
+    videoScraperCfg.set(guildId, {
+      enabled:         false,
+      sources:         [],
+      targetChannelId: null,
+      schedule:        { count: 5, intervalMs: 3_600_000, randomize: true },
+      renamePrefix:    "DISCORD.GG/GRINDR",
+      embedConfig:     { color: 0xFFFFFF, title: "", description: "", footer: "" },
+      lastRunAt:       null,
+      lastRunResult:   null,
+    });
+  }
+  return videoScraperCfg.get(guildId);
+}
+
+// Cursor map: channelId → last processed message snowflake
+function getScraperCursors(guildId) {
+  if (!scraperCursors.has(guildId)) scraperCursors.set(guildId, new Map());
+  return scraperCursors.get(guildId);
+}
+
+// Two tiny DB rows — both survive Railway restarts
+function saveScraperCfg()     { scheduleSave(DB.SCRAPER_CFG,    () => videoScraperCfg, 2000); }
+function saveScraperCursors() { scheduleSave(DB.SCRAPER_CURSOR, () => scraperCursors,  3000); }
+
+// ── Human-readable duration helper ───────────────────────────────────────────
+function msToHuman(ms) {
+  if (ms < 60_000)     return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000)  return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+// Parse "30m", "2h", "1d" → milliseconds
+function parseDuration(str) {
+  const m = (str ?? "").trim().match(/^(\d+)(s|m|h|d)$/i);
+  if (!m) return null;
+  const units = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return parseInt(m[1]) * units[m[2].toLowerCase()];
+}
+
+// ── Build the main config embed ───────────────────────────────────────────────
+function buildScraperEmbed(guildId) {
+  const cfg = getScraperCfg(guildId);
+  const { schedule } = cfg;
+
+  const statusStr  = cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Running**" : "⭕ **Off**";
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : "*(not set — press 🎯 Target)*";
+  const schedStr   = `**${schedule.count}** video${schedule.count !== 1 ? "s" : ""} every **${msToHuman(schedule.intervalMs)}**` +
+                     (schedule.randomize ? " *(±50% random jitter)*" : "");
+  const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : "*(never run)*";
+
+  // Hourly progress counter
+  const _hs = scraperHourlyStats.get(guildId);
+  const _hsValid = _hs && Date.now() - _hs.windowStart < schedule.intervalMs;
+  const hourlyStr  = cfg.enabled
+    ? `**${_hsValid ? _hs.count : 0}** / **${schedule.count}** posted this window`
+    : "*(scraper off)*";
+
+  // Next scheduled post
+  const _nextTs = scraperNextRunAt.get(guildId);
+  const nextStr  = cfg.enabled
+    ? (_nextTs ? `<t:${Math.floor(_nextTs / 1000)}:R>` : "Scheduling…")
+    : "*(scraper off)*";
+
+  let sourcesStr;
+  if (cfg.sources.length === 0) {
+    sourcesStr = "*(none — add at least one with ➕ Add Source)*";
+  } else {
+    sourcesStr = cfg.sources.slice(0, 20).map((s, i) => {
+      // <#id> only resolves inside the same guild — use label/id directly instead
+      const display = s.label ? `**${s.label}**` : `\`${s.channelId}\``;
+      return `\`${String(i + 1).padStart(2, "0")}.\` ${display}  \`${s.channelId}\``;
+    }).join("\n");
+    if (cfg.sources.length > 20) sourcesStr += `\n… and **${cfg.sources.length - 20}** more`;
+  }
+
+  // Last posted video (tracked live in-memory)
+  const _lp = scraperLastPosted.get(guildId);
+  const lastPostedStr = _lp
+    ? `\`${_lp.name}\` — <t:${Math.floor(_lp.ts / 1000)}:R>`
+    : "*(none yet this session)*";
+
+  const readyHint = !cfg.targetChannelId
+    ? "> <:RUSH_warning:1521415214799654985> **Set a target channel** before starting."
+    : cfg.sources.length === 0
+      ? "> <:RUSH_warning:1521415214799654985> **Add at least one source channel** before starting."
+      : cfg.enabled
+        ? `> <:019TXTWhite_Yes:1521327983279996999> Scraper is **active** — next run: see schedule above.`
+        : "> <:019TXTWhite_Yes:1521327983279996999> Ready! Press **▶ Start** to enable the scraper.";
+
+  return {
+    color: PINK,
+    title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Config Panel",
+    description: [
+      "Automatically pulls videos from source channels and reposts them to your target channel.",
+      "",
+      readyHint,
+    ].join("\n"),
+    fields: [
+      { name: "<:RUSH_list:1521415268000337961>  Status",           value: statusStr,                                        inline: true  },
+      { name: "<:RUSH_clock:1521415225058791454>  Schedule",          value: schedStr,                                          inline: true  },
+      { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
+      { name: "<:RUSH_poll:1521415317614628976>  This window",        value: hourlyStr,                                         inline: true  },
+      { name: "⏭️  Next run",          value: nextStr,                                           inline: true  },
+      { name: "<:RUSH_comment:1491884212297531572>  Last posted",       value: lastPostedStr,                                      inline: true  },
+      { name: "<:RUSH_comment:1491884212297531572>  Target channel",   value: targetStr,                                          inline: false },
+      { name: "<:RUSH_comment:1491884212297531572>  Source channels",  value: sourcesStr,                                         inline: false },
+      { name: "✏️  Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
+    ],
+    footer: { text: "sensational  ·  video scraper  ·  Administrator only" },
+    timestamp: new Date(),
+  };
+}
+
+// ── Button rows for the config panel ─────────────────────────────────────────
+function buildScraperRows(guildId) {
+  const cfg = getScraperCfg(guildId);
+  return [
+    // Row 1 — power controls
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_toggle:${guildId}`)
+        .setLabel(cfg.enabled ? "⏹ Stop Scraper" : "▶ Start Scraper")
+        .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`sc_run_now:${guildId}`)
+        .setLabel("<:RUSH_thunder:1521415273943400580> Run Now")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+    // Row 2 — source management
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_add_src:${guildId}`)
+        .setLabel("➕ Add Source")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`sc_del_src:${guildId}`)
+        .setLabel("➖ Remove Source")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(cfg.sources.length === 0),
+      new ButtonBuilder()
+        .setCustomId(`sc_target:${guildId}`)
+        .setLabel("🎯 Set Target")
+        .setStyle(ButtonStyle.Primary),
+    ),
+    // Row 3 — fine-tune
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sc_schedule:${guildId}`)
+        .setLabel("<:RUSH_clock:1521415225058791454> Schedule")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`sc_rename:${guildId}`)
+        .setLabel("✏ Rename Prefix")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`sc_reset:${guildId}`)
+        .setLabel("<:RUSH_trash_can:1521415241190215721> Reset All")
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+// ── ,config command entry point ───────────────────────────────────────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args    = message.content.slice(1).trim().split(/ +/);
+  if (args[0].toLowerCase() !== "config") return;
+
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> You need **Administrator** to open the config panel." }] });
+  }
+
+  // Clean up any old session for this user+guild before opening a new panel
+  // (prevents stale configSessions entries accumulating in RAM for up to 1h each)
+  const _panelKey = `${message.author.id}:${message.guild.id}`;
+  const _oldPanel = scraperUserPanel.get(_panelKey);
+  if (_oldPanel) configSessions.delete(_oldPanel.id);
+
+  // ,config embed → open the embed style editor
+  if (args[1]?.toLowerCase() === "embed") {
+    const sent2 = await message.reply({
+      embeds:     [buildEmbedConfigEmbed(message.guild.id)],
+      components: buildEmbedConfigRows(message.guild.id),
+    }).catch(() => null);
+    if (sent2) {
+      configSessions.set(sent2.id, { guildId: message.guild.id, authorId: message.author.id });
+      scraperUserPanel.set(_panelKey, sent2);
+      setTimeout(() => {
+        configSessions.delete(sent2.id);
+        scraperUserPanel.delete(_panelKey);
+      }, 60 * 60 * 1000);
+    }
+    return;
+  }
+
+  const sent = await message.reply({
+    embeds:     [buildScraperEmbed(message.guild.id)],
+    components: buildScraperRows(message.guild.id),
+  }).catch(() => null);
+
+  if (sent) {
+    configSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
+    scraperUserPanel.set(_panelKey, sent);
+    setTimeout(() => {
+      configSessions.delete(sent.id);
+      scraperUserPanel.delete(_panelKey);
+    }, 60 * 60 * 1000);
+  }
+});
+
+// ── Refresh the panel in-place ────────────────────────────────────────────────
+async function refreshScraperPanel(interaction, guildId) {
+  // Buttons/selects have interaction.message — use it directly.
+  // Modal submits do NOT have interaction.message, so fall back to the
+  // scraperUserPanel reverse-lookup map (keyed by authorId:guildId).
+  if (interaction.message) {
+    const sess = configSessions.get(interaction.message.id);
+    if (!sess) return;
+    await interaction.message.edit({
+      embeds:     [buildScraperEmbed(sess.guildId)],
+      components: buildScraperRows(sess.guildId),
+    }).catch(() => {});
+  } else {
+    // Modal path — guildId must be passed by the caller
+    if (!guildId) return;
+    const panelMsg = scraperUserPanel.get(`${interaction.user.id}:${guildId}`);
+    if (!panelMsg) return;
+    await panelMsg.edit({
+      embeds:     [buildScraperEmbed(guildId)],
+      components: buildScraperRows(guildId),
+    }).catch(() => {});
+  }
+}
+
+// ── Refresh ALL active config panels for a guild ──────────────────────────────
+// Called by the scraper after each video post and by the 60-second auto-tick.
+async function refreshAllPanelsForGuild(guildId) {
+  const embed = buildScraperEmbed(guildId);
+  const rows  = buildScraperRows(guildId);
+  for (const [msgId, sess] of configSessions) {
+    if (sess.guildId !== guildId) continue;
+    const msg = scraperUserPanel.get(`${sess.authorId}:${guildId}`);
+    if (!msg || msg.id !== msgId) continue;
+    await msg.edit({ embeds: [embed], components: rows }).catch(() => {});
+  }
+}
+
+// ── Auto-refresh every 60 s — keeps "Next post" countdown live ────────────────
+setInterval(() => {
+  const activeGuilds = new Set([...configSessions.values()].map(s => s.guildId));
+  for (const gId of activeGuilds) refreshAllPanelsForGuild(gId).catch(() => {});
+}, 60_000);
+
+// ── Interaction handler — config panel ────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  const cid = interaction.customId ?? "";
+  if (!cid.startsWith("sc_")) return;
+
+  // ── sc_del_pick comes from an ephemeral reply so its message ID is NOT
+  // in configSessions. Handle it early using the reverse-lookup map. ──────────
+  if (cid.startsWith("sc_del_pick:") && interaction.isStringSelectMenu()) {
+    const gId  = cid.replace("sc_del_pick:", "");
+    const cfg2 = getScraperCfg(gId);
+    const idx  = parseInt(interaction.values[0]);
+    if (!isNaN(idx) && idx >= 0 && idx < cfg2.sources.length) {
+      const removed = cfg2.sources.splice(idx, 1)[0];
+      saveScraperCfg();
+      await interaction.update({
+        content: `<:019TXTWhite_Yes:1521327983279996999> Removed **${removed.label || removed.channelId}**`,
+        components: [],
+      });
+      // Refresh the original panel via reverse-lookup
+      const panelMsg = scraperUserPanel.get(`${interaction.user.id}:${gId}`);
+      if (panelMsg) {
+        await panelMsg.edit({
+          embeds:     [buildScraperEmbed(gId)],
+          components: buildScraperRows(gId),
+        }).catch(() => {});
+      }
+    } else {
+      await interaction.update({ content: "<:steal:1521327958634135655> Invalid selection.", components: [] });
+    }
+    return;
+  }
+
+  const sess = configSessions.get(interaction.message?.id);
+
+  // Session expired (panel is old)
+  if (!sess) {
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired — run `,config` again.", flags: 64 }).catch(() => {});
+    }
+    if (interaction.isModalSubmit()) {
+      // Modal submissions carry the guildId in the custom ID — process anyway
+    } else return;
+  }
+
+  // Ownership check (only the person who opened the panel)
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This panel was opened by someone else." }], flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+  const guildId = sess?.guildId ?? cid.split(":")[1];
+  const cfg     = getScraperCfg(guildId);
+
+  // ── TOGGLE (start / stop) ────────────────────────────────────────────────
+  if (cid === `sc_toggle:${guildId}`) {
+    cfg.enabled = !cfg.enabled;
+    saveScraperCfg();
+    if (cfg.enabled) {
+      // Send 1 video immediately so the user sees something right away,
+      // then let the normal scheduler deliver the rest of the batch on interval
+      runScraper(guildId, 1).then(() => rescheduleScraperTimer(guildId)).catch(() => {});
+    } else {
+      clearTimeout(scraperTimers.get(guildId));
+      scraperTimers.delete(guildId);
+    }
+    await interaction.deferUpdate();
+    return refreshScraperPanel(interaction, guildId);
+  }
+
+  // ── RUN NOW ──────────────────────────────────────────────────────────────
+  if (cid === `sc_run_now:${guildId}`) {
+    await interaction.deferUpdate();
+    await interaction.message.edit({
+      embeds:     [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Running…", description: "<:RUSH_thunder:1521415273943400580> Running the scraper now, please wait…" }],
+      components: [],
+    }).catch(() => {});
+    let result;
+    try { result = await runScraper(guildId, 1); }
+    catch (e) { result = { posted: 0, needed: 1, skippedSources: 0, error: e.message }; }
+    // Build a short result line to append to the refreshed embed
+    let resultNote = "";
+    if (result) {
+      if (result.error) {
+        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **Run failed:** ${result.error}`;
+      } else if (result.posted === 0 && result.skippedSources > 0) {
+        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **0 videos posted** — ${result.skippedSources} source channel(s) were inaccessible. Make sure the bot is in each source server and has View Channel permission.`;
+      } else if (result.posted === 0) {
+        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **0 videos posted** — no new video attachments found in source channels (or they've all been posted already).`;
+      } else {
+        resultNote = `\n\n<:019TXTWhite_Yes:1521327983279996999> **Posted ${result.posted}/${result.needed} video(s)**${result.skippedSources ? ` · <:RUSH_warning:1521415214799654985> ${result.skippedSources} source(s) skipped (inaccessible)` : ""}`;
+      }
+    }
+    const baseEmbed = buildScraperEmbed(guildId);
+    if (resultNote) baseEmbed.description = (baseEmbed.description ?? "") + resultNote;
+    return interaction.message.edit({
+      embeds:     [baseEmbed],
+      components: buildScraperRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── ADD SOURCE ────────────────────────────────────────────────────────────
+  if (cid === `sc_add_src:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_add_src:${guildId}`)
+      .setTitle("Add Source Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("channel_id")
+          .setLabel("Channel ID  (right-click channel → Copy ID)")
+          .setPlaceholder("1234567890123456789")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("label")
+          .setLabel("Nickname for this source  (optional)")
+          .setPlaceholder("e.g.  clips-server-1")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(50)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── REMOVE SOURCE — show picker ───────────────────────────────────────────
+  if (cid === `sc_del_src:${guildId}`) {
+    if (cfg.sources.length === 0) return interaction.reply({ content: "No sources to remove.", flags: 64 });
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`sc_del_pick:${guildId}`)
+        .setPlaceholder("Select a source to remove…")
+        .addOptions(
+          cfg.sources.map((s, i) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`${i + 1}. ${s.label || "Channel " + s.channelId.slice(-6)}`)
+              .setDescription(`ID: ${s.channelId}`)
+              .setValue(`${i}`)
+          )
+        )
+    );
+    return interaction.reply({ content: "**Which source would you like to remove?**", components: [row], flags: 64 });
+  }
+
+  // sc_del_pick is handled before the session check above
+
+  // ── SET TARGET CHANNEL ────────────────────────────────────────────────────
+  if (cid === `sc_target:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_target:${guildId}`)
+      .setTitle("Set Target Channel");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("channel_id")
+          .setLabel("Target Channel ID  (right-click → Copy ID)")
+          .setPlaceholder("1234567890123456789")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── SCHEDULE ──────────────────────────────────────────────────────────────
+  if (cid === `sc_schedule:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_schedule:${guildId}`)
+      .setTitle("Set Posting Schedule");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("count")
+          .setLabel("How many videos per run?  (1–50)")
+          .setPlaceholder("5")
+          .setValue(`${cfg.schedule.count}`)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("interval")
+          .setLabel("How often?  (e.g. 10m · 30m · 1h · 6h · 1d)")
+          .setPlaceholder("1h")
+          .setValue(msToHuman(cfg.schedule.intervalMs))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("randomize")
+          .setLabel("Randomize timing?  (yes / no)")
+          .setPlaceholder("yes  — adds ±50% jitter to avoid patterns")
+          .setValue(cfg.schedule.randomize ? "yes" : "no")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RENAME PREFIX ─────────────────────────────────────────────────────────
+  if (cid === `sc_rename:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`sc_modal_rename:${guildId}`)
+      .setTitle("Rename Videos To…");
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("prefix")
+          .setLabel("All reposted videos will be titled this")
+          .setPlaceholder("DISCORD.GG/GRINDR")
+          .setValue(cfg.renamePrefix)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RESET CONFIG ──────────────────────────────────────────────────────────
+  if (cid === `sc_reset:${guildId}`) {
+    clearTimeout(scraperTimers.get(guildId));
+    scraperTimers.delete(guildId);
+    scraperCursors.delete(guildId);  // clear cursors → re-scrapes from latest next run
+    videoScraperCfg.delete(guildId);
+    saveScraperCfg();
+    saveScraperCursors();
+    await interaction.deferUpdate();
+    return refreshScraperPanel(interaction, guildId);
+  }
+
+  // ── MODAL SUBMISSIONS ─────────────────────────────────────────────────────
+  if (!interaction.isModalSubmit()) return;
+
+  // Add source modal
+  if (cid === `sc_modal_add_src:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
+    const label     = interaction.fields.getTextInputValue("label").trim();
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${channelId}\` not found — make sure the bot has access to it.`, flags: 64 });
+    if (cfg.sources.some(s => s.channelId === channelId)) return interaction.reply({ content: `<:steal:1521327958634135655> <#${channelId}> is already in your sources list.`, flags: 64 });
+    if (cfg.sources.length >= 25) return interaction.reply({ content: "<:steal:1521327958634135655> Maximum **25** source channels allowed.", flags: 64 });
+    cfg.sources.push({ channelId, label: label || ch.name || "" });
+    saveScraperCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Added <#${channelId}>${label ? ` as **${label}**` : ""} to sources.`, flags: 64 });
+    return refreshScraperPanel(interaction, guildId);
+  }
+
+  // Set target modal
+  if (cid === `sc_modal_target:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${channelId}\` not found.`, flags: 64 });
+    cfg.targetChannelId = channelId;
+    saveScraperCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Target set to <#${channelId}>.`, flags: 64 });
+    return refreshScraperPanel(interaction, guildId);
+  }
+
+  // Schedule modal
+  if (cid === `sc_modal_schedule:${guildId}`) {
+    const count   = parseInt(interaction.fields.getTextInputValue("count"));
+    const intStr  = interaction.fields.getTextInputValue("interval").trim();
+    const randStr = interaction.fields.getTextInputValue("randomize").trim().toLowerCase();
+    const ms      = parseDuration(intStr);
+    if (isNaN(count) || count < 1 || count > 50) return interaction.reply({ content: "<:steal:1521327958634135655> Count must be **1–50**.", flags: 64 });
+    if (!ms || ms < 60_000)                       return interaction.reply({ content: "<:steal:1521327958634135655> Interval must be at least **1 minute** (e.g. `1m`, `30m`, `1h`).", flags: 64 });
+    cfg.schedule = { count, intervalMs: ms, randomize: !["no","false","n","0"].includes(randStr) };
+    saveScraperCfg();
+    if (cfg.enabled) rescheduleScraperTimer(guildId);
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Schedule updated: **${count}** videos every **${msToHuman(ms)}**${cfg.schedule.randomize ? " (randomized ±50%)" : ""}.`, flags: 64 });
+    return refreshScraperPanel(interaction, guildId);
+  }
+
+  // Rename modal
+  if (cid === `sc_modal_rename:${guildId}`) {
+    cfg.renamePrefix = interaction.fields.getTextInputValue("prefix").trim();
+    saveScraperCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Videos will now be renamed to: \`${cfg.renamePrefix}\``, flags: 64 });
+    return refreshScraperPanel(interaction, guildId);
+  }
+});
+
+// ── Scraper scheduler ─────────────────────────────────────────────────────────
+// Posts 1 video per tick. Tick delay = intervalMs / count (with ±50% jitter).
+// e.g. "12 videos / 1h" → ~1 video every 5 min, spread randomly across the hour.
+function rescheduleScraperTimer(guildId) {
+  clearTimeout(scraperTimers.get(guildId));
+  scraperTimers.delete(guildId);
+
+  const cfg = getScraperCfg(guildId);
+  if (!cfg.enabled || !cfg.targetChannelId || cfg.sources.length === 0) return;
+
+  const { intervalMs, count, randomize } = cfg.schedule;
+  const perVideoMs = Math.floor(intervalMs / Math.max(count, 1));
+  const delay = randomize
+    ? Math.floor(perVideoMs * (0.5 + Math.random()))  // 50%–150% of per-video delay
+    : perVideoMs;
+
+  scraperNextRunAt.set(guildId, Date.now() + delay);
+  scraperTimers.set(guildId, setTimeout(async () => {
+    scraperTimers.delete(guildId);
+    scraperNextRunAt.delete(guildId);
+    await runScraper(guildId, 1);    // 1 video per tick
+    rescheduleScraperTimer(guildId); // re-queue for the next one
+  }, delay));
+}
+
+// ── Core scraper worker ───────────────────────────────────────────────────────
+const VIDEO_EXT_RE     = /\.(mp4|mov|webm|mkv|avi|gif)$/i;
+// Matches bare video URLs in message text
+const CONTENT_VIDEO_RE = /https?:\/\/[^\s<>"]+?\.(mp4|mov|webm|mkv|avi|gif)(\?[^\s<>"]*)?/gi;
+// Matches fxtwitter / vxtwitter / fixupx redirect URLs in message content
+const FXTWITTER_RE = /https?:\/\/[^\s<>"]*(?:fxtwitter|vxtwitter|fixupx)\.com\/[^\s<>"]+/gi;
+
+// Extracts the real MP4 URL from a fxtwitter/vxtwitter redirect
+// e.g. https://api.fxtwitter.com/2/go?url=https%3A%2F%2Fvideo.twimg.com%2F...mp4
+function extractMp4Url(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('fxtwitter.com') || u.hostname.includes('vxtwitter.com') || u.hostname.includes('fixupx.com')) {
+      const inner = u.searchParams.get('url') ?? u.searchParams.get('video_url');
+      if (inner) {
+        const decoded = decodeURIComponent(inner);
+        if (VIDEO_EXT_RE.test(decoded.split('?')[0])) return decoded;
+      }
+    }
+    // Direct twimg MP4
+    if (u.hostname.includes('twimg.com') && VIDEO_EXT_RE.test(u.pathname)) return url;
+  } catch {}
+  return null;
+}
+
+// HEAD-check whether a video URL is still reachable AND get its size in one shot.
+// Returns { ok: true, size: number } or { ok: false }.
+// size = Infinity when the server doesn't send Content-Length.
+async function isVideoAvailable(url) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6_000);
+    const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return { ok: false };
+    const cl   = parseInt(res.headers.get('content-length') || '0');
+    const size = cl > 0 ? cl : Infinity;
+    return { ok: true, size };
+  } catch {
+    return { ok: false };
+  }
+}
+
+// Prevents two scraper runs for the same guild from overlapping
+const _scraperRunning = new Set();
+
+// ── Stream a video URL directly to Discord without buffering the full file in RAM ──
+// Each call creates a fresh piped stream; safe to call twice for v2 + fallback.
+async function _openVideoStream(url) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal:  AbortSignal.timeout(30_000), // 30 s per-download timeout
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const { Readable } = require('stream');
+  return Readable.fromWeb(res.body);
+}
+
+// overrideCount lets callers post fewer videos than the scheduled quota (e.g. 1 on Start)
+async function runScraper(guildId, overrideCount) {
+  if (_scraperRunning.has(guildId)) {
+    log(`[Scraper] Guild ${guildId}: run skipped — previous run still in progress`, "warn");
+    return { posted: 0, needed: 0, skippedSources: 0 };
+  }
+  _scraperRunning.add(guildId);
+
+  // Safety valve: force-release the lock after 3 minutes so a stuck run never blocks forever
+  const _runTimeout = setTimeout(() => {
+    if (_scraperRunning.has(guildId)) {
+      _scraperRunning.delete(guildId);
+      log(`[Scraper] Guild ${guildId}: force-killed after 3 min timeout`, 'error');
+    }
+  }, 3 * 60 * 1000);
+
+  try {
+  const cfg = getScraperCfg(guildId);
+  if (!cfg.targetChannelId || cfg.sources.length === 0) { _scraperRunning.delete(guildId); return { posted: 0, needed: 0, skippedSources: 0 }; }
+
+  const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
+  if (!target?.isTextBased?.()) {
+    log(`[Scraper] target ${cfg.targetChannelId} missing or not text-based`, "error");
+    _scraperRunning.delete(guildId);
+    return { posted: 0, needed: 0, skippedSources: 0, error: "Target channel inaccessible" };
+  }
+
+  // Check bot has send + attach permissions in target
+  const myPerms = target.permissionsFor(target.guild?.members?.me);
+  if (myPerms && !myPerms.has(PermissionFlagsBits.SendMessages)) {
+    log(`[Scraper] bot missing SEND_MESSAGES in target ${cfg.targetChannelId}`, "error");
+    return { posted: 0, needed: 0, skippedSources: 0, error: "Missing Send Messages permission in target" };
+  }
+
+  // One Map<channelId, lastSeenMsgId> per guild — the only thing stored in DB.
+  // Using `after` means we never re-fetch anything before the cursor.
+  const cursors   = getScraperCursors(guildId);
+  let postedCount = 0;
+  let skippedSources = 0;
+  const needed    = (overrideCount != null && overrideCount > 0) ? overrideCount : cfg.schedule.count;
+  const safeName  = cfg.renamePrefix.replace(/[^a-zA-Z0-9._\-]/g, "_") + ".mp4";
+
+  // Shuffle sources so no single channel monopolises the quota
+  const sources = [...cfg.sources].sort(() => Math.random() - 0.5);
+
+  for (const source of sources) {
+    if (postedCount >= needed) break;
+
+    const srcCh = await client.channels.fetch(source.channelId).catch(() => null);
+    if (!srcCh?.isTextBased?.()) {
+      log(`[Scraper] source ${source.channelId} (${source.label || "unlabelled"}) inaccessible — bot may not be in that server or lacks View Channel permission`, "error");
+      skippedSources++;
+      continue;
+    }
+
+    const cursor = cursors.get(source.channelId);
+
+    // ── Start position ───────────────────────────────────────────────────────
+    // No cursor → first run → start from the oldest message in the channel
+    // so all existing videos get posted immediately.
+    // Cursor set → continue exactly from where the last run stopped.
+    let after    = cursor ?? "0"; // "0" = before any real Discord snowflake
+    let newestId = cursor ?? "0";
+
+    paging: for (let page = 0; page < 20 && postedCount < needed; page++) {
+      const msgs = await srcCh.messages.fetch({ limit: 100, after }).catch(() => null);
+      if (!msgs || msgs.size === 0) {
+        // Cursor is past all content — reset so next run cycles from the oldest message
+        cursors.delete(source.channelId);
+        newestId = "0";
+        break;
+      }
+
+      // Discord returns `after` results oldest→newest
+      const sorted = [...msgs.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      for (const m of sorted) {
+        // Advance cursor past every message, not just videos
+        if (BigInt(m.id) > BigInt(newestId)) newestId = m.id;
+        if (postedCount >= needed) break;
+
+        // ── Collect every video source from this message ──────────────────
+        // Deduplicate by URL so we never double-post the same file
+        const _seenUrls = new Set();
+        const videoItems = []; // { url, size }
+        const addVideo = (url, size) => {
+          if (!url || _seenUrls.has(url)) return;
+          _seenUrls.add(url);
+          videoItems.push({ url, size });
+        };
+
+        // 1. File attachments (direct uploads — user or bot)
+        for (const att of m.attachments.values()) {
+          if (VIDEO_EXT_RE.test(att.name ?? "")) addVideo(att.url, att.size);
+        }
+
+        // 2. Direct .mp4 / .mov / etc URLs in message text
+        for (const match of [...(m.content?.matchAll(CONTENT_VIDEO_RE) ?? [])]) {
+          addVideo(match[0], Infinity);
+        }
+
+        // 3. fxtwitter / vxtwitter / fixupx redirect URLs in message text
+        //    Real twimg MP4 URL is encoded in the ?url= query param — decode it
+        for (const match of [...(m.content?.matchAll(FXTWITTER_RE) ?? [])]) {
+          const mp4 = extractMp4Url(match[0]);
+          if (mp4) addVideo(mp4, Infinity);
+        }
+
+        // 4. Discord embeds — video.url often carries a fxtwitter redirect
+        for (const embed of m.embeds ?? []) {
+          const candidates = [embed.video?.url, embed.video?.proxyURL, embed.url].filter(Boolean);
+          for (const c of candidates) {
+            const mp4 = extractMp4Url(c) ?? (VIDEO_EXT_RE.test(c.split("?")[0]) ? c : null);
+            if (mp4) { addVideo(mp4, Infinity); break; }
+          }
+        }
+
+        // ── Upload each video as a real attachment — NEVER as a link ─────
+        // Each attempt opens a fresh piped stream so the entire file is NEVER
+        // loaded into a Buffer in RAM — only a small pipe-buffer (~64 KB) is used.
+        for (const { url, size: attSize } of videoItems) {
+          if (postedCount >= needed) break paging;
+
+          // Single HEAD request: checks availability AND gets file size at the same time.
+          // attSize is reliable for Discord attachments; Infinity for Twitter/embed URLs.
+          // headSize fills the gap for URLs that advertise Content-Length.
+          const { ok: videoOk, size: headSize } = await isVideoAvailable(url);
+          if (!videoOk) {
+            log(`[Scraper] Skipping unavailable/expired video: ${url}`, "warn");
+            continue;
+          }
+          const effectiveSize = attSize !== Infinity ? attSize : headSize;
+          if (effectiveSize > 25 * 1024 * 1024) {
+            log(`[Scraper] Skipping oversized video (${Math.round(effectiveSize / 1024 / 1024)} MB): ${url}`, "warn");
+            continue;
+          }
+
+          try {
+            const eCfg = cfg.embedConfig ?? {};
+            // Strip any leading -# the user may have typed in the footer field
+            // (we always add it ourselves so it renders as Discord subtext)
+            const cleanFooter = (eCfg.footer ?? '').replace(/^-#\s*/, '').trim();
+
+            // ── Attempt 1: Components v2 Container ──────────────────────────
+            // flag 1<<15 = IsComponentsV2 (discord.js 14.16+ / API v10)
+            const C2_FLAG = 1 << 15;
+            const boxParts = [];
+            if (eCfg.title)       boxParts.push({ type: 10, content: eCfg.title });
+            if (eCfg.description) boxParts.push({ type: 10, content: eCfg.description });
+            boxParts.push({ type: 14, divider: true,  spacing: 1 }); // ── divider
+            boxParts.push({ type: 12, items: [{ media: { url: `attachment://${safeName}` } }] });
+            if (cleanFooter) {
+              boxParts.push({ type: 14, divider: false, spacing: 1 });
+              boxParts.push({ type: 10, content: `-# ${cleanFooter}` });
+            }
+
+            let uploadOk = false;
+            try {
+              const stream1 = await _openVideoStream(url); // fresh stream, ~64 KB pipe buffer
+              await target.send({
+                flags:      C2_FLAG,
+                components: [{ type: 17, accent_color: eCfg.color ?? 0xFFFFFF, components: boxParts }],
+                files:      [{ attachment: stream1, name: safeName }],
+              });
+              uploadOk = true;
+            } catch (e2) {
+              log(`[Scraper] Components v2 failed (${e2.message}), falling back to content+file`, "warn");
+            }
+
+            // ── Fallback: plain content above the video ──────────────────────
+            // Opens a second independent stream — no double-buffer in RAM.
+            if (!uploadOk) {
+              try {
+                const lines = [];
+                if (eCfg.title)       lines.push(eCfg.title);
+                if (eCfg.description) lines.push(eCfg.description);
+                if (cleanFooter)      lines.push(`-# ${cleanFooter}`);
+                const stream2 = await _openVideoStream(url); // fresh stream again
+                await target.send({
+                  content: lines.length > 0 ? lines.join('\n') : undefined,
+                  files:   [{ attachment: stream2, name: safeName }],
+                });
+              } catch (eFb) {
+                log(`[Scraper] Fallback send also failed for ${url}: ${eFb.message}`, "warn");
+                continue; // skip this video, don't count it
+              }
+            }
+
+            postedCount++;
+            // Track hourly post count for the panel
+            const _hs = scraperHourlyStats.get(guildId);
+            const _now = Date.now();
+            if (!_hs || _now - _hs.windowStart >= cfg.schedule.intervalMs) {
+              scraperHourlyStats.set(guildId, { count: 1, windowStart: _now });
+            } else { _hs.count++; }
+            // Track what was just posted and push live update to all open panels
+            scraperLastPosted.set(guildId, { name: safeName, ts: Date.now() });
+            refreshAllPanelsForGuild(guildId).catch(() => {});
+            await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
+          } catch (e) {
+            log(`[Scraper] Upload failed for ${url}: ${e.message}`, "warn");
+            // Skip silently — never post as a raw link
+          }
+        }
+      }
+
+      after = sorted.at(-1).id;
+      if (msgs.size < 100) {
+        // Reached the newest message in the channel — reset cursor so next run cycles back
+        cursors.delete(source.channelId);
+        newestId = "0";
+        break;
+      }
+      await new Promise(r => setTimeout(r, 350));
+    }
+
+    // Save advanced cursor — the only thing written to DB for dedup
+    // (If newestId was reset to "0" above, delete the cursor so next run starts fresh)
+    if (newestId === "0") {
+      cursors.delete(source.channelId);
+    } else if (newestId !== cursor) {
+      cursors.set(source.channelId, newestId);
+    }
+  }
+
+  cfg.lastRunAt = Date.now();
+  cfg.lastRunResult = { posted: postedCount, needed, skippedSources, ts: Date.now() };
+  saveScraperCfg();     // persist config + lastRunAt + lastRunResult
+  saveScraperCursors(); // persist cursors — one ID per source channel, nothing more
+  log(`[Scraper] Guild ${guildId}: posted ${postedCount}/${needed} videos (${skippedSources} source(s) skipped)`, "success");
+  // Final refresh — ensures panel is up to date even if no videos were posted
+  refreshAllPanelsForGuild(guildId).catch(() => {});
+  return { posted: postedCount, needed, skippedSources };
+  } catch (e) {
+    log(`[Scraper] Guild ${guildId}: unexpected error — ${e.message}`, "error");
+    return { posted: 0, needed: 0, skippedSources: 0, error: e.message };
+  } finally {
+    clearTimeout(_runTimeout);
+    _scraperRunning.delete(guildId);
+  }
+}
+
+// Scrapers are re-started inside loadAllData() once PostgreSQL data is fully restored
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMBED CONFIG PANEL  (,config embed)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function buildEmbedConfigEmbed(guildId) {
+  const cfg  = getScraperCfg(guildId);
+  const eCfg = cfg.embedConfig ?? {};
+  const colorHex = '#' + ((eCfg.color ?? 0xFFFFFF).toString(16).padStart(6, '0').toUpperCase());
+  return {
+    color:       eCfg.color ?? 0xFFFFFF,
+    author:      { name: 'Video Embed Style  Config Panel' },
+    description: 'Customize the embed that wraps every reposted video.',
+    fields: [
+      { name: 'Color',       value: colorHex || '*(not set)*',           inline: true  },
+      { name: 'Title',       value: eCfg.title       || '*(not set)*',   inline: true  },
+      { name: 'Description', value: eCfg.description || '*(not set)*',   inline: false },
+      { name: 'Footer',      value: eCfg.footer      || '*(not set)*',   inline: false },
+    ],
+    footer:    { text: 'sensational · video scraper · Administrator only' },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildEmbedConfigRows(guildId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('emb_color:'   + guildId).setLabel('Color').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_title:'   + guildId).setLabel('Title').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_desc:'    + guildId).setLabel('Description').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('emb_footer:'  + guildId).setLabel('Footer').setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
+// Embed config interaction handler
+client.on('interactionCreate', async (interaction) => {
+  const cid = interaction.customId ?? '';
+  if (!cid.startsWith('emb_')) return;
+
+  const sess = configSessions.get(interaction.message?.id);
+  if (!sess) {
+    if (interaction.isButton()) {
+      return interaction.reply({ content: 'Session expired — run `,config embed` again.', flags: 64 }).catch(() => {});
+    }
+    if (!interaction.isModalSubmit()) return;
+  }
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ content: 'This panel was opened by someone else.', flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+  const guildId = sess ? sess.guildId : cid.split(':')[1];
+  const cfg     = getScraperCfg(guildId);
+  if (!cfg.embedConfig) cfg.embedConfig = { color: 0xFFFFFF, title: '', description: '', footer: '' };
+
+  const refreshEmbedPanel = async () => {
+    if (!interaction.message) return;
+    await interaction.message.edit({
+      embeds:     [buildEmbedConfigEmbed(guildId)],
+      components: buildEmbedConfigRows(guildId),
+    }).catch(() => {});
+  };
+
+  // COLOR
+  if (cid === 'emb_color:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_color:' + guildId).setTitle('Set Embed Color');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('color_val').setLabel('Hex color (e.g. FF0000 or #FF0000)').setStyle(TextInputStyle.Short).setPlaceholder('#RRGGBB').setRequired(true).setMaxLength(7)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_color:' + guildId) {
+    const raw = interaction.fields.getTextInputValue('color_val').replace(/^#/, '').trim();
+    const num = parseInt(raw, 16);
+    if (isNaN(num) || raw.length > 6) return interaction.reply({ content: 'Invalid hex. Example: FF0000', flags: 64 });
+    cfg.embedConfig.color = num;
+    saveScraperCfg();
+    await interaction.reply({ content: 'Embed color set to #' + raw.toUpperCase().padStart(6,'0'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // TITLE
+  if (cid === 'emb_title:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_title:' + guildId).setTitle('Set Embed Title');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('title_val').setLabel('Title text (blank = no title)').setStyle(TextInputStyle.Short).setRequired(false).setValue(cfg.embedConfig.title ?? '').setMaxLength(256)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_title:' + guildId) {
+    cfg.embedConfig.title = interaction.fields.getTextInputValue('title_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Title set to: ' + (cfg.embedConfig.title || '*(none)*'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // DESCRIPTION
+  if (cid === 'emb_desc:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_desc:' + guildId).setTitle('Set Embed Description');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('desc_val').setLabel('Description text (blank = no description)').setStyle(TextInputStyle.Paragraph).setRequired(false).setValue(cfg.embedConfig.description ?? '').setMaxLength(2048)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_desc:' + guildId) {
+    cfg.embedConfig.description = interaction.fields.getTextInputValue('desc_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Description updated.', flags: 64 });
+    return refreshEmbedPanel();
+  }
+
+  // FOOTER
+  if (cid === 'emb_footer:' + guildId) {
+    const modal = new ModalBuilder().setCustomId('emb_modal_footer:' + guildId).setTitle('Set Embed Footer');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('footer_val').setLabel('Footer text (e.g. v3.9 | Made by you)').setStyle(TextInputStyle.Short).setRequired(false).setValue(cfg.embedConfig.footer ?? '').setMaxLength(2048)
+    ));
+    return interaction.showModal(modal);
+  }
+  if (cid === 'emb_modal_footer:' + guildId) {
+    cfg.embedConfig.footer = interaction.fields.getTextInputValue('footer_val').trim();
+    saveScraperCfg();
+    await interaction.reply({ content: 'Footer set to: ' + (cfg.embedConfig.footer || '*(none)*'), flags: 64 });
+    return refreshEmbedPanel();
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TWITTER/X  REPOST  SYSTEM   (RSSHub polling — nessuna API Twitter necessaria)
+// Comando:  ,twitter   →   apre il pannello interattivo (solo Administrator)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── State maps ────────────────────────────────────────────────────────────────
+const twitterRepostCfg  = new Map(); // guildId → TwitterConfig
+const twitterCursors    = new Map(); // guildId → Map<username, lastTweetId>
+const twitterTimers     = new Map(); // guildId → Timeout
+const twitterSessions   = new Map(); // msgId   → { guildId, authorId }
+const twitterUserPanel  = new Map(); // `userId:guildId` → Message
+const _twitterRunning   = new Set(); // guard doppia esecuzione
+
+// ── Config factory ────────────────────────────────────────────────────────────
+function getTwitterCfg(guildId) {
+  if (!twitterRepostCfg.has(guildId)) {
+    twitterRepostCfg.set(guildId, {
+      enabled:         false,
+      accounts:        [],          // [{ username, label }]
+      targetChannelId: null,
+      pollIntervalMs:  10 * 60_000, // 10 minuti
+      mediaOnly:       false,
+      includeRetweets: false,
+      includeReplies:  false,
+      rsshubBase:      'https://rsshub.app',
+      lastRunAt:       null,
+      lastRunResult:   null,
+    });
+  }
+  return twitterRepostCfg.get(guildId);
+}
+
+function getTwitterCursors(guildId) {
+  if (!twitterCursors.has(guildId)) twitterCursors.set(guildId, new Map());
+  return twitterCursors.get(guildId);
+}
+
+// ── HTTP fetcher (built-in Node, zero dipendenze) ─────────────────────────────
+const _https = require('https');
+const _http  = require('http');
+
+function fetchUrl(url, timeoutMs = 12_000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? _https : _http;
+    const req = lib.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; DiscordBot/1.0; +https://discord.com)',
+        'Accept':     'application/rss+xml, application/xml, text/xml, */*',
+      },
+    }, (res) => {
+      // Segui redirect (301/302)
+      if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+        return fetchUrl(res.headers.location, timeoutMs).then(resolve).catch(reject);
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.on('error', reject);
+  });
+}
+
+// ── RSS parser leggero (no dipendenze) ───────────────────────────────────────
+function parseRss(xml) {
+  const items = [];
+  const blocks = xml.match(/<item[\s\S]*?<\/item>/g) ?? [];
+
+  for (const block of blocks) {
+    const tag = (name) => {
+      const r = block.match(
+        new RegExp(`<${name}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${name}>` +
+                   `|<${name}[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i')
+      );
+      return r ? (r[1] ?? r[2] ?? '').trim() : '';
+    };
+    const attr = (tagName, attrName) => {
+      const r = block.match(new RegExp(`<${tagName}[^>]+${attrName}="([^"]+)"`, 'i'));
+      return r ? r[1] : '';
+    };
+
+    const title       = tag('title');
+    const link        = tag('link') || attr('link', 'href');
+    const pubDate     = tag('pubDate') || tag('published') || tag('dc:date');
+    const description = tag('description') || tag('content:encoded') || tag('summary');
+    const guid        = tag('guid');
+
+    // Tweet ID da URL o guid
+    const idMatch = (guid || link).match(/status(?:es)?[\/:](\d+)/);
+    const tweetId = idMatch ? idMatch[1] : (guid || link || Date.now().toString());
+
+    // Raccoglie URL media (immagini / video)
+    const mediaUrls = new Set();
+    const encUrl = attr('enclosure', 'url');
+    if (encUrl) mediaUrls.add(encUrl);
+    for (const m of block.matchAll(/url="([^"]+(?:\.jpg|\.jpeg|\.png|\.gif|\.mp4|\.webp)[^"]*)"/gi))
+      mediaUrls.add(m[1]);
+    for (const m of description.matchAll(/<img[^>]+src="([^"]+)"/gi))
+      mediaUrls.add(m[1]);
+
+    // Testo pulito
+    const cleanText = description
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ').trim().slice(0, 500);
+
+    items.push({ title, link, pubDate, cleanText, tweetId, mediaUrls: [...mediaUrls] });
+  }
+  return items;
+}
+
+// ── HTML entities unescape (per il testo del tweet) ──────────────────────────
+function unescapeHtml(str = '') {
+  return str
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+// ── Cuore del poller ──────────────────────────────────────────────────────────
+async function runTwitterPoller(guildId) {
+  if (_twitterRunning.has(guildId)) return null;
+  _twitterRunning.add(guildId);
+
+  const cfg = getTwitterCfg(guildId);
+  if (!cfg.enabled || !cfg.targetChannelId || cfg.accounts.length === 0) {
+    _twitterRunning.delete(guildId);
+    return null;
+  }
+
+  const target = await client.channels.fetch(cfg.targetChannelId).catch(() => null);
+  if (!target) {
+    cfg.enabled = false;
+    saveTwitterCfg();
+    _twitterRunning.delete(guildId);
+    log(`[Twitter] Guild ${guildId}: target channel not found — disabling`, 'warn');
+    return null;
+  }
+
+  const cursors    = getTwitterCursors(guildId);
+  let   totalPosted = 0;
+  let   errors      = 0;
+
+  for (const account of cfg.accounts) {
+    try {
+      const rssUrl = `${cfg.rsshubBase.replace(/\/$/, '')}/twitter/user/${account.username}`;
+      let xml;
+      try {
+        xml = await fetchUrl(rssUrl, 15_000);
+      } catch (e) {
+        log(`[Twitter] RSS fetch failed for @${account.username}: ${e.message}`, 'warn');
+        errors++;
+        continue;
+      }
+
+      const items = parseRss(xml);
+      if (items.length === 0) continue;
+
+      // Primo accesso: imposta cursore sul tweet più recente e NON posta nulla
+      // (evita flood di decine di tweet storici al primo avvio)
+      if (!cursors.has(account.username)) {
+        const newest = items.reduce((a, b) => (a.tweetId > b.tweetId ? a : b));
+        cursors.set(account.username, newest.tweetId);
+        saveTwitterCursors();
+        log(`[Twitter] @${account.username}: primo avvio — cursore impostato a ${newest.tweetId}`, 'info');
+        continue;
+      }
+
+      const lastId = cursors.get(account.username);
+
+      // Ordina dal meno recente al più recente → posta in ordine cronologico
+      const newItems = items
+        .filter(i => i.tweetId > lastId)
+        .sort((a, b) => (a.tweetId < b.tweetId ? -1 : 1));
+
+      for (const item of newItems) {
+        // Filtro retweet (il titolo nell'RSS inizia con "RT @")
+        if (!cfg.includeRetweets && item.title.startsWith('RT @')) continue;
+        // Filtro risposte (il titolo inizia con "@")
+        if (!cfg.includeReplies && /^@\w/.test(item.title)) continue;
+        // Filtro media-only
+        if (cfg.mediaOnly && item.mediaUrls.length === 0) continue;
+
+        try {
+          const tweetText = unescapeHtml(item.cleanText) || unescapeHtml(item.title);
+
+          const embedObj = {
+            color:  0x1D9BF0, // blu Twitter/X ufficiale
+            author: {
+              name:     `@${account.username}${account.label ? `  ·  ${account.label}` : ''}`,
+              url:      `https://x.com/${account.username}`,
+              icon_url: `https://unavatar.io/twitter/${account.username}`,
+            },
+            description: tweetText || undefined,
+            url:         item.link || `https://x.com/${account.username}`,
+            timestamp:   item.pubDate ? new Date(item.pubDate).toISOString() : undefined,
+            footer:      { text: 'X / Twitter  ·  via RSSHub' },
+          };
+
+          // Prima immagine nell'embed (le altre come file allegati se disponibili)
+          const images = item.mediaUrls.filter(u => /\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(u));
+          if (images.length > 0) embedObj.image = { url: images[0] };
+
+          await target.send({ embeds: [embedObj] });
+
+          cursors.set(account.username, item.tweetId);
+          totalPosted++;
+          await new Promise(r => setTimeout(r, 1_200)); // rate-limit safe
+        } catch (e) {
+          log(`[Twitter] Post fallito (${item.tweetId}): ${e.message}`, 'warn');
+        }
+      }
+    } catch (e) {
+      log(`[Twitter] Errore imprevisto per @${account.username}: ${e.message}`, 'warn');
+      errors++;
+    }
+
+    await new Promise(r => setTimeout(r, 2_000)); // pausa tra account
+  }
+
+  cfg.lastRunAt     = Date.now();
+  cfg.lastRunResult = { posted: totalPosted, errors, accounts: cfg.accounts.length, ts: Date.now() };
+  saveTwitterCfg();
+  saveTwitterCursors();
+  log(`[Twitter] Guild ${guildId}: postati ${totalPosted} tweet(s), errori: ${errors}`, 'info');
+  _twitterRunning.delete(guildId);
+  return cfg.lastRunResult;
+}
+
+function rescheduleTwitterTimer(guildId) {
+  clearTimeout(twitterTimers.get(guildId));
+  twitterTimers.delete(guildId);
+  const cfg = getTwitterCfg(guildId);
+  if (!cfg.enabled) return;
+  const timer = setTimeout(() => {
+    runTwitterPoller(guildId)
+      .then(() => rescheduleTwitterTimer(guildId))
+      .catch(() => rescheduleTwitterTimer(guildId));
+  }, cfg.pollIntervalMs);
+  twitterTimers.set(guildId, timer);
+}
+
+// ── Embed del pannello ────────────────────────────────────────────────────────
+function buildTwitterEmbed(guildId) {
+  const cfg = getTwitterCfg(guildId);
+
+  const statusStr  = cfg.enabled ? '<:019TXTWhite_Yes:1521327983279996999> **Attivo**' : '⭕ **Spento**';
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : '*(non impostato — premi 🎯)*';
+  const intervalStr = `ogni **${msToHuman(cfg.pollIntervalMs)}**`;
+  const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : '*(mai eseguito)*';
+
+  let accountsStr;
+  if (cfg.accounts.length === 0) {
+    accountsStr = '*(nessuno — aggiungine uno con ➕)*';
+  } else {
+    accountsStr = cfg.accounts.map((a, i) =>
+      `\`${String(i + 1).padStart(2, '0')}.\` **@${a.username}**${a.label ? `  ·  ${a.label}` : ''}`
+    ).join('\n');
+  }
+
+  const filtersStr = [
+    cfg.mediaOnly       ? '📷 Solo media'  : '<:RUSH_task:1521415237813665813> Testo + media',
+    cfg.includeRetweets ? '🔁 RT inclusi'  : '🚫 RT esclusi',
+    cfg.includeReplies  ? '<:RUSH_comment:1491884212297531572> Risposte incluse' : '🚫 Risposte escluse',
+  ].join('  ·  ');
+
+  const lastResultStr = (() => {
+    const r = cfg.lastRunResult;
+    if (!r) return '*(nessun dato)*';
+    if (r.errors && r.posted === 0) return `<:RUSH_warning:1521415214799654985> ${r.errors} errore/i`;
+    return `<:019TXTWhite_Yes:1521327983279996999> ${r.posted} tweet postati${r.errors ? ` · <:RUSH_warning:1521415214799654985> ${r.errors} errori` : ''}`;
+  })();
+
+  const readyHint = !cfg.targetChannelId
+    ? '> <:RUSH_warning:1521415214799654985> **Imposta prima un canale target.**'
+    : cfg.accounts.length === 0
+      ? '> <:RUSH_warning:1521415214799654985> **Aggiungi almeno un account Twitter.**'
+      : cfg.enabled
+        ? `> <:019TXTWhite_Yes:1521327983279996999> Polling attivo — prossima scansione: ${intervalStr}.`
+        : '> <:019TXTWhite_Yes:1521327983279996999> Pronto! Premi **▶ Avvia** per iniziare.';
+
+  return {
+    color:  0x1D9BF0,
+    title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Pannello Config',
+    description: [
+      'Monitora account Twitter/X via **RSSHub** e riposta automaticamente i tweet nel tuo canale.',
+      '',
+      readyHint,
+    ].join('\n'),
+    fields: [
+      { name: '<:RUSH_list:1521415268000337961>  Stato',              value: statusStr,      inline: true  },
+      { name: '<:RUSH_clock:1521415225058791454>  Intervallo polling', value: intervalStr,    inline: true  },
+      { name: '🕑  Ultima esecuzione',  value: lastStr,        inline: true  },
+      { name: '<:RUSH_comment:1491884212297531572>  Canale target',      value: targetStr,      inline: false },
+      { name: '🐦  Account monitorati', value: accountsStr,    inline: false },
+      { name: '🔍  Filtri attivi',      value: filtersStr,     inline: false },
+      { name: '<:RUSH_task:1521415237813665813>  Ultimo risultato',   value: lastResultStr,  inline: false },
+      { name: '<:RUSH_globe:1521415284496273489>  RSSHub base URL',    value: `\`${cfg.rsshubBase}\``, inline: false },
+    ],
+    footer:    { text: 'sensational  ·  twitter repost  ·  solo Administrator' },
+    timestamp: new Date(),
+  };
+}
+
+// ── Bottoni del pannello ──────────────────────────────────────────────────────
+function buildTwitterRows(guildId) {
+  const cfg = getTwitterCfg(guildId);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_toggle:${guildId}`)
+        .setLabel(cfg.enabled ? '⏹ Ferma' : '▶ Avvia')
+        .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`tw_run_now:${guildId}`)
+        .setLabel('<:RUSH_thunder:1521415273943400580> Controlla Ora')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_add_acc:${guildId}`)
+        .setLabel('➕ Aggiungi Account')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`tw_del_acc:${guildId}`)
+        .setLabel('➖ Rimuovi Account')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(cfg.accounts.length === 0),
+      new ButtonBuilder()
+        .setCustomId(`tw_target:${guildId}`)
+        .setLabel('🎯 Canale Target')
+        .setStyle(ButtonStyle.Primary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tw_interval:${guildId}`)
+        .setLabel('<:RUSH_clock:1521415225058791454> Intervallo')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_filters:${guildId}`)
+        .setLabel('🔍 Filtri')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_rsshub:${guildId}`)
+        .setLabel('<:RUSH_globe:1521415284496273489> RSSHub URL')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`tw_reset:${guildId}`)
+        .setLabel('<:RUSH_trash_can:1521415241190215721> Reset')
+        .setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+// ── Aggiorna il pannello in-place ─────────────────────────────────────────────
+async function refreshTwitterPanel(interaction) {
+  const sess = twitterSessions.get(interaction.message?.id);
+  if (!sess) return;
+  await interaction.message.edit({
+    embeds:     [buildTwitterEmbed(sess.guildId)],
+    components: buildTwitterRows(sess.guildId),
+  }).catch(() => {});
+}
+
+// ── Comando ,twitter ──────────────────────────────────────────────────────────
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(',')) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  if (args[0].toLowerCase() !== 'twitter') return;
+
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    return message.reply({ embeds: [{ color: PINK, description: '<:steal:1521327958634135655> Serve il permesso **Administrator** per aprire il pannello Twitter.' }] });
+  }
+
+  const sent = await message.reply({
+    embeds:     [buildTwitterEmbed(message.guild.id)],
+    components: buildTwitterRows(message.guild.id),
+  }).catch(() => null);
+
+  if (sent) {
+    twitterSessions.set(sent.id, { guildId: message.guild.id, authorId: message.author.id });
+    twitterUserPanel.set(`${message.author.id}:${message.guild.id}`, sent);
+    setTimeout(() => {
+      twitterSessions.delete(sent.id);
+      twitterUserPanel.delete(`${message.author.id}:${message.guild.id}`);
+    }, 60 * 60 * 1000); // scade dopo 1 ora
+  }
+});
+
+// ── Interaction handler — pannello Twitter ────────────────────────────────────
+client.on('interactionCreate', async (interaction) => {
+  const cid = interaction.customId ?? '';
+  if (!cid.startsWith('tw_')) return;
+
+  // tw_del_pick viene da un reply efimero — gestisci prima del check sessione
+  if (cid.startsWith('tw_del_pick:') && interaction.isStringSelectMenu()) {
+    const gId  = cid.replace('tw_del_pick:', '');
+    const cfg2 = getTwitterCfg(gId);
+    const idx  = parseInt(interaction.values[0]);
+    if (!isNaN(idx) && idx >= 0 && idx < cfg2.accounts.length) {
+      const removed = cfg2.accounts.splice(idx, 1)[0];
+      saveTwitterCfg();
+      await interaction.update({
+        content:    `<:019TXTWhite_Yes:1521327983279996999> Rimosso **@${removed.username}**`,
+        components: [],
+      });
+      const panelMsg = twitterUserPanel.get(`${interaction.user.id}:${gId}`);
+      if (panelMsg) {
+        await panelMsg.edit({
+          embeds:     [buildTwitterEmbed(gId)],
+          components: buildTwitterRows(gId),
+        }).catch(() => {});
+      }
+    } else {
+      await interaction.update({ content: '<:steal:1521327958634135655> Selezione non valida.', components: [] });
+    }
+    return;
+  }
+
+  const sess = twitterSessions.get(interaction.message?.id);
+
+  if (!sess) {
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Sessione scaduta — esegui `,twitter` di nuovo.', flags: 64 }).catch(() => {});
+    }
+    if (!interaction.isModalSubmit()) return;
+  }
+
+  if (sess && interaction.user.id !== sess.authorId) {
+    return interaction.reply({ embeds: [{ color: PINK, description: '<:steal:1521327958634135655> Questo pannello è stato aperto da qualcun altro.' }], flags: 64 });
+  }
+
+  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+  const guildId = sess?.guildId ?? cid.split(':')[1];
+  const cfg     = getTwitterCfg(guildId);
+
+  // ── TOGGLE ────────────────────────────────────────────────────────────────
+  if (cid === `tw_toggle:${guildId}`) {
+    if (!cfg.enabled && (!cfg.targetChannelId || cfg.accounts.length === 0)) {
+      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Imposta prima un canale target e almeno un account.', flags: 64 });
+    }
+    cfg.enabled = !cfg.enabled;
+    saveTwitterCfg();
+    if (cfg.enabled) {
+      rescheduleTwitterTimer(guildId);
+    } else {
+      clearTimeout(twitterTimers.get(guildId));
+      twitterTimers.delete(guildId);
+    }
+    await interaction.deferUpdate();
+    return refreshTwitterPanel(interaction);
+  }
+
+  // ── RUN NOW ───────────────────────────────────────────────────────────────
+  if (cid === `tw_run_now:${guildId}`) {
+    if (!cfg.targetChannelId || cfg.accounts.length === 0) {
+      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Imposta un canale target e almeno un account prima.', flags: 64 });
+    }
+    await interaction.deferUpdate();
+    await interaction.message.edit({
+      embeds:     [{ color: 0x1D9BF0, title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Controllo in corso…', description: '<:RUSH_thunder:1521415273943400580> Sto controllando i feed RSS, attendere…' }],
+      components: [],
+    }).catch(() => {});
+    const result = await runTwitterPoller(guildId);
+    const note = (() => {
+      if (!result) return '\n\n<:RUSH_warning:1521415214799654985> Poller già in esecuzione, riprova tra un momento.';
+      if (result.errors > 0 && result.posted === 0) return `\n\n<:RUSH_warning:1521415214799654985> **${result.errors} errore/i** — controlla che gli account esistano e che RSSHub sia raggiungibile.`;
+      if (result.posted === 0) return '\n\n<:019TXTWhite_Yes:1521327983279996999> Nessun nuovo tweet trovato.';
+      return `\n\n<:019TXTWhite_Yes:1521327983279996999> Postati **${result.posted}** tweet${result.errors ? ` · <:RUSH_warning:1521415214799654985> ${result.errors} errori` : ''}.`;
+    })();
+    const baseEmbed = buildTwitterEmbed(guildId);
+    baseEmbed.description = (baseEmbed.description ?? '') + note;
+    return interaction.message.edit({
+      embeds:     [baseEmbed],
+      components: buildTwitterRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── ADD ACCOUNT ───────────────────────────────────────────────────────────
+  if (cid === `tw_add_acc:${guildId}`) {
+    if (cfg.accounts.length >= 20) return interaction.reply({ content: '<:steal:1521327958634135655> Massimo **20** account monitorabili.', flags: 64 });
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_add_acc:${guildId}`)
+      .setTitle('Aggiungi Account Twitter/X');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('username')
+          .setLabel('Username (senza @)')
+          .setPlaceholder('esempio: elonmusk')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(50)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('label')
+          .setLabel('Etichetta / soprannome (opzionale)')
+          .setPlaceholder('es. CEO Tesla')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(50)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── REMOVE ACCOUNT — mostra picker ────────────────────────────────────────
+  if (cid === `tw_del_acc:${guildId}`) {
+    if (cfg.accounts.length === 0) return interaction.reply({ content: 'Nessun account da rimuovere.', flags: 64 });
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`tw_del_pick:${guildId}`)
+        .setPlaceholder('Seleziona un account da rimuovere…')
+        .addOptions(
+          cfg.accounts.map((a, i) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`${i + 1}. @${a.username}${a.label ? ` · ${a.label}` : ''}`)
+              .setValue(`${i}`)
+          )
+        )
+    );
+    return interaction.reply({ content: '**Quale account vuoi smettere di monitorare?**', components: [row], flags: 64 });
+  }
+
+  // ── SET TARGET CHANNEL ────────────────────────────────────────────────────
+  if (cid === `tw_target:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_target:${guildId}`)
+      .setTitle('Canale Target per i Tweet');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('channel_id')
+          .setLabel('ID Canale (tasto destro → Copia ID)')
+          .setPlaceholder('1234567890123456789')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── INTERVALLO ────────────────────────────────────────────────────────────
+  if (cid === `tw_interval:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_interval:${guildId}`)
+      .setTitle('Intervallo Polling');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('interval')
+          .setLabel('Ogni quanto controllare? (es: 5m · 15m · 1h)')
+          .setPlaceholder('10m')
+          .setValue(msToHuman(cfg.pollIntervalMs))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── FILTRI ────────────────────────────────────────────────────────────────
+  if (cid === `tw_filters:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_filters:${guildId}`)
+      .setTitle('Filtri Contenuto');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('media_only')
+          .setLabel('Solo tweet con foto/video? (sì / no)')
+          .setValue(cfg.mediaOnly ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('include_rt')
+          .setLabel('Includi Retweet? (sì / no)')
+          .setValue(cfg.includeRetweets ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('include_replies')
+          .setLabel('Includi Risposte? (sì / no)')
+          .setValue(cfg.includeReplies ? 'sì' : 'no')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RSSHUB BASE URL ───────────────────────────────────────────────────────
+  if (cid === `tw_rsshub:${guildId}`) {
+    const modal = new ModalBuilder()
+      .setCustomId(`tw_modal_rsshub:${guildId}`)
+      .setTitle('RSSHub Base URL');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('rsshub_url')
+          .setLabel('URL istanza RSSHub (default: rsshub.app)')
+          .setPlaceholder('https://rsshub.app')
+          .setValue(cfg.rsshubBase)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(200)
+      ),
+    );
+    return interaction.showModal(modal);
+  }
+
+  // ── RESET ─────────────────────────────────────────────────────────────────
+  if (cid === `tw_reset:${guildId}`) {
+    clearTimeout(twitterTimers.get(guildId));
+    twitterTimers.delete(guildId);
+    twitterCursors.delete(guildId);
+    twitterRepostCfg.delete(guildId);
+    saveTwitterCfg();
+    saveTwitterCursors();
+    await interaction.deferUpdate();
+    return interaction.message.edit({
+      embeds:     [buildTwitterEmbed(guildId)],
+      components: buildTwitterRows(guildId),
+    }).catch(() => {});
+  }
+
+  // ── MODAL SUBMISSIONS ─────────────────────────────────────────────────────
+  if (!interaction.isModalSubmit()) return;
+
+  // Aggiungi account
+  if (cid === `tw_modal_add_acc:${guildId}`) {
+    const username = interaction.fields.getTextInputValue('username').trim().replace(/^@/, '').toLowerCase();
+    const label    = interaction.fields.getTextInputValue('label').trim();
+    if (!username || !/^\w{1,50}$/.test(username)) {
+      return interaction.reply({ content: '<:steal:1521327958634135655> Username non valido. Usa solo lettere, numeri e underscore.', flags: 64 });
+    }
+    if (cfg.accounts.some(a => a.username === username)) {
+      return interaction.reply({ content: `<:steal:1521327958634135655> **@${username}** è già monitorato.`, flags: 64 });
+    }
+    cfg.accounts.push({ username, label: label || '' });
+    saveTwitterCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Aggiunto **@${username}**${label ? ` (${label})` : ''}.\n> Il cursore verrà impostato al tweet più recente alla prossima esecuzione — non ci sarà flood storico.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Canale target
+  if (cid === `tw_modal_target:${guildId}`) {
+    const channelId = interaction.fields.getTextInputValue('channel_id').trim().replace(/\D/g, '');
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Canale \`${channelId}\` non trovato.`, flags: 64 });
+    cfg.targetChannelId = channelId;
+    saveTwitterCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Canale target impostato su <#${channelId}>.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Intervallo
+  if (cid === `tw_modal_interval:${guildId}`) {
+    const ms = parseDuration(interaction.fields.getTextInputValue('interval').trim());
+    if (!ms || ms < 60_000) {
+      return interaction.reply({ content: '<:steal:1521327958634135655> Intervallo minimo: **1 minuto** (es. `1m`, `15m`, `1h`).', flags: 64 });
+    }
+    if (ms > 24 * 3_600_000) {
+      return interaction.reply({ content: '<:steal:1521327958634135655> Intervallo massimo: **24h**.', flags: 64 });
+    }
+    cfg.pollIntervalMs = ms;
+    saveTwitterCfg();
+    if (cfg.enabled) rescheduleTwitterTimer(guildId);
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Intervallo aggiornato: controllo ogni **${msToHuman(ms)}**.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // Filtri
+  if (cid === `tw_modal_filters:${guildId}`) {
+    const YES = ['sì', 'si', 'yes', 'y', '1', 'true'];
+    cfg.mediaOnly       = YES.includes(interaction.fields.getTextInputValue('media_only').trim().toLowerCase());
+    cfg.includeRetweets = YES.includes(interaction.fields.getTextInputValue('include_rt').trim().toLowerCase());
+    cfg.includeReplies  = YES.includes(interaction.fields.getTextInputValue('include_replies').trim().toLowerCase());
+    saveTwitterCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Filtri aggiornati.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+
+  // RSSHub URL
+  if (cid === `tw_modal_rsshub:${guildId}`) {
+    const url = interaction.fields.getTextInputValue('rsshub_url').trim().replace(/\/$/, '');
+    if (!url.startsWith('http')) {
+      return interaction.reply({ content: '<:steal:1521327958634135655> URL non valido. Deve iniziare con `http://` o `https://`.', flags: 64 });
+    }
+    cfg.rsshubBase = url;
+    saveTwitterCfg();
+    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> RSSHub URL impostato su \`${url}\`.`, flags: 64 });
+    return refreshTwitterPanel(interaction);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ██  KETO — Social Media Auto-Embed (TikTok · Twitter/X · Instagram)
+// ══════════════════════════════════════════════════════════════════════════════
+const ketoConfig  = new Map(); // guildId → { enabled, deleteOriginal, channelIds: Set|null }
+// Matches full TikTok URLs AND short share links (vm.tiktok.com/XXXX, vt.tiktok.com/XXXX)
+const KETO_RE     = /https?:\/\/(?:(?:(?:www\.|m\.)?tiktok\.com\/(?:@[^\s\/]+\/video\/\d+|t\/\w+|v\/\d+))|(?:(?:vm|vt)\.tiktok\.com\/[\w]+)|(?:twitter\.com\/\w+\/status\/\d+)|(?:x\.com\/\w+\/status\/\d+)|(?:instagram\.com\/(?:p|reel|tv)\/[\w-]+))/gi;
+
+function _fmtNum(n) {
+  if (!n && n !== 0) return null;
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1)+"M";
+  if (n >= 1_000)     return (n/1_000).toFixed(1)+"K";
+  return String(n);
+}
+
+async function _ketoFetch(url) {
+  const lo = url.toLowerCase();
+  try {
+    if (lo.includes("tiktok")) {
+      // Resolve short URLs first (vm.tiktok.com/XXXX → real URL)
+      let realUrl = url;
+      if (lo.includes("vm.tiktok") || lo.includes("vt.tiktok")) {
+        try {
+          const r = await fetch(url, { method:"HEAD", redirect:"follow", signal: AbortSignal.timeout(5000) });
+          if (r.url && r.url !== url) realUrl = r.url;
+        } catch {}
+      }
+      // Try tikwm.com for full stats (likes, comments, shares)
+      try {
+        const wm = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(realUrl)}`,
+          { headers:{'User-Agent':'Mozilla/5.0'}, signal: AbortSignal.timeout(8000) }).then(r=>r.json());
+        if (wm?.data && wm.data.author) {
+          const d = wm.data;
+          return {
+            platform: "tiktok",
+            author:    d.author.nickname || d.author.unique_id || "Unknown",
+            handle:    d.author.unique_id || "",
+            authorUrl: `https://www.tiktok.com/@${d.author.unique_id||""}`,
+            title:     d.title || "",
+            thumbnail: d.cover || d.origin_cover || null,
+            videoUrl:  d.play || d.wmplay || null,
+            videoSize: d.wm_size || d.size || null,
+            likes:     d.digg_count    ?? null,
+            comments:  d.comment_count ?? null,
+            shares:    d.share_count   ?? null,
+            plays:     d.play_count    ?? null,
+          };
+        }
+      } catch {}
+      // Fallback: TikTok oEmbed
+      const d = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(realUrl)}`,
+        { headers:{'User-Agent':'Discordbot/1.0'}, signal: AbortSignal.timeout(8000) }).then(r=>r.json());
+      return { platform:"tiktok", author: d.author_name||"Unknown", handle:"",
+               authorUrl: d.author_url||realUrl, title: d.title||"",
+               thumbnail: d.thumbnail_url||null, likes:null, comments:null, shares:null };
+    }
+    if (lo.includes("twitter") || lo.includes("x.com")) {
+      // Use CDN syndication API (no auth required, returns tweet data + video)
+      const tweetId = url.match(/status\/(\d+)/)?.[1];
+      if (!tweetId) return null;
+      const tw = await fetch(
+        `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en`,
+        { headers:{"User-Agent":"Mozilla/5.0"}, signal: AbortSignal.timeout(8000) }
+      ).then(r=>r.json()).catch(()=>null);
+      if (!tw) return null;
+      const author    = tw.user?.name        || "Unknown";
+      const handle    = tw.user?.screen_name || "";
+      const text      = tw.text              || "";
+      // Extract video URL (highest bitrate mp4)
+      const variants  = tw.mediaDetails?.find(m=>m.type==="video")?.video_info?.variants || [];
+      const videoUrl  = variants.filter(v=>v.content_type==="video/mp4")
+                              .sort((a,b)=>(b.bitrate||0)-(a.bitrate||0))[0]?.url || null;
+      const thumbnail = tw.mediaDetails?.[0]?.media_url_https || null;
+      return {
+        platform:"twitter", author, handle,
+        authorUrl: `https://twitter.com/${handle}`,
+        title: text.slice(0,280), thumbnail, videoUrl, videoSize:null,
+        likes: tw.favorite_count ?? null,
+        comments: tw.conversation_count ?? null,
+        shares: tw.retweet_count ?? null, plays:null,
+      };
+    }
+    if (lo.includes("instagram")) {
+      // Instagram oembed requires auth since 2021 → scrape og: tags instead
+      const shortcode = url.match(/\/(p|reel|tv)\/([\w-]+)/)?.[2];
+      if (!shortcode) return null;
+      const html = await fetch(
+        `https://www.instagram.com/p/${shortcode}/`,
+        { headers:{"User-Agent":"facebookexternalhit/1.1"}, signal: AbortSignal.timeout(10000) }
+      ).then(r=>r.text()).catch(()=>null);
+      if (!html) return null;
+      const og = t => html.match(new RegExp(`<meta[^>]+property="og:${t}"[^>]+content="([^"]+)"`))?.[1]
+                   || html.match(new RegExp(`<meta[^>]+content="([^"]+)"[^>]+property="og:${t}"`))?.[1] || "";
+      const ogTitle    = og("title");
+      const ogDesc     = og("description");
+      const ogImage    = og("image");
+      const ogVideo    = og("video");
+      // Title is usually "username on Instagram: …"
+      const author     = ogTitle.split(" on Instagram")[0]?.trim() || "Instagram";
+      const handleM    = ogTitle.match(/@([\w.]+)/);
+      const handle     = handleM?.[1] || "";
+      return {
+        platform:"instagram", author, handle,
+        authorUrl: handle ? `https://instagram.com/${handle}` : url,
+        title: ogDesc.slice(0,300), thumbnail: ogImage||null,
+        videoUrl: ogVideo||null, videoSize:null,
+        likes:null, comments:null, shares:null, plays:null,
+      };
+    }
+  } catch {}
+  return null;
+}
+
+const _KETO_META = {
+  tiktok:    { icon:"<:musicnote:1521415310941618208>", color:0x010101, name:"TikTok"    },
+  twitter:   { icon:"🐦", color:0x1DA1F2, name:"Twitter/X" },
+  instagram: { icon:"📸", color:0xC13584, name:"Instagram"  },
+};
+
+// Risky permissions that can be monitored via ,riskypermission
+const RISKY_PERM_OPTIONS = [
+  { name:"Administrator",       flag:PermissionFlagsBits.Administrator,            emoji:"<:b_crownDNS:1521415303714705533>" },
+  { name:"Manage Server",       flag:PermissionFlagsBits.ManageGuild,              emoji:"<:RUSH_gear:1521415230184489061>" },
+  { name:"Manage Roles",        flag:PermissionFlagsBits.ManageRoles,              emoji:"🎭" },
+  { name:"Manage Channels",     flag:PermissionFlagsBits.ManageChannels,           emoji:"<:RUSH_folder:1521415227495940096>" },
+  { name:"Kick Members",        flag:PermissionFlagsBits.KickMembers,              emoji:"👢" },
+  { name:"Ban Members",         flag:PermissionFlagsBits.BanMembers,               emoji:"🔨" },
+  { name:"Manage Messages",     flag:PermissionFlagsBits.ManageMessages,           emoji:"<:RUSH_comment:1491884212297531572>" },
+  { name:"Manage Webhooks",     flag:PermissionFlagsBits.ManageWebhooks,           emoji:"<:RUSH_link:1521415290687066212>" },
+  { name:"Manage Emojis",       flag:PermissionFlagsBits.ManageEmojisAndStickers,  emoji:"😀" },
+  { name:"Mention Everyone",    flag:PermissionFlagsBits.MentionEveryone,          emoji:"📢" },
+  { name:"View Audit Log",      flag:PermissionFlagsBits.ViewAuditLog,             emoji:"<:RUSH_task:1521415237813665813>" },
+  { name:"Moderate Members",    flag:PermissionFlagsBits.ModerateMembers,          emoji:"<:RUSH_caution:1521415278355808297>" },
+  { name:"Manage Nicknames",    flag:PermissionFlagsBits.ManageNicknames,          emoji:"✏️" },
+  { name:"Move Members",        flag:PermissionFlagsBits.MoveMembers,              emoji:"🚶" },
+  { name:"Manage Threads",      flag:PermissionFlagsBits.ManageThreads,            emoji:"🧵" },
+];
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const kc = ketoConfig.get(message.guild.id);
+  if (!kc?.enabled) return;
+  if (kc.channelIds && !kc.channelIds.has(message.channel.id)) return;
+  const links = [...new Set([...(message.content.match(KETO_RE)??[])])];
+  if (!links.length) return;
+  const link  = links[0];
+  const data  = await _ketoFetch(link);
+  if (!data) return;
+  const meta  = _KETO_META[data.platform] ?? { icon:"<:RUSH_link:1521415290687066212>", color:PINK, name:"Social" };
+
+  const statParts = [];
+  if (data.likes    != null) statParts.push(`<:RUSH_heart:1521415287344468029> ${_fmtNum(data.likes)}`);
+  if (data.comments != null) statParts.push(`<:RUSH_comment:1491884212297531572> ${_fmtNum(data.comments)}`);
+  if (data.shares   != null) statParts.push(`↗️ ${_fmtNum(data.shares)}`);
+
+  const authorLine = data.handle ? `${data.author} (@${data.handle})` : data.author;
+  const embed = {
+    color: meta.color,
+    author: { name: `${meta.icon}  ${authorLine}`, url: data.authorUrl },
+    description: [
+      data.title ? data.title.slice(0, 300) : null,
+      statParts.length ? statParts.join("  ") : null,
+      `[Open in ${meta.name}](${link})`,
+    ].filter(Boolean).join("\n"),
+    footer: { text: `Shared by ${message.author.username}` },
+    timestamp: message.createdAt.toISOString(),
+  };
+
+  // Cache info for the ℹ️ button (expires in 30 min)
+  const infoId = `keto_info:${message.id}`;
+  if (!client._ketoInfoCache) client._ketoInfoCache = new Map();
+  client._ketoInfoCache.set(infoId, { data, link });
+  setTimeout(() => client._ketoInfoCache?.delete(infoId), 30 * 60 * 1000);
+
+  const btns = [
+    new ButtonBuilder().setLabel(`@${data.handle || data.author}`).setStyle(ButtonStyle.Link).setURL(data.authorUrl),
+    new ButtonBuilder().setCustomId(infoId).setLabel("ℹ️").setStyle(ButtonStyle.Secondary),
+  ];
+  const row = new ActionRowBuilder().addComponents(...btns);
+
+  // Try to download + attach video so it plays inside Discord
+  let sent = false;
+  if (data.platform === "tiktok" && data.videoUrl) {
+    try {
+      const MAX_BYTES = 8 * 1024 * 1024; // 8 MB (basic server limit)
+      const headRes = await fetch(data.videoUrl, { method:"HEAD", signal: AbortSignal.timeout(5000) }).catch(()=>null);
+      const contentLen = parseInt(headRes?.headers?.get("content-length") || "0");
+      if (!contentLen || contentLen < MAX_BYTES) {
+        const videoRes = await fetch(data.videoUrl, { signal: AbortSignal.timeout(20000) });
+        const buf = Buffer.from(await videoRes.arrayBuffer());
+        if (buf.length > 0 && buf.length < MAX_BYTES) {
+          await message.channel.send({
+            embeds: [embed],
+            files: [{ attachment: buf, name: "tiktok.mp4" }],
+            components: [row],
+          });
+          sent = true;
+        }
+      }
+    } catch {}
+  }
+
+  if (!sent) {
+    if (data.thumbnail) embed.image = { url: data.thumbnail };
+    await message.channel.send({ embeds: [embed], components: [row] }).catch(() => {});
+  }
+
+  if (kc.deleteOriginal) await message.delete().catch(() => {});
+  else await message.suppressEmbeds(true).catch(() => {});
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args    = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ██  KETO CONFIG  (,keto on/off/delete/channel)
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (command === "keto") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild))
+      return err(message,"Missing **Manage Server** permission.");
+    const sub = args[1]?.toLowerCase();
+    let kc = ketoConfig.get(message.guild.id) ?? { enabled:false, deleteOriginal:false, channelIds:null };
+
+    if (sub === "on" || sub === "enable") {
+      kc.enabled = true; ketoConfig.set(message.guild.id, kc); saveAllConfigs();
+      return ok(message,"Keto auto-embed **enabled** — TikTok, Twitter/X and Instagram links will be embedded.");
+    }
+    if (sub === "off" || sub === "disable") {
+      kc.enabled = false; ketoConfig.set(message.guild.id, kc); saveAllConfigs();
+      return ok(message,"Keto auto-embed **disabled**.");
+    }
+    if (sub === "delete") {
+      kc.deleteOriginal = !kc.deleteOriginal; ketoConfig.set(message.guild.id, kc); saveAllConfigs();
+      return ok(message,`Delete original message: **${kc.deleteOriginal?"on":"off"}**`);
+    }
+    if (sub === "channel") {
+      const ch = message.mentions.channels.first();
+      if (!ch) return err(message,"Mention a channel. `,keto channel #channel` — or `,keto channel all` to enable everywhere.");
+      if (!kc.channelIds) kc.channelIds = new Set();
+      if (kc.channelIds.has(ch.id)) { kc.channelIds.delete(ch.id); }
+      else { kc.channelIds.add(ch.id); }
+      ketoConfig.set(message.guild.id, kc); saveAllConfigs();
+      return ok(message,`${ch} ${kc.channelIds.has(ch.id)?"added to":"removed from"} Keto channels.`);
+    }
+    if (sub === "all") {
+      kc.channelIds = null; ketoConfig.set(message.guild.id, kc); saveAllConfigs();
+      return ok(message,"Keto now works in **all channels**.");
+    }
+    // status
+    return message.reply({ embeds:[{
+      color: PINK,
+      title: "📱  Keto — Social Auto-Embed",
+      description: [
+        `**Status:** ${kc.enabled?"<:019TXTWhite_Yes:1521327983279996999> Enabled":"<:steal:1521327958634135655> Disabled"}`,
+        `**Delete original:** ${kc.deleteOriginal?"Yes":"No"}`,
+        `**Channels:** ${kc.channelIds ? [...kc.channelIds].map(id=>`<#${id}>`).join(", ") : "All channels"}`,
+        "",
+        "**Supported:** TikTok, Twitter/X, Instagram",
+        "",
+        "`,keto on/off` — toggle  |  `,keto delete` — toggle delete original",
+        "`,keto channel #ch` — restrict to channel  |  `,keto all` — all channels",
+      ].join("\n"),
+    }]}).catch(()=>{});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ██  EMOTE & STICKER MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (command === "steal") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const input = args.slice(1).join(" ");
+    const match = input.match(/<(a?):(\w+):(\d+)>/);
+    const att   = message.attachments.first();
+    const urlArg = args.find(a => a.startsWith("http") && !a.match(/^<a?:/));
+    let url, name;
+    if (match) {
+      const [, anim, ename, id] = match;
+      url  = `https://cdn.discordapp.com/emojis/${id}.${anim?"gif":"png"}?size=128&quality=lossless`;
+      name = args.find(a => !a.match(/<a?:\w+:\d+>/) && !a.startsWith("http")) || ename;
+    } else if (att) {
+      url = att.url; name = args[1] || att.name.replace(/\.[^.]+$/,"").replace(/[^a-zA-Z0-9_]/g,"_");
+    } else if (urlArg) {
+      url = urlArg; name = args.find(a => a!==urlArg && !a.startsWith("http")) || "stolen";
+    } else return err(message,"Provide a custom emoji, image attachment or URL.\nUsage: `,steal <:emoji:> [name]` or `,steal <url> <name>`");
+    name = name.replace(/[^a-zA-Z0-9_]/g,"_").substring(0,32);
+    if (name.length < 2) name = "e_" + name;
+    try {
+      const e = await message.guild.emojis.create({ attachment:url, name });
+      return ok(message, `${e} **:${e.name}:** added to the server!`);
+    } catch(e2) { return err(message,`Failed: ${e2.message}`); }
+  }
+
+  if (command === "steal-sticker" || command === "stealsticker") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const ref     = message.reference ? await message.fetchReference().catch(()=>null) : null;
+    const sticker = message.stickers?.first() || ref?.stickers?.first();
+    const att     = message.attachments.first();
+    let file, name, desc;
+    if (sticker) {
+      file = sticker.url; name = args[1]||sticker.name; desc = sticker.description||"Stolen sticker";
+    } else if (att) {
+      file = att.url; name = args[1]||"stolen_sticker"; desc = args[2]||"Stolen sticker";
+    } else if (args[1]?.startsWith("http")) {
+      file = args[1]; name = args[2]||"stolen_sticker"; desc = "Stolen sticker";
+    } else return err(message,"Reply to a sticker, attach an image or provide a URL.\nUsage: `,steal-sticker [name]`");
+    try {
+      const s = await message.guild.stickers.create({ file, name:name.substring(0,30), description:desc.substring(0,100), tags:"star" });
+      return ok(message,`Sticker **${s.name}** added!`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  if (command === "emoji2sticker") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const input = args.slice(1).join(" ");
+    const match = input.match(/<(a?):(\w+):(\d+)>/);
+    const att   = message.attachments.first();
+    let url, name;
+    if (match) {
+      const [,anim,ename,id] = match;
+      url = `https://cdn.discordapp.com/emojis/${id}.${anim?"gif":"png"}?size=320&quality=lossless`;
+      name = args.find(a => !a.match(/<a?:\w+:\d+>/)) || ename;
+    } else if (att) { url = att.url; name = args[1]||"emoji_sticker"; }
+    else return err(message,"Provide a custom emoji or attachment. `,emoji2sticker <:emoji:> [name]`");
+    name = name.replace(/[^a-zA-Z0-9_ -]/g,"").substring(0,30)||"emoji_sticker";
+    try {
+      const s = await message.guild.stickers.create({ file:url, name, description:"Converted from emoji", tags:"star" });
+      return ok(message,`Sticker **${s.name}** created from emoji!`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  if (command === "sticker2emoji") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const ref     = message.reference ? await message.fetchReference().catch(()=>null) : null;
+    const sticker = message.stickers?.first() || ref?.stickers?.first();
+    if (!sticker) return err(message,"Send or reply to a message containing a sticker. `,sticker2emoji [name]`");
+    const name = (args[1]||sticker.name).replace(/[^a-zA-Z0-9_]/g,"_").substring(0,32)||"sticker_emoji";
+    try {
+      const e = await message.guild.emojis.create({ attachment:sticker.url, name:name.length>=2?name:"s_"+name });
+      return ok(message,`${e} **:${e.name}:** created from sticker!`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  if (command === "findemoji" || (command === "find" && args[1] !== undefined && !args[1].match(/^\d+$/) && !args[1].startsWith("<#") && !args[1].startsWith("@"))) {
+    // Note: ,find is also used for member search above; only intercept if it looks like emoji-find
+    const isEmojiFind = command === "findemoji" || (command === "find" && (message.reference || args.slice(1).join("").includes("<")));
+    if (!isEmojiFind) return; // let the member-search handler handle it
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const ref    = message.reference ? await message.fetchReference().catch(()=>null) : null;
+    const src    = (ref?.content||"") + " " + (args.slice(1).join(" ")||"");
+    const found  = [...src.matchAll(/<(a?):(\w+):(\d+)>/g)];
+    if (!found.length) return err(message,"No custom emojis found in that message. Reply to a message that has custom emojis.");
+    const added = [], failed = [];
+    for (const [full,anim,name,id] of found.slice(0,10)) {
+      const url = `https://cdn.discordapp.com/emojis/${id}.${anim?"gif":"png"}?size=128`;
+      try { const e = await message.guild.emojis.create({attachment:url,name}); added.push(e.toString()); }
+      catch { failed.push(name); }
+    }
+    let txt = "";
+    if (added.length) txt += `<:019TXTWhite_Yes:1521327983279996999> Added ${added.length} emoji(s): ${added.join(" ")}\n`;
+    if (failed.length) txt += `<:steal:1521327958634135655> Failed (duplicate/limit): ${failed.map(n=>`\`:${n}:\``).join(", ")}`;
+    return message.reply({content:txt.trim()}).catch(()=>{});
+  }
+
+  if (command === "find-sticker" || command === "findsticker") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const ref     = message.reference ? await message.fetchReference().catch(()=>null) : null;
+    const sticker = (ref||message).stickers?.first();
+    if (!sticker) return err(message,"Reply to a message that contains a sticker.");
+    try {
+      const s = await message.guild.stickers.create({file:sticker.url, name:sticker.name.substring(0,30), description:sticker.description||"Found sticker", tags:"star"});
+      return ok(message,`Sticker **${s.name}** added!`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  // ,rename-emoji <:emoji:> <newname>  OR  ,rename-emoji <currentname> <newname>
+  if (command === "rename-emoji" || command === "renameemoji") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const input   = args.slice(1).join(" ");
+    const match   = input.match(/<a?:(\w+):(\d+)>/);
+    let emoji, newName;
+    if (match) {
+      emoji   = message.guild.emojis.cache.get(match[2]) || message.guild.emojis.cache.find(e => e.name === match[1]);
+      newName = args.find(a => !a.match(/<a?:\w+:\d+>/) && a !== args[0])?.replace(/[^a-zA-Z0-9_]/g,"_") || null;
+    } else {
+      // ,rename-emoji oldname newname
+      emoji   = message.guild.emojis.cache.find(e => e.name === args[1]);
+      newName = args[2]?.replace(/[^a-zA-Z0-9_]/g,"_") || null;
+    }
+    if (!emoji)   return err(message,"Emoji not found. Provide a custom emoji or its exact name.\nUsage: `,rename-emoji <:emoji:> <newname>` or `,rename-emoji <oldname> <newname>`");
+    if (!newName || newName.length < 2) return err(message,"New name must be at least 2 characters.");
+    try {
+      await emoji.setName(newName.substring(0,32));
+      return ok(message,`Emoji renamed to **:${newName}:**`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  // ,rename-sticker <currentname> <newname>
+  if (command === "rename-sticker" || command === "renamesticker") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
+      return err(message,"You need **Manage Emojis & Stickers** permission.");
+    const oldName = args[1];
+    const newName = args[2]?.replace(/[^a-zA-Z0-9_ -]/g,"").substring(0,30);
+    if (!oldName || !newName) return err(message,"Usage: `,rename-sticker <currentname> <newname>`");
+    const sticker = message.guild.stickers.cache.find(s => s.name.toLowerCase() === oldName.toLowerCase());
+    if (!sticker) return err(message,`No sticker named **${oldName}** found.`);
+    try {
+      await sticker.edit({ name: newName });
+      return ok(message,`Sticker renamed to **${newName}**`);
+    } catch(e) { return err(message,`Failed: ${e.message}`); }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ██  FUN — Anime Action GIFs  (hug · kiss · slap · pat · etc.)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const FUN_ACTIONS = {
+    hug:       { verb:"hugs",         emoji:"🤗", url:"https://nekos.best/api/v2/hug"       },
+    kiss:      { verb:"kisses",       emoji:"💋", url:"https://nekos.best/api/v2/kiss"      },
+    slap:      { verb:"slaps",        emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/slap"      },
+    pat:       { verb:"pats",         emoji:"🐾", url:"https://nekos.best/api/v2/pat"       },
+    cuddle:    { verb:"cuddles",      emoji:"🥰", url:"https://nekos.best/api/v2/cuddle"    },
+    poke:      { verb:"pokes",        emoji:"👉", url:"https://nekos.best/api/v2/poke"      },
+    bite:      { verb:"bites",        emoji:"😬", url:"https://nekos.best/api/v2/bite"      },
+    highfive:  { verb:"high fives",   emoji:"🙌", url:"https://nekos.best/api/v2/highfive"  },
+    wave:      { verb:"waves at",     emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/wave"      },
+    punch:     { verb:"punches",      emoji:"👊", url:"https://nekos.best/api/v2/punch"     },
+    dance:     { verb:"dances with",  emoji:"💃", url:"https://nekos.best/api/v2/dance"     },
+    feed:      { verb:"feeds",        emoji:"🍙", url:"https://nekos.best/api/v2/feed"      },
+    tickle:    { verb:"tickles",      emoji:"😂", url:"https://nekos.best/api/v2/tickle"    },
+    smile:     { verb:"smiles at",    emoji:"😊", url:"https://nekos.best/api/v2/smile"     },
+    cry:       { verb:"cries with",   emoji:"😢", url:"https://nekos.best/api/v2/cry"       },
+    blush:     { verb:"blushes at",   emoji:"😳", url:"https://nekos.best/api/v2/blush"     },
+    wink:      { verb:"winks at",     emoji:"😉", url:"https://nekos.best/api/v2/wink"      },
+    bored:     { verb:"is bored with",emoji:"😑", url:"https://nekos.best/api/v2/bored"     },
+    throw:     { verb:"throws at",    emoji:"🎯", url:"https://nekos.best/api/v2/throw"     },
+  };
+  // NSFW
+  const FUN_NSFW = {
+    fuck: { verb:"fucks", emoji:"🍑", url:"https://nekos.best/api/v2/fuck" },
+    sex:  { verb:"sexes", emoji:"🔥", url:"https://nekos.best/api/v2/fuck" },
+  };
+
+  const allFunActions = { ...FUN_ACTIONS, ...FUN_NSFW };
+  if (command in allFunActions) {
+    const isNsfw = command in FUN_NSFW;
+    if (isNsfw && !message.channel.nsfw)
+      return err(message,"This command can only be used in a **NSFW channel**.");
+    const act    = allFunActions[command];
+    const target = message.mentions.users.first();
+    const from   = message.member.displayName;
+    const to     = target ? (message.guild.members.cache.get(target.id)?.displayName ?? target.username) : null;
+    let desc;
+    if (to && target.id === message.author.id) desc = `**${from}** ${act.emoji} ${act.verb} themselves... ok.`;
+    else if (to) desc = `**${from}** ${act.emoji} ${act.verb} **${to}**`;
+    else desc = `**${from}** ${act.emoji} ${act.verb}`;
+    try {
+      const res = await fetch(act.url, { signal:AbortSignal.timeout(5000) }).then(r=>r.json());
+      const gif = res.results?.[0]?.url || res.url;
+      await message.reply({ embeds:[{ color:PINK, description:desc, image:gif?{url:gif}:undefined }] });
+    } catch {
+      await message.reply({ embeds:[{ color:PINK, description:desc }] }).catch(()=>{});
+    }
+    return;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ██  SECURITY V2 — Action Limits · Punishments · Whitelist (Wick-style)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // This extends the existing ,antinuke with per-action granular controls
+  if (command === "setlimit" || command === "setpunishment" || command === "antilimit") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message,"Missing **Administrator** permission.");
+
+    const VALID_ACTIONS = ["ban","kick","role_delete","role_create","channel_delete","channel_create","bot_add","dangerous_perm","admin_role","prune","invites"];
+    const sub = args[1]?.toLowerCase();
+
+    if (command === "setlimit") {
+      // ,setlimit <action> <count> [seconds=10]
+      const action  = args[1]?.toLowerCase();
+      const count   = parseInt(args[2]);
+      const seconds = parseInt(args[3]) || 10;
+      if (!action || !VALID_ACTIONS.includes(action)) return err(message,`Valid actions: \`${VALID_ACTIONS.join(", ")}\``);
+      if (!count || count < 1) return err(message,"Provide a valid count (e.g. `,setlimit ban 3 10` = max 3 bans per 10s)");
+      const cfg = guildCfg(message.guild.id);
+      if (!cfg.actionLimits) cfg.actionLimits = {};
+      cfg.actionLimits[action] = { count, seconds };
+      saveSecurityNow();
+      return ok(message,`Limit set: max **${count}** \`${action}\` action(s) per **${seconds}s** before punishment fires.`);
+    }
+
+    if (command === "setpunishment") {
+      // ,setpunishment <action|all> <ban|kick|strip|timeout>
+      const action  = args[1]?.toLowerCase();
+      const punish  = args[2]?.toLowerCase();
+      if (!action) return err(message,"Usage: `,setpunishment <action|all> <ban|kick|strip|timeout>`");
+      if (!["ban","kick","strip","timeout"].includes(punish)) return err(message,"Punishment must be: `ban`, `kick`, `strip` or `timeout`");
+      const cfg = guildCfg(message.guild.id);
+      if (!cfg.actionPunishments) cfg.actionPunishments = {};
+      const targets = action === "all" ? VALID_ACTIONS : [action];
+      for (const t of targets) { if (action==="all"||VALID_ACTIONS.includes(t)) cfg.actionPunishments[t] = punish; }
+      saveSecurityNow();
+      return ok(message,`Punishment for \`${action}\` set to **${punish}**.`);
+    }
+  }
+
+  if (command === "whitelist" && args[1]) {
+    // ,whitelist <add_user|remove_user|add_role|remove_role|add_channel|remove_channel|view_users|view_roles|view_channels> [target]
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message,"Missing **Administrator** permission.");
+    const sub    = args[1]?.toLowerCase();
+    const cfg    = guildCfg(message.guild.id);
+    if (!cfg.securityWhitelist) cfg.securityWhitelist = { users:[], roles:[], channels:[] };
+    const wl = cfg.securityWhitelist;
+
+    if (sub === "add_user" || sub === "add-user") {
+      const user = message.mentions.users.first();
+      if (!user) return err(message,"Mention a user.");
+      if (!wl.users.includes(user.id)) { wl.users.push(user.id); saveSecurityNow(); }
+      return ok(message,`${user.tag} added to the security whitelist (users).`);
+    }
+    if (sub === "remove_user" || sub === "remove-user") {
+      const user = message.mentions.users.first();
+      if (!user) return err(message,"Mention a user.");
+      wl.users = wl.users.filter(id=>id!==user.id); saveSecurityNow();
+      return ok(message,`${user.tag} removed from the security whitelist.`);
+    }
+    if (sub === "add_role" || sub === "add-role") {
+      const role = message.mentions.roles.first();
+      if (!role) return err(message,"Mention a role.");
+      if (!wl.roles.includes(role.id)) { wl.roles.push(role.id); saveSecurityNow(); }
+      return ok(message,`${role.name} added to the security whitelist (roles).`);
+    }
+    if (sub === "remove_role" || sub === "remove-role") {
+      const role = message.mentions.roles.first();
+      if (!role) return err(message,"Mention a role.");
+      wl.roles = wl.roles.filter(id=>id!==role.id); saveSecurityNow();
+      return ok(message,`${role.name} removed from the security whitelist.`);
+    }
+    if (sub === "add_channel" || sub === "add-channel") {
+      const ch = message.mentions.channels.first();
+      if (!ch) return err(message,"Mention a channel.");
+      if (!wl.channels.includes(ch.id)) { wl.channels.push(ch.id); saveSecurityNow(); }
+      return ok(message,`${ch} added to the security whitelist (channels) — AutoMod won't fire there.`);
+    }
+    if (sub === "remove_channel" || sub === "remove-channel") {
+      const ch = message.mentions.channels.first();
+      if (!ch) return err(message,"Mention a channel.");
+      wl.channels = wl.channels.filter(id=>id!==ch.id); saveSecurityNow();
+      return ok(message,`${ch} removed from the security whitelist.`);
+    }
+    if (sub === "view_users"||sub==="view-users")
+      return message.reply({embeds:[{color:PINK,title:"Whitelisted Users",description:wl.users.length?wl.users.map(id=>`<@${id}>`).join("\n"):"*(none)*"}]}).catch(()=>{});
+    if (sub === "view_roles"||sub==="view-roles")
+      return message.reply({embeds:[{color:PINK,title:"Whitelisted Roles",description:wl.roles.length?wl.roles.map(id=>`<@&${id}>`).join("\n"):"*(none)*"}]}).catch(()=>{});
+    if (sub === "view_channels"||sub==="view-channels")
+      return message.reply({embeds:[{color:PINK,title:"Whitelisted Channels",description:wl.channels.length?wl.channels.map(id=>`<#${id}>`).join("\n"):"*(none)*"}]}).catch(()=>{});
+    return err(message,"Unknown subcommand. Use: `add_user`, `remove_user`, `add_role`, `remove_role`, `add_channel`, `remove_channel`, `view_users`, `view_roles`, `view_channels`");
+  }
+
+  // ,risky-roles — auto-action when a risky role is assigned
+  if (command === "risky-roles" || command === "riskyroles" || command === "riskyrole") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message,"Missing **Administrator** permission.");
+    const sub  = args[1]?.toLowerCase();
+    const role = message.mentions.roles.first();
+    const cfg  = guildCfg(message.guild.id);
+    if (!cfg.riskyRoles) cfg.riskyRoles = { roles:[], action:"strip" };
+
+    if (sub === "add") {
+      if (!role) return err(message,"Mention a role to mark as risky.");
+      if (!cfg.riskyRoles.roles.includes(role.id)) cfg.riskyRoles.roles.push(role.id);
+      saveSecurityNow();
+      return ok(message,`${role} marked as a **risky role** — anyone assigned it will be **${cfg.riskyRoles.action}**ped.`);
+    }
+    if (sub === "remove") {
+      if (!role) return err(message,"Mention a role to unmark.");
+      cfg.riskyRoles.roles = cfg.riskyRoles.roles.filter(id=>id!==role.id); saveSecurityNow();
+      return ok(message,`${role} removed from risky roles.`);
+    }
+    if (sub === "action") {
+      const action = args[2]?.toLowerCase();
+      if (!["strip","kick","ban"].includes(action)) return err(message,"Action must be: `strip`, `kick` or `ban`");
+      cfg.riskyRoles.action = action; saveSecurityNow();
+      return ok(message,`Risky role action set to **${action}**.`);
+    }
+    if (sub === "list") {
+      return message.reply({embeds:[{color:PINK,title:"<:RUSH_warning:1521415214799654985> Risky Roles",description:
+        cfg.riskyRoles.roles.length ? cfg.riskyRoles.roles.map(id=>`<@&${id}>`).join("\n"):"*(none set)*",
+        footer:{text:`Action on assignment: ${cfg.riskyRoles.action}`}
+      }]}).catch(()=>{});
+    }
+    return err(message,"Usage: `,risky-roles add/remove/action/list [@role] [strip|kick|ban]`");
+  }
+
+  // ── ,riskypermission ──────────────────────────────────────────────────────
+  if (command === "riskypermission" || command === "riskyperm" || command === "riskyperms") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message, "You need **Administrator** permission.");
+    const cfg = guildCfg(message.guild.id);
+    cfg.riskyPerms = cfg.riskyPerms || [];
+    const monitored = cfg.riskyPerms;
+    const monitoredLines = monitored.length
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      : "*None — no permissions monitored.*";
+    const embed = {
+      color: PINK,
+      title: "<:RUSH_warning:1521415214799654985>  Risky Permission Monitor",
+      description: [
+        "Select which permissions to flag as **risky**.",
+        "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
+        "",
+        "**Currently monitored:**",
+        monitoredLines,
+      ].join("\n"),
+      footer: { text: "Select from the menu below. Your selection replaces the current list." },
+    };
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`rp_set:${message.guild.id}`)
+      .setPlaceholder("Select permissions to monitor…")
+      .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
+      .addOptions(RISKY_PERM_OPTIONS.map(p =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
+          .setDescription(monitored.includes(p.name) ? "<:019TXTWhite_Yes:1521327983279996999> Monitored" : "Not monitored")
+          .setDefault(monitored.includes(p.name))
+      ));
+    return message.reply({ embeds:[embed], components:[new ActionRowBuilder().addComponents(menu)] });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ██  SECURITY — Overview panel
+  // ══════════════════════════════════════════════════════════════════════════════
+  if (command === "security") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message, "Missing **Administrator** permission.");
+
+    const gid = message.guild.id;
+    const cfg = guildCfg(gid);
+    const an  = getAntiNuke(gid);
+    const ar  = getAntiRaid(gid);
+
+    // ── AntiNuke ────────────────────────────────────────────────────────────
+    const anWL = an.whitelist instanceof Set ? [...an.whitelist] : [];
+    const anField = [
+      an.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled**" : "<:steal:1521327958634135655> Disabled",
+      `Punishment: \`${an.punishment||"ban"}\`  ·  Threshold: \`${an.threshold||3}\` actions`,
+      anWL.length ? `Whitelist: ${anWL.slice(0,5).map(id=>`<@${id}>`).join(", ")}${anWL.length>5?` +${anWL.length-5} more`:""}` : "Whitelist: *empty*",
+    ].join("\n");
+
+    // ── AntiRaid ────────────────────────────────────────────────────────────
+    const arField = [
+      ar.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled**" : "<:steal:1521327958634135655> Disabled",
+      `Action: \`${ar.action||"kick"}\`  ·  Threshold: \`${ar.joinThreshold||10}\` joins / \`${Math.round((ar.joinWindow||10000)/1000)}s\``,
+    ].join("\n");
+
+    // ── Risky Permissions ───────────────────────────────────────────────────
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    const riskyPermsField = riskyPerms.length
+      ? RISKY_PERM_OPTIONS.filter(p=>riskyPerms.includes(p.name)).map(p=>`${p.emoji} \`${p.name}\``).join("  ")
+      : "<:steal:1521327958634135655> *None monitored — use `,riskypermission` to set up*";
+
+    // ── Risky Roles ─────────────────────────────────────────────────────────
+    const rr = cfg.riskyRoles;
+    const rrRoles = Array.isArray(rr?.roles) ? rr.roles : [];
+    const riskyRolesField = [
+      rrRoles.length ? rrRoles.map(id=>`<@&${id}>`).join(", ") : "<:steal:1521327958634135655> *None set — use `,risky-roles add @role`*",
+      rrRoles.length ? `Action on assignment: \`${rr.action||"strip"}\`` : "",
+    ].filter(Boolean).join("\n");
+
+    // ── Action Limits & Punishments ─────────────────────────────────────────
+    const al = cfg.actionLimits      || {};
+    const ap = cfg.actionPunishments || {};
+    const limitEntries = Object.entries(al);
+    const limitsField = limitEntries.length
+      ? limitEntries.map(([a,{count,seconds}]) =>
+          `\`${a}\`  ${count}×/${seconds}s${ap[a]? ` → **${ap[a]}**`:""}`
+        ).join("\n")
+      : "<:steal:1521327958634135655> *None set — use `,setlimit <action> <count> [seconds]`*";
+
+    // ── Security Whitelist ──────────────────────────────────────────────────
+    const wl       = cfg.securityWhitelist || {};
+    const wlUsers  = Array.isArray(wl.users)    ? wl.users    : [];
+    const wlRoles  = Array.isArray(wl.roles)    ? wl.roles    : [];
+    const wlChs    = Array.isArray(wl.channels) ? wl.channels : [];
+    const wlParts  = [
+      wlUsers.length  ? `👤 Users: ${wlUsers.slice(0,4).map(id=>`<@${id}>`).join(", ")}${wlUsers.length>4?` +${wlUsers.length-4} more`:""}` : null,
+      wlRoles.length  ? `🎭 Roles: ${wlRoles.slice(0,4).map(id=>`<@&${id}>`).join(", ")}${wlRoles.length>4?` +${wlRoles.length-4} more`:""}` : null,
+      wlChs.length    ? `📢 Channels: ${wlChs.slice(0,4).map(id=>`<#${id}>`).join(", ")}${wlChs.length>4?` +${wlChs.length-4} more`:""}` : null,
+    ].filter(Boolean);
+    const wlField = wlParts.length ? wlParts.join("\n") : "*No whitelisted entries*";
+
+    // ── Moderation toggle ───────────────────────────────────────────────────
+    const modOn      = isModerationEnabled(gid);
+    const customBl   = getModerationCustom(gid);
+    const modField   = [
+      modOn ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled** (mod commands usable by staff)" : "<:steal:1521327958634135655> **Disabled** (mod commands silently blocked for non-admins)",
+      customBl.size ? `Always-blocked: ${[...customBl].map(c=>`\`${c}\``).join(", ")}` : "",
+    ].filter(Boolean).join("\n");
+
+    // ── VanityLock ──────────────────────────────────────────────────────────
+    const vl    = vanityLock.get(gid);
+    const vlStr = vl?.enabled ? `<:019TXTWhite_Yes:1521327983279996999> **Enabled** — watching \`/${vl.vanity}\`` : "<:steal:1521327958634135655> Disabled";
+
+    const fields = [
+      { name:"<:RUSH_caution:1521415278355808297>  AntiNuke",                    value: anField,       inline: true  },
+      { name:"🌊  AntiRaid",                    value: arField,       inline: true  },
+      { name:"\u200b",                          value: "\u200b",      inline: false },
+      { name:"<:RUSH_warning:1521415214799654985>  Risky Permissions Monitor",  value: riskyPermsField, inline: false },
+      { name:"🔺  Risky Roles",                value: riskyRolesField, inline: false },
+      { name:"<:RUSH_list:1521415268000337961>  Action Limits & Punishments", value: limitsField,   inline: false },
+      { name:"<:019TXTWhite_Yes:1521327983279996999>  Security Whitelist",          value: wlField,       inline: false },
+      { name:"<:RUSH_unlock:1521415218037526641>  Moderation Toggle",           value: modField,      inline: true  },
+      { name:"🎀  Vanity Lock",                 value: vlStr,         inline: true  },
+    ];
+
+    return message.reply({ embeds:[{
+      color:       PINK,
+      title:       `🔐  Security Overview — ${message.guild.name}`,
+      description: "All protection systems at a glance. Green = active, Red = off or unconfigured.",
+      fields,
+      footer:      { text: ",antinuke · ,antiraid · ,risky-roles · ,riskypermission · ,whitelist · ,setlimit · ,setpunishment" },
+      timestamp:   new Date().toISOString(),
+    }]}).catch(()=>{});
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // ██  TICKET PANEL V2 — Interactive wizard + panel management
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (command === "ticketpanel" || command === "tp") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+      return err(message,"Missing **Administrator** permission.");
+    const sub = args[1]?.toLowerCase();
+    const cfg = guildCfg(message.guild.id);
+    if (!cfg.ticketPanels) cfg.ticketPanels = [];
+
+    if (!sub || sub === "list") {
+      if (!cfg.ticketPanels.length)
+        return err(message,"No ticket panels configured. Run `,ticketpanel setup` to create one.");
+      return message.reply({ embeds:[{
+        color: PINK, title:"<:RUSH_ticket:1521415234802417754>  Ticket Panels",
+        description: cfg.ticketPanels.map((p,i)=>`**[${i+1}]** ${p.name} — Category: <#${p.categoryId||"not set"}>`).join("\n"),
+        footer:{text:"Use ,ticketpanel manage <#> to edit a panel"}
+      }]}).catch(()=>{});
+    }
+
+    if (sub === "setup" || sub === "create") {
+      const panelData = {
+        name: "Support",
+        description: "Click the button below to open a ticket.\nOur team will get back to you as soon as possible.",
+        buttonLabel: "Open a Ticket",
+        buttonEmoji: "<:RUSH_ticket:1521415234802417754>",
+        buttonColor: "Success",
+        categories: [],      // [{name, emoji}] — if set, one button per category
+        supportRoles: [],
+        categoryId: null,
+        transcriptChannelId: null,
+        panelChannelId: null,
+      };
+
+      const step1Row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_setname").setLabel("✏️ Set Panel Name").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_skip1").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+      );
+      const msg1 = await message.reply({ embeds:[{
+        color: PINK,
+        title: "<:RUSH_ticket:1521415234802417754> Panel Setup — Step 1/6: Panel name & button",
+        description: "Click **Set Panel Name** to set the name shown in the panel embed title and on the open-ticket button.",
+        fields: [
+          {name:"Panel title",   value:`\`${panelData.name}\``,        inline:true},
+          {name:"Button label",  value:`\`${panelData.buttonLabel}\``, inline:true},
+        ],
+        footer:{text:"Click a button below, or Skip to use defaults"},
+      }], components:[step1Row] }).catch(()=>null);
+      if (!msg1) return;
+
+      const wizardKey = `tp_wizard:${message.author.id}:${message.guild.id}`;
+      if (!client._tpWizards) client._tpWizards = new Map();
+      client._tpWizards.set(wizardKey, { panelData, step:1, msgId:msg1.id, guildId:message.guild.id, authorId:message.author.id, cfg });
+      return;
+    }
+
+    if (sub === "manage" || sub === "edit") {
+      const idx = parseInt(args[2]) - 1;
+      if (isNaN(idx) || !cfg.ticketPanels[idx]) return err(message,"Provide a valid panel number. Use `,ticketpanel list` to see panels.");
+      const panel = cfg.ticketPanels[idx];
+      const rows = [
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder().setCustomId(`tpm_action:${idx}:${message.guild.id}`)
+            .setPlaceholder("Select an action")
+            .addOptions([
+              new StringSelectMenuOptionBuilder().setLabel("Send panel to a channel").setValue("send").setEmoji("<:RUSH_comment:1491884212297531572>"),
+              new StringSelectMenuOptionBuilder().setLabel("Panel title & button label").setValue("name").setEmoji("✏️"),
+              new StringSelectMenuOptionBuilder().setLabel("Panel description").setValue("description").setEmoji("<:RUSH_task:1521415237813665813>"),
+              new StringSelectMenuOptionBuilder().setLabel("Button emoji & color").setValue("style").setEmoji("🎨"),
+              new StringSelectMenuOptionBuilder().setLabel("Ticket categories").setValue("categories").setEmoji("<:RUSH_folder:1521415227495940096>"),
+              new StringSelectMenuOptionBuilder().setLabel("Support team roles").setValue("roles").setEmoji("👥"),
+              new StringSelectMenuOptionBuilder().setLabel("Transcript Channel").setValue("transcript").setEmoji("<:RUSH_task:1521415237813665813>"),
+              new StringSelectMenuOptionBuilder().setLabel("Ticket Category channel").setValue("category").setEmoji("<:RUSH_folder:1521415227495940096>"),
+              new StringSelectMenuOptionBuilder().setLabel("Delete this panel").setValue("delete").setEmoji("<:RUSH_trash_can:1521415241190215721>"),
+            ])
+        )
+      ];
+      return message.reply({ embeds:[{
+        color: PINK, title:"<:RUSH_ticket:1521415234802417754>  Panel Editor",
+        description:[
+          `**Title:** ${panel.name}`,
+          `**Description:** ${(panel.description||"").slice(0,80)}${(panel.description||"").length>80?"…":""}`,
+          `**Button:** ${panel.buttonEmoji||"<:RUSH_ticket:1521415234802417754>"} ${panel.buttonLabel||panel.name} (${panel.buttonColor||"Success"})`,
+          `**Categories:** ${panel.categories?.map(c=>`${c.emoji||""}${c.name}`).join(", ")||"none (single button)"}`,
+          `**Support Roles:** ${panel.supportRoles?.map(r=>`<@&${r}>`).join(", ")||"none"}`,
+          `**Ticket Category:** ${panel.categoryId?`<#${panel.categoryId}>`:"not set"}`,
+          `**Transcript:** ${panel.transcriptChannelId?`<#${panel.transcriptChannelId}>`:"not set"}`,
+        ].join("\n"),
+        footer:{text:`Panel ${idx+1} of ${cfg.ticketPanels.length}`}
+      }], components:rows}).catch(()=>{});
+    }
+
+    if (sub === "delete") {
+      const idx = parseInt(args[2]) - 1;
+      if (isNaN(idx) || !cfg.ticketPanels[idx]) return err(message,"Invalid panel number.");
+      const name = cfg.ticketPanels[idx].name;
+      cfg.ticketPanels.splice(idx,1); saveAllConfigs();
+      return ok(message,`Panel **${name}** deleted.`);
+    }
+    return err(message,"Usage: `,ticketpanel setup` · `,ticketpanel list` · `,ticketpanel manage <#>` · `,ticketpanel delete <#>`");
+  }
+});
+
+// ── Ticket Panel V2 — helpers & interaction handler ───────────────────────────
+
+const _TP_BSTYLE = { Primary:ButtonStyle.Primary, Success:ButtonStyle.Success, Danger:ButtonStyle.Danger, Secondary:ButtonStyle.Secondary };
+
+function _wizardStepContent(step, wiz) {
+  const { panelData } = wiz;
+  if (step === 2) return {
+    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 2/6: Panel description",
+      description:"Click **Set Description** to write the text shown inside the panel embed.\nSupports **bold**, *italic*, Discord emojis, and mentions.",
+      fields:[{name:"Current", value:(panelData.description||"*(none)*").slice(0,300), inline:false}],
+      footer:{text:"Click Skip to keep the default."}}],
+    components:[new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("tp_setdesc").setLabel("<:RUSH_task:1521415237813665813> Set Description").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_skip2").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+    )],
+  };
+  if (step === 3) return {
+    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 3/6: Button colour",
+      description:"Pick a **colour** for the open-ticket button.\n\nCurrent emoji: `"+(panelData.buttonEmoji||"<:RUSH_ticket:1521415234802417754>")+"` · Colour: **"+(panelData.buttonColor||"Success")+"**",
+      footer:{text:"Clicking a colour saves it and moves to the next step."}}],
+    components:[
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_color_Primary").setLabel("🔵 Blue").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_color_Success").setLabel("<:019TXTWhite_Yes:1521327983279996999> Green").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("tp_color_Danger").setLabel("<:steal:1521327958634135655> Red").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("tp_color_Secondary").setLabel("⚫ Grey").setStyle(ButtonStyle.Secondary),
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("tp_setemoji").setLabel("✏️ Set custom emoji").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tp_skip3").setLabel("Skip / Keep current").setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  };
+  if (step === 4) return {
+    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 4/6: Ticket categories",
+      description:'Add **categories** so users choose a topic when opening a ticket.\nEach category becomes a separate button on the panel.\n\nLeave blank for a single open-ticket button.',
+      fields:[{name:"Current", value:panelData.categories?.length ? panelData.categories.map(c=>`${c.emoji||""}  **${c.name}**`).join("\n") : "*(single button)*", inline:false}],
+      footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"'}}],
+    components:[new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("tp_setcats").setLabel("<:RUSH_folder:1521415227495940096> Set Categories").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_skip4").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+    )],
+  };
+  if (step === 5) return {
+    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 5/6: Support roles",
+      description:"Enter the role IDs that can see and manage tickets.\nLeave blank to allow anyone with Manage Channels.",
+      fields:[{name:"Current", value:panelData.supportRoles?.length ? panelData.supportRoles.map(r=>`<@&${r}>`).join(", ") : "*(none)*", inline:false}],
+      footer:{text:"Enter role IDs separated by commas."}}],
+    components:[new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("tp_setroles").setLabel("👥 Set Roles").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_skip5").setLabel("Skip").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("<:019TXTWhite_Yes:1521327983279996999> Finish").setStyle(ButtonStyle.Success),
+    )],
+  };
+  if (step === 6) return {
+    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 6/6: Category & transcript channels",
+      description:"Set the **Discord category** where ticket channels are created, and a **transcript channel** for closed ticket logs.",
+      fields:[
+        {name:"Ticket category", value:panelData.categoryId?`<#${panelData.categoryId}>`:"*(not set)*", inline:true},
+        {name:"Transcript", value:panelData.transcriptChannelId?`<#${panelData.transcriptChannelId}>`:"*(not set)*", inline:true},
+      ],
+      footer:{text:"Click Set Channels or Skip to finish."}}],
+    components:[new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("tp_setchannels").setLabel("<:RUSH_folder:1521415227495940096> Set Channels").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_skip6").setLabel("Skip / Finish").setStyle(ButtonStyle.Secondary),
+    )],
+  };
+  return _wizardDoneContent(wiz);
+}
+
+function _wizardDoneContent(wiz) {
+  const cfg = guildCfg(wiz.guildId);
+  const n   = (cfg.ticketPanels||[]).length;
+  return { embeds:[{color:PINK, title:"<:019TXTWhite_Yes:1521327983279996999>  Panel Created!",
+    description:`**${wiz.panelData.name}** saved as panel **#${n}**.\n\nRun \`,ticketpanel manage ${n}\` → **Send panel to a channel** to deploy it.`}], components:[] };
+}
+function _tpWizardSave(wiz) {
+  const cfg = guildCfg(wiz.guildId);
+  cfg.ticketPanels = cfg.ticketPanels || [];
+  cfg.ticketPanels.push(wiz.panelData);
+  saveAllConfigs();
+  client._tpWizards?.delete(`tp_wizard:${wiz.authorId}:${wiz.guildId}`);
+}
+// Safely resolve an emoji string to what Discord.js ButtonBuilder.setEmoji() accepts.
+// Handles: Unicode ("<:RUSH_ticket:1521415234802417754>"), custom ("<:name:id>"), animated ("<a:name:id>")
+function _resolveEmoji(raw) {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  // Match custom/animated Discord emoji <:name:id> or <a:name:id>
+  const m = s.match(/^<?(a?):?(\w{2,32}):(\d{17,21})>?$/);
+  if (m) return { animated: m[1]==="a", name: m[2], id: m[3] };
+  // Strip any text before/after the emoji; pass Unicode emoji as-is
+  return s;
+}
+
+function _buildPanelMessage(panel, guildId, panelIdx) {
+  const bStyle = _TP_BSTYLE[panel.buttonColor] ?? ButtonStyle.Success;
+  let components;
+  if (panel.categories?.length) {
+    const catBtns = panel.categories.slice(0,5).map(cat => {
+      const b = new ButtonBuilder()
+        .setCustomId(`ticket_create:${guildId}:${panelIdx}:${encodeURIComponent(cat.name)}`)
+        .setLabel(cat.name||"Ticket").setStyle(bStyle);
+      const emoji = _resolveEmoji(cat.emoji);
+      if (emoji) { try { b.setEmoji(emoji); } catch {} }
+      return b;
+    });
+    components = [new ActionRowBuilder().addComponents(...catBtns)];
+  } else {
+    const b = new ButtonBuilder()
+      .setCustomId(`ticket_create:${guildId}:${panelIdx}:default`)
+      .setStyle(bStyle);
+    const emoji = _resolveEmoji(panel.buttonEmoji);
+    if (emoji) { try { b.setEmoji(emoji); } catch {} }
+    // If there's a label, set it; if no label but also no emoji, fall back to panel name
+    const label = panel.buttonLabel;
+    if (label) b.setLabel(label);
+    else if (!emoji) b.setLabel(panel.name || "Open a Ticket");
+    components = [new ActionRowBuilder().addComponents(b)];
+  }
+  return { embeds:[{color:PINK, title:panel.name||null, description:panel.description||"Click below to open a support ticket."}], components };
+}
+async function _generateTranscript(channel) {
+  const msgs = [];
+  let before;
+  for (let i = 0; i < 10; i++) {
+    const batch = await channel.messages.fetch({limit:100,before}).catch(()=>null);
+    if (!batch?.size) break;
+    msgs.push(...batch.values());
+    before = batch.last()?.id;
+    if (batch.size < 100) break;
+  }
+  msgs.sort((a,b)=>a.createdTimestamp-b.createdTimestamp);
+  const lines = msgs.map(m=>{
+    const ts = new Date(m.createdTimestamp).toISOString().replace("T"," ").slice(0,19);
+    const content = m.content||(m.embeds.length?"[embed]":"[attachment]");
+    return `[${ts}] ${m.author.tag}: ${content}`;
+  });
+  return Buffer.from(`Transcript: #${channel.name}\nGenerated: ${new Date().toISOString()}\n${"-".repeat(60)}\n\n${lines.join("\n")}`);
+}
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.guild) return;
+  const id = interaction.customId || "";
+
+  // ── ℹ️ Keto info button ───────────────────────────────────────────────────
+  if (id.startsWith("keto_info:") && interaction.isButton()) {
+    const cached = client._ketoInfoCache?.get(id);
+    if (!cached) return interaction.reply({content:"ℹ️ Info expired.",flags:64}).catch(()=>{});
+    const { data, link } = cached;
+    const lines = [
+      `**Author:** ${data.author}${data.handle?`  (@${data.handle})`:""}`,
+      data.title    ? `**Caption:** ${data.title.slice(0,300)}`       : null,
+      data.likes   != null ? `<:RUSH_heart:1521415287344468029> **${_fmtNum(data.likes)}** likes`   : null,
+      data.comments!= null ? `<:RUSH_comment:1491884212297531572> **${_fmtNum(data.comments)}** comments` : null,
+      data.shares  != null ? `↗️ **${_fmtNum(data.shares)}** shares`  : null,
+      data.plays   != null ? `▶️ **${_fmtNum(data.plays)}** views`    : null,
+      `\n[Open in TikTok](${link})`,
+    ].filter(Boolean).join("\n");
+    return interaction.reply({embeds:[{color:PINK, title:data.author, description:lines}], flags:64}).catch(()=>{});
+  }
+
+  // ── Wizard buttons ────────────────────────────────────────────────────────
+  if (id.startsWith("tp_") && interaction.isButton()) {
+    if (!client._tpWizards) client._tpWizards = new Map();
+    const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
+    const wiz    = client._tpWizards.get(wizKey);
+    if (!wiz) return interaction.reply({content:"<:RUSH_warning:1521415214799654985> Session expired — run `,ticketpanel setup` again.",flags:64}).catch(()=>{});
+    if (interaction.user.id !== wiz.authorId) return interaction.reply({content:"This wizard belongs to someone else.",flags:64}).catch(()=>{});
+
+    // Modals
+    if (id==="tp_setname") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_name").setTitle("Panel Name & Button Label");
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("pname").setLabel("Panel title (shown in embed)").setStyle(TextInputStyle.Short).setMaxLength(50).setValue(wiz.panelData.name).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("blabel").setLabel("Button label (blank = emoji only)").setStyle(TextInputStyle.Short).setMaxLength(40).setValue(wiz.panelData.buttonLabel??wiz.panelData.name).setRequired(false)),
+      );
+      return interaction.showModal(modal);
+    }
+    if (id==="tp_setdesc") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_desc").setTitle("Panel Description");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desc").setLabel("Supports **bold**, *italic*, emojis").setStyle(TextInputStyle.Paragraph).setMaxLength(1000).setValue(wiz.panelData.description||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
+    }
+    if (id==="tp_setemoji") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_emoji").setTitle("Button Emoji");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("emoji").setLabel("Emoji: unicode / <:name:id> / blank=remove").setStyle(TextInputStyle.Short).setValue(wiz.panelData.buttonEmoji||"").setRequired(false).setMaxLength(100)
+      ));
+      return interaction.showModal(modal);
+    }
+    if (id==="tp_setcats") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_cats").setTitle("Ticket Categories");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("cats").setLabel('e.g. "🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"').setStyle(TextInputStyle.Paragraph).setValue(wiz.panelData.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
+    }
+    if (id==="tp_setroles") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_wiz_roles").setTitle("Support Team Roles");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("roles").setLabel("Role IDs comma-separated (blank = any staff)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.supportRoles?.join(",")||"").setRequired(false)
+      ));
+      return interaction.showModal(modal);
+    }
+    if (id==="tp_setchannels") {
+      const modal = new ModalBuilder().setCustomId("tp_modal_wiz_channels").setTitle("Category & Transcript Channels");
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("catid").setLabel("Ticket category channel ID (optional)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.categoryId||"").setRequired(false)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("tchid").setLabel("Transcript channel ID (optional)").setStyle(TextInputStyle.Short).setValue(wiz.panelData.transcriptChannelId||"").setRequired(false)),
+      );
+      return interaction.showModal(modal);
+    }
+    // Color pick — saves color and advances to step 4
+    if (id.startsWith("tp_color_")) {
+      const color = id.replace("tp_color_","");
+      if (_TP_BSTYLE[color]) wiz.panelData.buttonColor = color;
+      wiz.step = 4;
+      return interaction.update(_wizardStepContent(4, wiz)).catch(()=>{});
+    }
+    // Skip / finish
+    if (id==="tp_skip1")        { wiz.step=2; return interaction.update(_wizardStepContent(2,wiz)).catch(()=>{}); }
+    if (id==="tp_skip2")        { wiz.step=3; return interaction.update(_wizardStepContent(3,wiz)).catch(()=>{}); }
+    if (id==="tp_skip3")        { wiz.step=4; return interaction.update(_wizardStepContent(4,wiz)).catch(()=>{}); }
+    if (id==="tp_skip4")        { wiz.step=5; return interaction.update(_wizardStepContent(5,wiz)).catch(()=>{}); }
+    if (id==="tp_skip5")        { wiz.step=6; return interaction.update(_wizardStepContent(6,wiz)).catch(()=>{}); }
+    if (id==="tp_skip6")        { _tpWizardSave(wiz); return interaction.update(_wizardDoneContent(wiz)).catch(()=>{}); }
+    if (id==="tp_save_finish")  { _tpWizardSave(wiz); return interaction.update(_wizardDoneContent(wiz)).catch(()=>{}); }
+  }
+
+  // ── Wizard modal submissions ──────────────────────────────────────────────
+  const WIZ_MODALS = ["tp_modal_name","tp_modal_desc","tp_modal_emoji","tp_modal_cats","tp_modal_wiz_roles","tp_modal_wiz_channels"];
+  if (WIZ_MODALS.includes(id) && interaction.isModalSubmit()) {
+    if (!client._tpWizards) client._tpWizards = new Map();
+    const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
+    const wiz    = client._tpWizards.get(wizKey);
+    if (!wiz) return interaction.reply({content:"Session expired.",flags:64}).catch(()=>{});
+    const gv = f => { try { return interaction.fields.getTextInputValue(f)?.trim()||""; } catch{ return ""; }};
+
+    if (id==="tp_modal_name")  {
+      const n=gv("pname"); const b=gv("blabel");
+      if (n) wiz.panelData.name=n;
+      // Always save buttonLabel — blank means emoji-only button (no text)
+      wiz.panelData.buttonLabel = b;
+    }
+    // Allow clearing description by leaving blank (empty string = no description)
+    if (id==="tp_modal_desc")  { wiz.panelData.description = gv("desc"); }
+    // Allow clearing emoji by leaving blank
+    if (id==="tp_modal_emoji") { wiz.panelData.buttonEmoji = gv("emoji"); }
+    if (id==="tp_modal_cats")  {
+      const raw = gv("cats");
+      wiz.panelData.categories = raw
+        ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u)?.[0]||""; return {emoji:em, name:t.replace(em,"").trim()}; }).filter(c=>c.name)
+        : [];
+    }
+    if (id==="tp_modal_wiz_roles")    { wiz.panelData.supportRoles=gv("roles").split(",").map(s=>s.trim()).filter(Boolean); }
+    if (id==="tp_modal_wiz_channels") {
+      const c=gv("catid"); const t=gv("tchid");
+      // Allow clearing by submitting blank; only override if user typed something OR explicitly cleared
+      wiz.panelData.categoryId           = c || null;
+      wiz.panelData.transcriptChannelId  = t || null;
+    }
+
+    wiz.step += 1;
+    // Acknowledge the modal FIRST so Discord doesn't show "interaction failed"
+    await interaction.reply({content:"<:019TXTWhite_Yes:1521327983279996999> Saved — check the setup message above.", flags:64}).catch(()=>{});
+    const origMsg = await interaction.channel.messages.fetch(wiz.msgId).catch(()=>null);
+    if (wiz.step <= 6) { if (origMsg) await origMsg.edit(_wizardStepContent(wiz.step,wiz)).catch(()=>{}); }
+    else { _tpWizardSave(wiz); if (origMsg) await origMsg.edit(_wizardDoneContent(wiz)).catch(()=>{}); }
+    return;
+  }
+
+  // ── Panel manage — select menu ────────────────────────────────────────────
+  if (id.startsWith("tpm_action:") && interaction.isStringSelectMenu()) {
+    const parts   = id.split(":");
+    const idx     = parseInt(parts[1]);
+    const guildId = parts[2];
+    if (interaction.guild.id !== guildId) return;
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
+      return interaction.reply({content:"Missing **Administrator** permission.",flags:64});
+    const cfg    = guildCfg(interaction.guild.id);
+    const panel  = cfg.ticketPanels?.[idx];
+    if (!panel)  return interaction.reply({content:"Panel not found.",flags:64});
+    const action = interaction.values[0];
+
+    if (action==="delete") { cfg.ticketPanels.splice(idx,1); saveAllConfigs(); return interaction.update({embeds:[{color:PINK,description:"<:RUSH_trash_can:1521415241190215721> Panel deleted."}],components:[]}).catch(()=>{}); }
+
+    const modalDefs = {
+      name:        {cid:`tpm_modal_name:${idx}`,       title:"Panel title & button label",
+                    fields:[{id:"pname",label:"Panel title",style:"Short",val:panel.name||""},{id:"blabel",label:"Button label (blank = emoji only)",style:"Short",val:panel.buttonLabel||""}]},
+      description: {cid:`tpm_modal_desc:${idx}`,        title:"Panel description",
+                    fields:[{id:"desc",label:"Description (markdown — blank to clear)",style:"Paragraph",val:panel.description||""}]},
+      style:       {cid:`tpm_modal_style:${idx}`,       title:"Button emoji & colour",
+                    fields:[{id:"emoji",label:"Emoji: unicode/<:name:id> blank=remove",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Color: Primary/Success/Danger/Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
+      categories:  {cid:`tpm_modal_cats:${idx}`,        title:"Ticket categories",
+                    fields:[{id:"cats",label:'"🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"',style:"Paragraph",val:panel.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||""}]},
+      roles:       {cid:`tpm_modal_roles:${idx}`,       title:"Support team roles",
+                    fields:[{id:"roles",label:"Role IDs comma-separated (blank = any staff)",style:"Short",val:panel.supportRoles?.join(",")||""}]},
+      transcript:  {cid:`tpm_modal_transcript:${idx}`,  title:"Transcript channel",
+                    fields:[{id:"chid",label:"Transcript channel ID (blank to clear)",style:"Short",val:panel.transcriptChannelId||""}]},
+      category:    {cid:`tpm_modal_category:${idx}`,    title:"Ticket category channel",
+                    fields:[{id:"catid",label:"Category channel ID (blank to clear)",style:"Short",val:panel.categoryId||""}]},
+      send:        {cid:`tpm_modal_send:${idx}`,         title:"Send panel to channel",
+                    fields:[{id:"channelid",label:"Channel ID to send panel into",style:"Short",val:panel.panelChannelId||""}]},
+    };
+    const m = modalDefs[action];
+    if (!m) return interaction.reply({content:"Unknown action.",flags:64}).catch(()=>{});
+    const modal = new ModalBuilder().setCustomId(m.cid).setTitle(m.title);
+    for (const f of m.fields) {
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        // setValue must receive a string — coerce to "" to be safe
+        new TextInputBuilder().setCustomId(f.id).setLabel(f.label).setStyle(f.style==="Paragraph"?TextInputStyle.Paragraph:TextInputStyle.Short).setValue(String(f.val??'')).setRequired(false)
+      ));
+    }
+    return interaction.showModal(modal);
+  }
+
+  // ── Panel manage — modal submissions ──────────────────────────────────────
+  if (id.startsWith("tpm_modal_") && interaction.isModalSubmit()) {
+    const parts = id.split(":");
+    const mtype = parts[0].replace("tpm_modal_","");
+    const idx   = parseInt(parts[1]);
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
+      return interaction.reply({content:"Missing permissions.",flags:64});
+    const cfg   = guildCfg(interaction.guild.id);
+    const panel = cfg.ticketPanels?.[idx];
+    if (!panel) return interaction.reply({content:"Panel not found.",flags:64});
+    const gv = f => { try { return interaction.fields.getTextInputValue(f)?.trim()||""; } catch{ return ""; }};
+
+    if (mtype==="name") {
+      const n=gv("pname"); const b=gv("blabel");
+      if (n) panel.name=n;
+      // Always save buttonLabel — blank means emoji-only button (no text)
+      panel.buttonLabel = b;
+    }
+    // Allow clearing description by leaving blank
+    if (mtype==="desc") { panel.description = gv("desc"); }
+    if (mtype==="style") {
+      // Allow clearing emoji by leaving blank
+      panel.buttonEmoji = gv("emoji");
+      // Normalise color to title-case so "primary" / "PRIMARY" / "Primary" all work
+      const rawColor = gv("color");
+      const normColor = rawColor.charAt(0).toUpperCase() + rawColor.slice(1).toLowerCase();
+      if (_TP_BSTYLE[normColor]) panel.buttonColor = normColor;
+    }
+    if (mtype==="cats") {
+      const raw=gv("cats");
+      panel.categories = raw
+        ? raw.split(",").map(s=>{ const t=s.trim(); const em=t.match(/^\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u)?.[0]||""; return {emoji:em, name:t.replace(em,"").trim()}; }).filter(c=>c.name)
+        : [];
+    }
+    if (mtype==="roles")      { panel.supportRoles=gv("roles").split(",").map(s=>s.trim()).filter(Boolean); }
+    if (mtype==="transcript") { panel.transcriptChannelId=gv("chid")||null; }
+    if (mtype==="category")   { panel.categoryId=gv("catid")||null; }
+
+    if (mtype==="send") {
+      const channelId = gv("channelid");
+      const ch = interaction.guild.channels.cache.get(channelId);
+      if (!ch) return interaction.reply({content:"<:steal:1521327958634135655> Channel not found — double-check the channel ID.",flags:64}).catch(()=>{});
+      // Send the panel; catch errors properly to avoid a double-reply
+      const sendResult = await ch.send(_buildPanelMessage(panel, interaction.guild.id, idx)).catch(e => e);
+      if (sendResult instanceof Error)
+        return interaction.reply({content:`<:steal:1521327958634135655> Failed to send panel: ${sendResult.message}`,flags:64}).catch(()=>{});
+      panel.panelChannelId = channelId;
+      saveAllConfigs();
+      return interaction.reply({content:`<:019TXTWhite_Yes:1521327983279996999> Panel **${panel.name}** sent to <#${channelId}>!`, flags:64}).catch(()=>{});
+    }
+    saveAllConfigs();
+    return interaction.reply({content:"<:019TXTWhite_Yes:1521327983279996999> Panel updated.", flags:64}).catch(()=>{});
+  }
+
+  // ── Ticket Create Button ──────────────────────────────────────────────────
+  if (id.startsWith("ticket_create:") && interaction.isButton()) {
+    const parts    = id.split(":");
+    const guildId  = parts[1];
+    const panelIdx = parseInt(parts[2]);
+    const category = decodeURIComponent(parts[3]||"default");
+    if (interaction.guild.id !== guildId) return;
+
+    const cfg    = guildCfg(guildId);
+    const panel  = cfg.ticketPanels?.[panelIdx];
+    const existing = openTickets.get(`${guildId}-${interaction.user.id}`);
+    if (existing) return interaction.reply({content:`<:steal:1521327958634135655> You already have an open ticket: <#${existing}>`,flags:64});
+
+    cfg.ticketCounter = (cfg.ticketCounter||0) + 1;
+    const ticketNum = String(cfg.ticketCounter).padStart(4,"0");
+    saveAllConfigs();
+
+    const perms = [
+      { id:guildId, deny:[PermissionFlagsBits.ViewChannel] },
+      { id:interaction.user.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.UseExternalEmojis] },
+      { id:interaction.guild.members.me.id, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseExternalEmojis] },
+    ];
+    for (const rId of (panel?.supportRoles||[])) {
+      perms.push({ id:rId, allow:[PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.UseExternalEmojis] });
+    }
+    const ch = await interaction.guild.channels.create({
+      name:`ticket-${ticketNum}`, type:0,
+      parent:panel?.categoryId||undefined,
+      permissionOverwrites:perms,
+    }).catch(()=>null);
+    if (!ch) return interaction.reply({content:"<:steal:1521327958634135655> Could not create ticket channel — check my permissions.",flags:64});
+
+    openTickets.set(`${guildId}-${interaction.user.id}`, ch.id);
+    ticketActivity.set(ch.id, { creatorId:interaction.user.id, guildId, lastActivity:Date.now(), closing:false, ticketNum, panelIdx, openedAt:Date.now(), creatorMsgSent:false });
+
+    const catLabel = category!=="default" ? `  ·  **${category}**` : "";
+    await ch.send({
+      content:`<@${interaction.user.id}> Welcome`,
+      embeds:[{
+        color:PINK,
+        description:`Support will be with you shortly.\nTo close this ticket press the **Close** button below.`,
+      }],
+      components:[new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`ticket_close:${ch.id}:${interaction.user.id}`).setLabel("Close").setEmoji("<:RUSH_unlock:1521415218037526641>").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+    return interaction.reply({content:`<:019TXTWhite_Yes:1521327983279996999> Ticket opened: ${ch}`,flags:64});
+  }
+
+  // ── Ticket Close → shows confirmation ────────────────────────────────────
+  if (id.startsWith("ticket_close:") && interaction.isButton()) {
+    const [,channelId,creatorId] = id.split(":");
+    const activity = ticketActivity.get(channelId);
+    if (!activity) return interaction.reply({content:"<:RUSH_warning:1521415214799654985> This ticket is already closed.",flags:64});
+    const cfg2 = guildCfg(interaction.guild.id);
+    const canClose = interaction.user.id===(creatorId||activity.creatorId)
+      || interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
+      || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
+    if (!canClose) return interaction.reply({content:"<:steal:1521327958634135655> No permission to close this ticket.",flags:64});
+    return interaction.reply({
+      embeds:[{color:0xFF4444, description:"**Are you sure you would like to close this ticket?**"}],
+      components:[new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`ticket_confirm_close:${channelId}:${creatorId||activity.creatorId}`).setLabel("Close").setStyle(ButtonStyle.Danger).setEmoji("<:RUSH_unlock:1521415218037526641>"),
+        new ButtonBuilder().setCustomId("ticket_cancel_close").setLabel("Cancel").setStyle(ButtonStyle.Secondary),
+      )],
+    });
+  }
+
+  // ── Cancel close ─────────────────────────────────────────────────────────
+  if (id==="ticket_cancel_close" && interaction.isButton()) {
+    return interaction.update({embeds:[{color:PINK,description:"❎ Close cancelled."}],components:[]}).catch(()=>{});
+  }
+
+  // ── Confirmed close ───────────────────────────────────────────────────────
+  if (id.startsWith("ticket_confirm_close:") && interaction.isButton()) {
+    const [,channelId,creatorId] = id.split(":");
+    const activity = ticketActivity.get(channelId);
+    const cfg2     = guildCfg(interaction.guild.id);
+    if (!activity) return interaction.update({embeds:[{color:PINK,description:"Already closed."}],components:[]}).catch(()=>{});
+
+    const ticketNum = activity.ticketNum||"0000";
+
+    // ── Acknowledge FIRST (before any slow API calls) ──
+    await interaction.update({embeds:[{color:0xFF4444,description:`**Ticket closed by <@${interaction.user.id}>**`}],components:[]}).catch(()=>{});
+
+    // Now do the slow operations safely
+    for (const [k,v] of openTickets.entries()) { if(v===channelId){openTickets.delete(k);break;} }
+    ticketActivity.delete(channelId);
+    // ── Remove creator access completely (falls back to @everyone deny) ──
+    if (creatorId) await interaction.channel.permissionOverwrites.delete(creatorId).catch(()=>{});
+    await interaction.channel.setName(`closed-${ticketNum}`).catch(()=>{});
+
+    // Support controls message
+    await interaction.channel.send({
+      embeds:[{color:0x2B2D31, description:"**Support team ticket controls**", footer:{text:`Ticket #${ticketNum} · Closed by ${interaction.user.username}`}, timestamp:new Date().toISOString()}],
+      components:[new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`ticket_transcript:${channelId}:${activity.panelIdx??0}`).setLabel("Transcript").setStyle(ButtonStyle.Secondary).setEmoji("📄"),
+        new ButtonBuilder().setCustomId(`ticket_reopen:${channelId}:${creatorId}:${ticketNum}`).setLabel("Open").setStyle(ButtonStyle.Success).setEmoji("<:RUSH_unlock:1521415218037526641>"),
+        new ButtonBuilder().setCustomId(`ticket_delete:${channelId}`).setLabel("Delete").setStyle(ButtonStyle.Danger).setEmoji("<:RUSH_trash_can:1521415241190215721>"),
+      )],
+    }).catch(()=>{});
+
+    // Auto-send transcript to log channel
+    const tChId = cfg2.ticketPanels?.[activity.panelIdx??0]?.transcriptChannelId;
+    if (tChId) {
+      const tCh = interaction.guild.channels.cache.get(tChId);
+      if (tCh) {
+        const buf = await _generateTranscript(interaction.channel).catch(()=>null);
+        const e   = {color:PINK,title:`Ticket Closed — #${ticketNum}`,description:`Closed by <@${interaction.user.id}>`,timestamp:new Date().toISOString()};
+        if (buf) await tCh.send({embeds:[e],files:[{attachment:buf,name:`transcript-${ticketNum}.txt`}]}).catch(()=>{});
+        else     await tCh.send({embeds:[e]}).catch(()=>{});
+      }
+    }
+  }
+
+  // ── Transcript button ─────────────────────────────────────────────────────
+  if (id.startsWith("ticket_transcript:") && interaction.isButton()) {
+    const cfg2 = guildCfg(interaction.guild.id);
+    const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
+      || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
+    if (!canAct) return interaction.reply({content:"<:steal:1521327958634135655> No permission.",flags:64});
+    await interaction.deferReply({flags:64});
+    const buf = await _generateTranscript(interaction.channel).catch(()=>null);
+    if (!buf) return interaction.followUp({content:"<:steal:1521327958634135655> Failed to generate transcript.",flags:64});
+    const name = interaction.channel.name.replace("closed-","ticket-");
+    return interaction.followUp({content:"<:019TXTWhite_Yes:1521327983279996999> Transcript:", files:[{attachment:buf,name:`transcript-${name}.txt`}], flags:64});
+  }
+
+  // ── Reopen button ─────────────────────────────────────────────────────────
+  if (id.startsWith("ticket_reopen:") && interaction.isButton()) {
+    const [,channelId,creatorId,ticketNum] = id.split(":");
+    const cfg2 = guildCfg(interaction.guild.id);
+    const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
+      || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
+    if (!canAct) return interaction.reply({content:"<:steal:1521327958634135655> No permission.",flags:64});
+
+    // ── Acknowledge FIRST ──
+    await interaction.update({embeds:[{color:PINK,description:`**Reopening ticket…**`}],components:[]}).catch(()=>{});
+
+    // Slow operations after ack
+    if (creatorId) await interaction.channel.permissionOverwrites.edit(creatorId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true,UseExternalEmojis:true}).catch(()=>{});
+    await interaction.channel.setName(`ticket-${ticketNum||"0000"}`).catch(()=>{});
+    if (creatorId) {
+      openTickets.set(`${interaction.guild.id}-${creatorId}`, channelId);
+      ticketActivity.set(channelId,{creatorId,guildId:interaction.guild.id,lastActivity:Date.now(),closing:false,ticketNum});
+    }
+    await interaction.channel.send({
+      content:`<@${creatorId}> This ticket has been reopened by <@${interaction.user.id}>.`,
+      components:[new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`ticket_close:${channelId}:${creatorId}`).setLabel("Close").setEmoji("<:RUSH_unlock:1521415218037526641>").setStyle(ButtonStyle.Secondary)
+      )],
+    }).catch(()=>{});
+  }
+
+  // ── Delete button — support roles only ───────────────────────────────────
+  if (id.startsWith("ticket_delete:") && interaction.isButton()) {
+    const cfg2 = guildCfg(interaction.guild.id);
+    const panelIdx = ticketActivity.get(id.split(":")[1])?.panelIdx ?? null;
+    const panel = panelIdx != null ? cfg2.ticketPanels?.[panelIdx] : null;
+    // Support roles from the specific panel first, fall back to any panel's roles
+    const supportRoles = panel?.supportRoles?.length
+      ? panel.supportRoles
+      : (cfg2.ticketPanels||[]).flatMap(p=>p.supportRoles||[]);
+    const canDelete = interaction.member.permissions.has(PermissionFlagsBits.Administrator)
+      || supportRoles.some(r=>interaction.member.roles.cache.has(r));
+    if (!canDelete) return interaction.reply({content:"<:steal:1521327958634135655> Only support staff can delete tickets.",flags:64});
+    await interaction.update({embeds:[{color:0xFF4444,description:"Deleting..."}],components:[]}).catch(()=>{});
+    setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
+  }
+
+  // ── ,riskypermission select menu ──────────────────────────────────────────
+  if (id.startsWith("rp_set:") && interaction.isStringSelectMenu()) {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
+      return interaction.reply({content:"<:steal:1521327958634135655> Missing **Administrator** permission.",flags:64});
+    const cfg = guildCfg(interaction.guild.id);
+    cfg.riskyPerms = interaction.values; // replace entire list with selection
+    saveSecurityNow(); // flush immediately — security config must survive restarts
+    const monitored = cfg.riskyPerms;
+    const monitoredLines = monitored.length
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      : "*None — no permissions monitored.*";
+    const newEmbed = {
+      color: PINK,
+      title: "<:RUSH_warning:1521415214799654985>  Risky Permission Monitor — Updated",
+      description: [
+        "Select which permissions to flag as **risky**.",
+        "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
+        "",
+        "**Currently monitored:**",
+        monitoredLines,
+      ].join("\n"),
+      footer: { text: "Select from the menu below. Your selection replaces the current list." },
+    };
+    const newMenu = new StringSelectMenuBuilder()
+      .setCustomId(`rp_set:${interaction.guild.id}`)
+      .setPlaceholder("Select permissions to monitor…")
+      .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
+      .addOptions(RISKY_PERM_OPTIONS.map(p =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
+          .setDescription(monitored.includes(p.name) ? "<:019TXTWhite_Yes:1521327983279996999> Monitored" : "Not monitored")
+          .setDefault(monitored.includes(p.name))
+      ));
+    return interaction.update({embeds:[newEmbed], components:[new ActionRowBuilder().addComponents(newMenu)]}).catch(()=>{});
+  }
+});
+// Risky role + risky permission auto-enforcement
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  if (!newMember.guild) return;
+  try {
+    const cfg = guildCfg(newMember.guild.id);
+    // Defensive defaults in case config isn't fully initialised yet
+    const wl = cfg.securityWhitelist || {};
+    if (Array.isArray(wl.users) && wl.users.includes(newMember.id)) return;
+    if (Array.isArray(wl.roles) && wl.roles.some(r => oldMember.roles.cache.has(r))) return;
+
+    const addedRoles = [...newMember.roles.cache.keys()].filter(r => !oldMember.roles.cache.has(r));
+    if (!addedRoles.length) return;
+
+    // ── Risky roles check ────────────────────────────────────────────────────
+    const riskyRoles = cfg.riskyRoles;
+    if (Array.isArray(riskyRoles?.roles) && riskyRoles.roles.length) {
+      const riskyAdded = addedRoles.filter(r => riskyRoles.roles.includes(r));
+      if (riskyAdded.length) {
+        const action = riskyRoles.action || "strip";
+        log(`[RiskyRoles] ${newMember.user.tag} got risky role(s) in ${newMember.guild.name} → ${action}`, "warn");
+        if (action === "strip") {
+          await newMember.roles.remove(riskyAdded, "Risky role auto-strip").catch(()=>{});
+        } else if (action === "kick") {
+          await newMember.send({ embeds:[{color:0xff0000,description:`You were kicked from **${newMember.guild.name}** for receiving a restricted role.`}] }).catch(()=>{});
+          await newMember.kick("Risky role assigned").catch(()=>{});
+        } else if (action === "ban") {
+          await newMember.ban({ reason:"Risky role assigned — security action" }).catch(()=>{});
+        }
+      }
+    }
+
+    // ── Risky permissions check (role-based — member's roles just gained a risky perm) ──
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    if (riskyPerms.length) {
+      const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
+      for (const addedRoleId of addedRoles) {
+        const role = newMember.guild.roles.cache.get(addedRoleId);
+        if (!role) continue;
+        const hasRiskyPerm = riskyOptions.some(p => role.permissions.has(p.flag));
+        if (hasRiskyPerm) {
+          log(`[RiskyPerms/member] ${newMember.user.tag} received role "${role.name}" with risky perm — stripping role`, "warn");
+          await newMember.roles.remove(addedRoleId, "Role contains a monitored risky permission").catch(()=>{});
+        }
+      }
+    }
+  } catch (e) { log(`[Security/guildMemberUpdate] ${e.message}`, "error"); }
+});
+
+// ── ,riskypermission — roleUpdate monitor ─────────────────────────────────────
+// Fires whenever a role's permissions are edited.
+// If a blacklisted permission was NEWLY added to the role, remove it immediately.
+client.on("roleUpdate", async (oldRole, newRole) => {
+  if (!newRole.guild) return;
+  try {
+    const cfg        = guildCfg(newRole.guild.id);
+    const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
+    if (!riskyPerms.length) return;
+
+    // Which monitored permissions were just added to this role?
+    const riskyOptions = RISKY_PERM_OPTIONS.filter(p => riskyPerms.includes(p.name));
+    const newlyAdded   = riskyOptions.filter(p =>
+      !oldRole.permissions.has(p.flag) && newRole.permissions.has(p.flag)
+    );
+    if (!newlyAdded.length) return;
+
+    const permNames = newlyAdded.map(p => `${p.emoji} **${p.name}**`).join(", ");
+    log(`[RiskyPerms] Role "${newRole.name}" in ${newRole.guild.name} got blacklisted perm(s): ${permNames} — reverting`, "warn");
+
+    // Build the new permission bitfield with the blacklisted permissions removed
+    const stripped = newRole.permissions.remove(newlyAdded.map(p => p.flag));
+    await newRole.setPermissions(stripped, `Risky permission auto-reverted: ${newlyAdded.map(p=>p.name).join(", ")}`).catch(e => {
+      log(`[RiskyPerms] Could not revert role "${newRole.name}": ${e.message}`, "error");
+    });
+
+    // Alert in a log channel if configured (uses the first panel's transcript channel as fallback)
+    const logChId = cfg.securityLogChannel
+      || (Array.isArray(cfg.ticketPanels) ? cfg.ticketPanels.find(p => p.transcriptChannelId)?.transcriptChannelId : null);
+    if (logChId) {
+      const logCh = newRole.guild.channels.cache.get(logChId);
+      if (logCh) await logCh.send({ embeds:[{
+        color: 0xFF4444,
+        title: "<:RUSH_warning:1521415214799654985>  Risky Permission Blocked",
+        description: [
+          `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
+          `**Blocked permission(s):** ${permNames}`,
+          `The permission(s) have been automatically removed from the role.`,
+        ].join("\n"),
+        timestamp: new Date().toISOString(),
+      }]}).catch(()=>{});
+    }
+  } catch (e) { log(`[Security/roleUpdate] ${e.message}`, "error"); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ██  HELP — inject new categories into existing help sessions on next open
+// ══════════════════════════════════════════════════════════════════════════════
+// The categories are injected at runtime into the categoriess object inside
+// the help command. Since that object is local to the command handler, we patch
+// it by monkey-patching the categories stored in helpSessions. New sessions
+// created after startup will include these categories automatically because
+// the help handler is monkey-patched below.
+
+// Monkey-patch the help categories so new ,help invocations include all new commands.
+// We wrap the existing help messageCreate listener by adding an "extraCategories" global
+// that the help command merges in.
+if (!global._helpExtraCategories) global._helpExtraCategories = {};
+Object.assign(global._helpExtraCategories, {
+  emotes: {
+    label: "Emotes & Stickers",
+    emoji: "<a:014White_Spark2:1491251181840891996>",
+    description: "Steal, rename, convert and find emojis/stickers",
+    commands: [
+      [",steal <:emoji:> [name]",         "Steal a custom emoji and add to this server"],
+      [",steal <url> <name>",             "Add an emoji from an image URL"],
+      [",steal-sticker [name]",           "Steal a sticker (reply to sticker or attach image)"],
+      [",rename-emoji <:emoji:> <name>",  "Rename a custom emoji"],
+      [",rename-emoji <oldname> <name>",  "Rename a custom emoji by its current name"],
+      [",rename-sticker <oldname> <name>","Rename a server sticker"],
+      [",emoji2sticker <:emoji:> [name]", "Convert a custom emoji into a sticker"],
+      [",sticker2emoji [name]",           "Convert a sticker into a custom emoji (reply to sticker)"],
+      [",findemoji",                      "Find all custom emojis in a replied message and add them"],
+      [",find-sticker",                   "Find the sticker in a replied message and add it"],
+    ]
+  },
+  social: {
+    label: "Social (Keto)",
+    emoji: "📱",
+    description: "Auto-embed TikTok, Twitter/X, Instagram links",
+    commands: [
+      [",keto on/off",              "Enable/disable Keto auto-embed for social links"],
+      [",keto delete",              "Toggle: delete original message after embedding"],
+      [",keto channel #ch",         "Restrict Keto to a specific channel"],
+      [",keto all",                 "Enable Keto in all channels"],
+      [",keto",                     "View Keto status and config"],
+      ["",                          "Supports: TikTok · Twitter/X · Instagram"],
+    ]
+  },
+  funactions: {
+    label: "Fun Actions",
+    emoji: "🎭",
+    description: "Anime GIF reactions — hug, kiss, slap and more",
+    commands: [
+      [",hug [@user]",       "Hug someone 🤗"],
+      [",kiss [@user]",      "Kiss someone 💋"],
+      [",slap [@user]",      "Slap someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
+      [",pat [@user]",       "Pat someone 🐾"],
+      [",cuddle [@user]",    "Cuddle someone 🥰"],
+      [",poke [@user]",      "Poke someone 👉"],
+      [",bite [@user]",      "Bite someone 😬"],
+      [",punch [@user]",     "Punch someone 👊"],
+      [",highfive [@user]",  "High five someone 🙌"],
+      [",wave [@user]",      "Wave at someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
+      [",dance [@user]",     "Dance with someone 💃"],
+      [",feed [@user]",      "Feed someone 🍙"],
+      [",tickle [@user]",    "Tickle someone 😂"],
+      [",smile [@user]",     "Smile at someone 😊"],
+      [",cry [@user]",       "Cry with someone 😢"],
+      [",blush [@user]",     "Blush at someone 😳"],
+      [",wink [@user]",      "Wink at someone 😉"],
+      [",throw [@user]",     "Throw something at someone 🎯"],
+      [",fuck [@user]",      "<:18plus:1521415320538054748> NSFW-only channels"],
+    ]
+  },
+  securityv2: {
+    label: "Security V2",
+    emoji: "<:RUSH_caution:1521415278355808297>",
+    description: "Action limits, punishments & whitelists (Wick-style)",
+    commands: [
+      [",setlimit <action> <count> [seconds]",       "Set max actions before punishment fires (e.g. `,setlimit ban 3 10`)"],
+      [",setpunishment <action|all> <ban|kick|strip|timeout>", "Set punishment for exceeding an action limit"],
+      [",whitelist add_user @user",                  "Whitelist a user from security actions"],
+      [",whitelist remove_user @user",               "Remove user from whitelist"],
+      [",whitelist add_role @role",                  "Whitelist a role"],
+      [",whitelist remove_role @role",               "Remove role from whitelist"],
+      [",whitelist add_channel #ch",                 "Whitelist a channel from AutoMod"],
+      [",whitelist remove_channel #ch",              "Remove channel from whitelist"],
+      [",whitelist view_users/view_roles/view_channels", "View current whitelist"],
+      [",risky-roles add @role",                     "Mark a role as risky (auto-action on assignment)"],
+      [",risky-roles remove @role",                  "Unmark a risky role"],
+      [",risky-roles action <strip|kick|ban>",       "Set what happens when risky role is assigned"],
+      [",risky-roles list",                          "List all risky roles and current action"],
+      ["",                                           "Valid actions: ban, kick, role_delete, role_create, channel_delete, channel_create, bot_add, dangerous_perm, admin_role, prune, invites"],
+    ]
+  },
+  ticketsv2: {
+    label: "Ticket System V2",
+    emoji: "<:RUSH_ticket:1521415234802417754>",
+    description: "Full panel-based ticket system with wizard setup",
+    commands: [
+      [",ticketpanel setup",           "Open 5-step wizard to create a new ticket panel"],
+      [",ticketpanel list",            "List all configured ticket panels"],
+      [",ticketpanel manage <#>",      "Edit a panel: name, roles, category, transcript, send"],
+      [",ticketpanel delete <#>",      "Delete a ticket panel"],
+      [",ticket create",               "Open a ticket (or click the panel button in your channel)"],
+      [",ticket close",                "Close the current ticket channel"],
+      [",tc",                          "Shortcut to close a ticket"],
+    ]
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUSTOM EMOJIS IN BOT RESPONSES — Quick Guide
+// ─────────────────────────────────────────────────────────────────────────────
+// To use your own server's custom emojis in bot messages:
+//
+//  1. Get the emoji's ID:  Right-click emoji → Copy ID   (e.g.  1234567890123456789)
+//  2. For a static emoji:  <:emoji_name:ID>   e.g.  <:crown:1234567890123456789>
+//  3. For an animated gif: <a:emoji_name:ID>  e.g.  <a:fire:1234567890123456789>
+//
+//  The bot must be in the server that owns the emoji, OR the bot must have
+//  Nitro (bots can use emojis from any server they're in).
+//
+//  Example usage in code:
+//    return ok(message, `<:star:1234567890> Done!`);
+//    embed.title = "<a:loading:9876543210> Processing...";
+//
+//  To add white/custom emojis to any bot response, just replace any
+//  existing emoji string (like "<:019TXTWhite_Yes:1521327983279996999>") with your <:name:id> string.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── LOGIN ────────────────────────────────────────────────────────────────────
+client.login(process.env.TOKEN).catch(e => {
+  console.error('[Bot] <:steal:1521327958634135655> Login failed:', e.message);
+  process.exit(1);
+});
+
+
+
+
