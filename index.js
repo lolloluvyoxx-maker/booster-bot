@@ -10984,7 +10984,7 @@ const E_TASK   = "<:RUSH_task:1521415237813665813>";
 const E_ROCKET = "<:RUSH_rocket:1521415262384160778>";
 const E_FOLDER = "<:RUSH_folder:1521415227495940096>";
 const E_GLOBE  = "<:RUSH_globe:1521415284496273489>";
-const E_VIDEO  = "<:movieslotbluedns:1414214240218120295>";
+const E_VIDEO  = "🎬";
 
 // Small helper so every button gets its emoji through the right field.
 function btn(customId, label, style, emoji) {
