@@ -10539,6 +10539,13 @@ client.on("interactionCreate", async (interaction) => {
         return nc.id;
       }
 
+      // Categories can already contain channels (from before this run) — count
+      // what's really in there so the 50-channel overflow trigger fires at the
+      // right time instead of assuming every target starts empty.
+      function countChannelsIn(catId) {
+        return guild.channels.cache.filter(c => c.parentId === catId && c.type !== 4).size;
+      }
+
       async function moveToTracker(ch, tracker) {
         if (tracker.count >= 50) {
           const overflowNum = Math.floor(tracker.count / 50) + 1;
@@ -10565,7 +10572,8 @@ client.on("interactionCreate", async (interaction) => {
 
       const trackers = [];
       for (let i = 0; i < numCats; i++) {
-        trackers.push({ baseName: names[i], currentCatId: await getOrCreate(names[i]), count: 0 });
+        const catId = await getOrCreate(names[i]);
+        trackers.push({ baseName: names[i], currentCatId: catId, count: countChannelsIn(catId) });
       }
 
       let failCount = 0;
