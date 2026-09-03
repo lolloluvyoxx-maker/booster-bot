@@ -10499,6 +10499,9 @@ client.on("interactionCreate", async (interaction) => {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ content: "<:steal:1521327958634135655> Administrator permission required.", flags: 64 });
     }
+    if (!interaction.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: "<:steal:1521327958634135655> I'm missing the **Manage Channels** permission in this server — I need it to create categories and move channels into them. Grant it to my role and run `,sortcategory` again.", flags: 64 });
+    }
 
     await interaction.update({
       embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> **Running category sort — please wait...**" }],
@@ -10565,22 +10568,40 @@ client.on("interactionCreate", async (interaction) => {
         trackers.push({ baseName: names[i], currentCatId: await getOrCreate(names[i]), count: 0 });
       }
 
+      let failCount = 0;
+      let firstError = null;
       for (let i = 0; i < numCats; i++) {
         await updateStatus(`Moving **${batches[i].length}** channels → **${names[i]}**...`);
         for (const ch of batches[i]) {
-          try { await moveToTracker(ch, trackers[i]); } catch (e) { log(`[sortcategory] ${ch.name}: ${e.message}`, "error"); }
+          try {
+            await moveToTracker(ch, trackers[i]);
+          } catch (e) {
+            failCount++;
+            if (!firstError) firstError = e.message;
+            log(`[sortcategory] ${ch.name}: ${e.message}`, "error");
+          }
         }
       }
 
+      const totalMoved = trackers.reduce((sum, t) => sum + t.count, 0);
       const fields = trackers.map((t, i) => ({ name: names[i], value: `${t.count} channels`, inline: true }));
       const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
       if (immuneList.length) fields.push({ name: "🛡 Immune (untouched)", value: immuneList.map(c => c.name).join(", "), inline: false });
+      if (failCount > 0) {
+        fields.push({
+          name: "<:RUSH_warning:1521415214799654985> Failed to move",
+          value: `**${failCount}** channel(s) — most likely a permissions issue.\nFirst error: \`${firstError}\``,
+          inline: false,
+        });
+      }
 
       await statusMsg?.edit({
         embeds: [{
           color: PINK,
-          title: "<:019TXTWhite_Yes:1521327983279996999> Category Sort Complete",
-          description: `**${guild.name}** — **${allChans.length}** channels distributed across **${numCats}** categories`,
+          title: failCount > 0
+            ? (totalMoved === 0 ? "<:steal:1521327958634135655> Category Sort Failed" : "<:RUSH_warning:1521415214799654985> Category Sort Finished With Errors")
+            : "<:019TXTWhite_Yes:1521327983279996999> Category Sort Complete",
+          description: `**${guild.name}** — **${totalMoved}** of **${allChans.length}** channels moved across **${numCats}** categories`,
           fields,
           footer: { text: "sensational • white edition" },
           timestamp: new Date(),
