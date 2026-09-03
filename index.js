@@ -3309,6 +3309,7 @@ client.on("messageCreate", async (message) => {
         commands: [
           [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
           [",separate", "Interactive panel to split server channels into 2–3 categories"],
+          [",sortcategory", "Interactive panel to sort channels into 2–5 categories, with immune categories"],
           [",videocount [#ch]", "Count videos in a channel or the whole server (attachments + links)"],
           ["", ""],
           [",clone", "Open the full clone/setup panel"],
@@ -10303,6 +10304,348 @@ client.on("interactionCreate", async (interaction) => {
   } catch (_) {}
 
   return interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Category names saved:\n<:019TXTWhite_Yes:1521327983279996999> **${cat1}** | **${cat2}**${cat3 ? ` | **${cat3}**` : ""}`, flags: 64 });
+});
+
+// ===== ,sortcategory COMMAND — N-CATEGORY SORTER WITH IMMUNE CATEGORIES =====
+// ==============================================================================
+// Usage: ,sortcategory
+// Opens an interactive panel to distribute all server channels into 2–5
+// named categories, split as evenly as possible. Categories marked as
+// "immune" are left completely untouched — their channels are never moved,
+// and an immune category is never reused as a sort target even if its name
+// matches one of the target names.
+
+const sortcatSessions = new Map(); // userId => { names: [c1,c2,c3,c4,c5], immune: Set<catId>, msgId, channelId }
+
+function scNewSession(channelId) {
+  return { names: [null, null, null, null, null], immune: new Set(), msgId: null, channelId };
+}
+
+function scBuildEmbed(guild, s) {
+  const filled = s.names.filter(Boolean);
+  const ready = filled.length >= 2;
+  const nameLines = s.names.map((n, i) =>
+    `<:019TXTWhite_Yes:1521327983279996999> **Category ${i + 1}**${i < 2 ? "" : " *(optional)*"} — ${n ? `\`${n}\`` : (i < 2 ? "<:RUSH_warning:1521415214799654985> not set" : "*unused*")}`
+  ).join("\n");
+
+  const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
+  const immuneLine = immuneList.length ? immuneList.map(c => `\`${c.name}\``).join(", ") : "*none — every category will be sorted*";
+
+  return {
+    color: PINK,
+    title: "<:019TXTWhite_Yes:1521327983279996999> Category Sorter",
+    description: [
+      "Distribute **all server channels** evenly across **2 to 5 categories**.",
+      "Channels sitting in an <:RUSH_warning:1521415214799654985> **immune** category are skipped entirely and never moved.",
+      "Each target category supports up to 50 channels — overflow categories are created automatically.",
+      "",
+      nameLines,
+      "",
+      `<:RUSH_folder:1521415227495940096> **Immune categories** — ${immuneLine}`,
+      "",
+      ready
+        ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
+        : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+    ].join("\n"),
+    footer: { text: `✨ sensational • white edition • ${guild.name}` },
+    timestamp: new Date(),
+  };
+}
+
+function scBuildRows(uid) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`sortcat_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`sortcat_immune:${uid}`).setLabel("Set Immune Categories").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`sortcat_preview:${uid}`).setLabel("Preview").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`sortcat_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`sortcat_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "sortcategory") return;
+  if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions — Administrator required.");
+
+  const session = scNewSession(message.channel.id);
+  const sentMsg = await message.reply({
+    embeds: [scBuildEmbed(message.guild, session)],
+    components: scBuildRows(message.author.id),
+  });
+  session.msgId = sentMsg.id;
+  sortcatSessions.set(message.author.id, session);
+});
+
+// -- sortcategory: buttons --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.guild) return;
+  if (!interaction.isButton()) return;
+  const id = interaction.customId;
+  if (!id?.startsWith("sortcat_")) return;
+
+  const [action, userId] = id.split(":");
+  if (interaction.user.id !== userId) {
+    return interaction.reply({ content: "<:steal:1521327958634135655> This panel belongs to someone else.", flags: 64 });
+  }
+
+  const s = sortcatSessions.get(userId);
+  if (!s) return interaction.reply({ content: "<:steal:1521327958634135655> This panel has expired — run `,sortcategory` again.", flags: 64 });
+
+  async function refreshPanel() {
+    try {
+      const ch = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+      const msg = s.msgId && ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+      if (msg) await msg.edit({ embeds: [scBuildEmbed(interaction.guild, s)], components: scBuildRows(userId) }).catch(() => {});
+    } catch (_) {}
+  }
+
+  // Cancel
+  if (action === "sortcat_cancel") {
+    sortcatSessions.delete(userId);
+    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Category sort cancelled." }], components: [] });
+  }
+
+  // Open modal to set category names (up to 5 — the Discord modal max)
+  if (action === "sortcat_setnames") {
+    const modal = new ModalBuilder().setCustomId(`sortcat_modal:${userId}`).setTitle("Set Category Names");
+    const labels = [
+      "Category 1 name (required)",
+      "Category 2 name (required)",
+      "Category 3 name (optional)",
+      "Category 4 name (optional)",
+      "Category 5 name (optional)",
+    ];
+    modal.addComponents(
+      ...s.names.map((n, i) =>
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId(`sortcat_name${i + 1}`).setLabel(labels[i]).setStyle(TextInputStyle.Short)
+            .setRequired(i < 2).setPlaceholder(i === 0 ? "e.g. 💬 General" : i === 1 ? "e.g. 🎮 Gaming" : "leave blank to skip").setValue(n || "")
+        )
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  // Open the immune-categories select menu (ephemeral, multi-select)
+  if (action === "sortcat_immune") {
+    const cats = [...interaction.guild.channels.cache.values()]
+      .filter(c => c.type === 4)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .slice(0, 25); // Discord select menu hard cap
+
+    if (!cats.length) {
+      return interaction.reply({ content: "<:steal:1521327958634135655> This server has no categories to mark as immune.", flags: 64 });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`sortcat_immune_select:${userId}`)
+      .setPlaceholder("Choose categories to leave untouched...")
+      .setMinValues(0)
+      .setMaxValues(cats.length)
+      .addOptions(cats.map(c => new StringSelectMenuOptionBuilder()
+        .setLabel(c.name.slice(0, 100))
+        .setValue(c.id)
+        .setDefault(s.immune.has(c.id))
+      ));
+
+    return interaction.reply({
+      content: "<:RUSH_folder:1521415227495940096> Select every category that should stay **untouched** — nothing selected means nothing is immune.",
+      components: [new ActionRowBuilder().addComponents(menu)],
+      flags: 64,
+    });
+  }
+
+  // Preview
+  if (action === "sortcat_preview") {
+    await interaction.deferReply({ flags: 64 });
+    const guild = interaction.guild;
+    await guild.channels.fetch();
+
+    const names = s.names.filter(Boolean);
+    const numCats = names.length;
+    if (numCats < 2) return interaction.editReply({ content: "<:RUSH_warning:1521415214799654985> Set at least 2 category names first." });
+
+    const allChans = guild.channels.cache.filter(c => c && c.type !== 4 && !s.immune.has(c.parentId));
+    const base = Math.floor(allChans.size / numCats);
+    const rem = allChans.size % numCats;
+    const lines = names.map((name, i) => {
+      const count = base + (i < rem ? 1 : 0);
+      const overflowCats = Math.ceil(count / 50) - 1;
+      const overflow = overflowCats > 0 ? ` (+ ${overflowCats} overflow ${overflowCats === 1 ? "category" : "categories"})` : "";
+      return `**${name}** → ~${count} channels${overflow}`;
+    });
+
+    const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
+    const immuneNote = immuneList.length ? `\n\n<:RUSH_folder:1521415227495940096> Skipped (immune): ${immuneList.map(c => `\`${c.name}\``).join(", ")}` : "";
+
+    return interaction.editReply({
+      content: `<:RUSH_task:1521415237813665813> **Preview** — **${allChans.size}** sortable channels split into **${numCats}** groups:\n\n${lines.join("\n")}${immuneNote}`,
+    });
+  }
+
+  // Run
+  if (action === "sortcat_run") {
+    const names = s.names.filter(Boolean);
+    if (names.length < 2) {
+      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** first using **✏ Set Category Names**.", flags: 64 });
+    }
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: "<:steal:1521327958634135655> Administrator permission required.", flags: 64 });
+    }
+
+    await interaction.update({
+      embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> **Running category sort — please wait...**" }],
+      components: [],
+    });
+    sortcatSessions.delete(userId);
+
+    const statusMsg = await interaction.channel.send({
+      embeds: [{ color: PINK, description: "<:019TXTWhite_Yes:1521327983279996999> Fetching channels..." }],
+    }).catch(() => null);
+
+    const updateStatus = async (text) => {
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+    };
+
+    try {
+      const guild = interaction.guild;
+      await guild.channels.fetch();
+
+      const allChans = [...guild.channels.cache
+        .filter(c => c && c.type !== 4 && !s.immune.has(c.parentId))
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .values()
+      ];
+
+      const numCats = names.length;
+      await updateStatus(`Found **${allChans.length}** sortable channels (immune categories skipped). Creating **${numCats}** categories...`);
+
+      async function getOrCreate(name) {
+        // Never reuse a category that's marked immune, even on a name match.
+        const ex = guild.channels.cache.find(c => c.type === 4 && c.name === name && !s.immune.has(c.id));
+        if (ex) return ex.id;
+        const nc = await guild.channels.create({ name, type: 4, reason: "[,sortcategory]" });
+        await new Promise(r => setTimeout(r, 800));
+        return nc.id;
+      }
+
+      async function moveToTracker(ch, tracker) {
+        if (tracker.count >= 50) {
+          const overflowNum = Math.floor(tracker.count / 50) + 1;
+          const nc = await guild.channels.create({ name: `${tracker.baseName} ${overflowNum + 1}`, type: 4, reason: "[,sortcategory overflow]" });
+          await new Promise(r => setTimeout(r, 800));
+          tracker.currentCatId = nc.id;
+          tracker.count = 0;
+        }
+        await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[,sortcategory]" });
+        tracker.count++;
+        await new Promise(r => setTimeout(r, 600));
+      }
+
+      // Even split across N categories — the remainder is spread across the first few groups.
+      const base = Math.floor(allChans.length / numCats);
+      const rem = allChans.length % numCats;
+      const batches = [];
+      let idx = 0;
+      for (let i = 0; i < numCats; i++) {
+        const size = base + (i < rem ? 1 : 0);
+        batches.push(allChans.slice(idx, idx + size));
+        idx += size;
+      }
+
+      const trackers = [];
+      for (let i = 0; i < numCats; i++) {
+        trackers.push({ baseName: names[i], currentCatId: await getOrCreate(names[i]), count: 0 });
+      }
+
+      for (let i = 0; i < numCats; i++) {
+        await updateStatus(`Moving **${batches[i].length}** channels → **${names[i]}**...`);
+        for (const ch of batches[i]) {
+          try { await moveToTracker(ch, trackers[i]); } catch (e) { log(`[sortcategory] ${ch.name}: ${e.message}`, "error"); }
+        }
+      }
+
+      const fields = trackers.map((t, i) => ({ name: names[i], value: `${t.count} channels`, inline: true }));
+      const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
+      if (immuneList.length) fields.push({ name: "🛡 Immune (untouched)", value: immuneList.map(c => c.name).join(", "), inline: false });
+
+      await statusMsg?.edit({
+        embeds: [{
+          color: PINK,
+          title: "<:019TXTWhite_Yes:1521327983279996999> Category Sort Complete",
+          description: `**${guild.name}** — **${allChans.length}** channels distributed across **${numCats}** categories`,
+          fields,
+          footer: { text: "sensational • white edition" },
+          timestamp: new Date(),
+        }],
+      }).catch(() => {});
+
+    } catch (e) {
+      log(`[sortcategory] error: ${e.message}`, "error");
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: \`${e.message}\`` }] }).catch(() => {});
+    }
+  }
+});
+
+// -- sortcategory: immune-categories select menu handler --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isStringSelectMenu()) return;
+  if (!interaction.customId.startsWith("sortcat_immune_select:")) return;
+
+  const userId = interaction.customId.split(":")[1];
+  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+
+  const s = sortcatSessions.get(userId);
+  if (!s) return interaction.update({ content: "<:steal:1521327958634135655> This panel has expired — run `,sortcategory` again.", components: [] });
+
+  s.immune = new Set(interaction.values);
+
+  try {
+    const ch = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+    const msg = s.msgId && ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+    if (msg) await msg.edit({ embeds: [scBuildEmbed(interaction.guild, s)], components: scBuildRows(userId) }).catch(() => {});
+  } catch (_) {}
+
+  const immuneList = [...s.immune].map(id => interaction.guild.channels.cache.get(id)).filter(Boolean);
+  return interaction.update({
+    content: immuneList.length
+      ? `<:019TXTWhite_Yes:1521327983279996999> Immune categories set: ${immuneList.map(c => `\`${c.name}\``).join(", ")}`
+      : "<:019TXTWhite_Yes:1521327983279996999> No immune categories — every category will be sorted.",
+    components: [],
+  });
+});
+
+// -- sortcategory: modal submit handler --
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isModalSubmit()) return;
+  if (!interaction.customId.startsWith("sortcat_modal:")) return;
+
+  const userId = interaction.customId.split(":")[1];
+  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+
+  const s = sortcatSessions.get(userId) || scNewSession(interaction.channelId);
+
+  const raw = [1, 2, 3, 4, 5].map(n => interaction.fields.getTextInputValue(`sortcat_name${n}`).trim());
+  if (!raw[0] || !raw[1]) return interaction.reply({ content: "<:steal:1521327958634135655> Category 1 and Category 2 are required.", flags: 64 });
+
+  s.names = raw.map(v => v || null);
+  sortcatSessions.set(userId, s);
+
+  try {
+    const ch = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
+    const msg = s.msgId && ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
+    if (msg) await msg.edit({ embeds: [scBuildEmbed(interaction.guild, s)], components: scBuildRows(userId) }).catch(() => {});
+  } catch (_) {}
+
+  const filled = s.names.filter(Boolean);
+  return interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Category names saved:\n${filled.map(n => `**${n}**`).join(" | ")}`, flags: 64 });
 });
 
 // -- CONFIG (only OWNER_ID can modify) --------------
