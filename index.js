@@ -629,7 +629,7 @@ setInterval(async () => {
 // ===== GREED-STYLE RESPONSE SYSTEM =================
 // ===================================================
 
-const PINK = 0xFFFFFF;  // White theme
+const PINK = 0xA8A9AD;  // Grey theme
 // Returns the embed color for a guild (falls back to PINK)
 function guildColor(guildId) { return embedColors.get(guildId) ?? PINK; }
 
@@ -943,6 +943,37 @@ function isProtectedBooster(member) {
       || !!member.premiumSince;
 }
 
+// ── Role hierarchy guard for moderation commands ────────────────────────────
+// Discord's own client blocks you from banning/kicking/timing out someone
+// whose highest role is equal to or above yours, but that check lives in the
+// Discord UI — it is NOT enforced when a bot performs the action through the
+// API. The bot only checks ITS OWN role position, not the moderator's. Without
+// this guard, any mod with Ban/Kick/Timeout permissions could action admins,
+// co-mods, or anyone else above them in the role list. Call this after
+// resolving `target` and before performing the action; it sends its own error
+// and returns true when the action should be blocked.
+function hierarchyBlocked(message, target) {
+  const guild = message.guild;
+
+  // Only the real server owner (or a bot owner) can action the server owner.
+  if (target.id === guild.ownerId) {
+    if (message.author.id === guild.ownerId || isOwner(message.author.id)) return false;
+    err(message, `**${target.user.username}** is the server owner and can't be actioned.`);
+    return true;
+  }
+
+  // The server owner and bot owners bypass hierarchy checks entirely.
+  if (message.author.id === guild.ownerId || isOwner(message.author.id)) return false;
+
+  const modPos    = message.member.roles.highest.position;
+  const targetPos = target.roles.highest.position;
+  if (modPos <= targetPos) {
+    err(message, `You can't action **${target.user.username}** — their highest role is equal to or above yours.`);
+    return true;
+  }
+  return false;
+}
+
 // Tracks which channels have been hidden via ,hidepaidperks (in-memory)
 const hiddenPaidPerksChannels = new Set();
 
@@ -1218,7 +1249,7 @@ client.once("clientReady", async () => {
   client.user.setPresence({
     status: "online",
     activities: [{
-      name: "/grindr",
+      name: "/sensual",
       type: ActivityType.Streaming,
       url: "https://www.twitch.tv/sensational"
     }]
@@ -2341,6 +2372,7 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && !isOwner(message.author.id)) {
       return err(message, `**${target.user.username}** is a booster and cannot be banned.`);
     }
+    if (hierarchyBlocked(message, target)) return;
 
     const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
@@ -2368,6 +2400,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
     if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (hierarchyBlocked(message, target)) return;
     const reason = args.slice(2).join(" ") || "No reason provided";
     target.send({ embeds: [{ color: PINK, description: `👢 You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
     const kickSuccess = await target.kick(reason).catch(() => null);
@@ -5961,6 +5994,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     // Block action on boosters by role ID (unless owner)
     if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
+    if (hierarchyBlocked(message, target)) return;
     const timeStr = args[2];
     const match = timeStr?.match(/^(\d+)(s|m|h|d)$/);
     if (!match) return err(message, "missing required argument: **time**\nusage: `,timeout @user 10m [reason]` — formats: 30s, 5m, 2h, 1d");
