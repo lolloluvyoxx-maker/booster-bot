@@ -16450,8 +16450,11 @@ Object.assign(global._helpExtraCategories, {
 // ,notify start), the target channel is purged of its messages first, then
 // the webhook posts. ,notify edit <id> lets you add a server by ID (in case
 // it isn't showing in the normal server list) or change the channel of a
-// server already in the job. Owner-only, and fully persisted so jobs survive
-// a restart.
+// server already in the job. Each target remembers whether it has ever
+// received the message (everSent); ,notify sync <id> sends it right away to
+// just the targets that are still waiting — normally servers added via
+// ,notify edit after the job's last full send — without touching the ones
+// already synced. Owner-only, and fully persisted so jobs survive a restart.
 
 const { WebhookClient, ChannelType } = require("discord.js");
 
@@ -16568,6 +16571,7 @@ async function _notifyPurgeAndSend(target, message) {
   try {
     const wh = new WebhookClient({ id: target.webhookId, token: target.webhookToken });
     await wh.send({ content: message });
+    target.everSent = true; // this target now has the message — ,notify sync can skip it
   } catch (e) {
     console.error(`[Notify] send failed job target guild=${target.guildId}: ${e.message}`);
   }
@@ -16577,7 +16581,21 @@ async function _notifyPurgeAndSend(target, message) {
 // after another, so a job with many servers doesn't trickle out slowly.
 async function _notifyFireJob(job, jobId) {
   await Promise.all(job.targets.map(t => _notifyPurgeAndSend(t, job.message)));
+  saveNotifyJobs(); // persists the everSent flags set above
   console.log(`[Notify] job ${jobId} fired to ${job.targets.length} target(s)`);
+}
+
+// Sends the job's message only to targets that have never received it yet —
+// typically servers added to the job later via ,notify edit, which sat idle
+// until the next scheduled fire. Used by ,notify sync <id>.
+async function _notifySyncJob(job, jobId) {
+  const pending = job.targets.filter(t => !t.everSent);
+  if (pending.length) {
+    await Promise.all(pending.map(t => _notifyPurgeAndSend(t, job.message)));
+    saveNotifyJobs();
+  }
+  console.log(`[Notify] job ${jobId} synced ${pending.length} pending target(s)`);
+  return pending;
 }
 
 // Deletes every webhook already sitting in a channel so it ends up with
@@ -16853,7 +16871,7 @@ async function _notifyApplyEditChannelChoice(job, ewiz, guild, channel, userTag)
       client.fetchWebhook(oldId, oldToken).then(old => old.delete().catch(() => {})).catch(() => {});
     }
   } else {
-    job.targets.push({ guildId: guild.id, guildName: guild.name, channelId: channel.id, webhookId: wh.id, webhookToken: wh.token });
+    job.targets.push({ guildId: guild.id, guildName: guild.name, channelId: channel.id, webhookId: wh.id, webhookToken: wh.token, everSent: false });
   }
   saveNotifyJobs();
   return wh;
@@ -16907,6 +16925,17 @@ client.on("messageCreate", async (message) => {
       notifyJobs.delete(job.id);
       saveNotifyJobs();
       return ok(message, `Notify \`${job.id}\` deleted. (Webhooks were left in place in their channels.)`);
+    }
+
+    if (sub === "sync") {
+      const job = notifyJobs.get(args[2]);
+      if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
+      const pending = job.targets.filter(t => !t.everSent);
+      if (!pending.length) return ok(message, `Notify \`${job.id}\` — every server already has the message, nothing to sync.`);
+
+      ok(message, `Notify \`${job.id}\` — syncing ${pending.length} server(s) that haven't received the message yet: ${pending.map(t => t.guildName ?? t.guildId).join(", ")}`);
+      _notifySyncJob(job, job.id).catch(e => console.error(`[Notify] sync failed job=${job.id}: ${e.message}`));
+      return;
     }
 
     if (sub === "edit") {
@@ -17243,7 +17272,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!channel) { failures.push(`${guild.name} (channel not found)`); continue; }
         try {
           const wh = await _notifyCreateWebhookForTarget(guild, channel, `Notify system job by ${interaction.user.tag}`);
-          targets.push({ guildId, guildName: guild.name, channelId, webhookId: wh.id, webhookToken: wh.token });
+          targets.push({ guildId, guildName: guild.name, channelId, webhookId: wh.id, webhookToken: wh.token, everSent: false });
         } catch (e) {
           failures.push(`${guild.name} — ${e.message}`);
         }
@@ -17310,6 +17339,7 @@ Object.assign(global._helpExtraCategories, {
       [",notify start <id>",  "Resume a notify job and immediately fire it to every target at once"],
       [",notify delete <id>", "Delete a notify job (webhooks are left in place)"],
       [",notify edit <id>",   "Add a server by ID or change the channel of a server already in the job"],
+      [",notify sync <id>",   "Send the message right away to servers added to the job that haven't received it yet"],
     ],
   },
 });
