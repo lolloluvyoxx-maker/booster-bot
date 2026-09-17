@@ -170,6 +170,7 @@ const DB = {
   SCRAPER_CURSOR:'scraper_cursor',   // last message ID per source (dedup cursor)
   TWITTER_CFG:   'twitter_cfg',      // twitter repost config
   TWITTER_CURSOR:'twitter_cursor',   // last tweet ID per account (dedup cursor)
+  NOTIFY:        'notify_jobs',      // scheduled multi-server webhook notify jobs
 };
 
 // ── Build the full guild config snapshot ─────────────────────────────────────
@@ -572,6 +573,15 @@ async function loadAllData() {
     console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> twitter_cursor restored (${twitterCursors.size} guild(s))`);
   }
 
+  // ── Notify jobs ────────────────────────────────────────────────────────────
+  if (d[DB.NOTIFY] instanceof Map) {
+    notifyJobs.clear();
+    d[DB.NOTIFY].forEach((v, k) => notifyJobs.set(k, {
+      active: true, lastSentDate: null, targets: [], ...v,
+    }));
+    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> notify_jobs restored (${notifyJobs.size})`);
+  }
+
   // ── Re-start enabled scrapers ─────────────────────────────────────────────
   for (const [guildId, cfg] of videoScraperCfg.entries()) {
     if (cfg.enabled && cfg.targetChannelId && cfg.sources.length > 0) {
@@ -620,6 +630,7 @@ setInterval(async () => {
   if (!_saveQueue.has(DB.SCRAPER_CURSOR)) saveScraperCursors();
   if (!_saveQueue.has(DB.TWITTER_CFG))    saveTwitterCfg();
   if (!_saveQueue.has(DB.TWITTER_CURSOR)) saveTwitterCursors();
+  if (!_saveQueue.has(DB.NOTIFY))         saveNotifyJobs();
 }, 60 * 1000);
 
 
@@ -16425,6 +16436,522 @@ Object.assign(global._helpExtraCategories, {
 //  To add white/custom emojis to any bot response, just replace any
 //  existing emoji string (like "<:019TXTWhite_Yes:1521327983279996999>") with your <:name:id> string.
 // ─────────────────────────────────────────────────────────────────────────────
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ██  NOTIFY SYSTEM — scheduled daily webhook broadcasts across many servers
+// ══════════════════════════════════════════════════════════════════════════════
+// ,notify opens a guided panel (message + time + duration → pick servers →
+// pick a channel per server → review) that creates one webhook per target
+// channel — named after that server, using its icon as the avatar — then
+// fires the configured message through every webhook at the same UTC time
+// each day for as long as the job is scheduled to run. Owner-only, and fully
+// persisted so jobs survive a restart.
+
+const { WebhookClient, ChannelType } = require("discord.js");
+
+const notifyJobs = new Map(); // jobId -> job
+function saveNotifyJobs() { scheduleSave(DB.NOTIFY, () => notifyJobs); }
+
+function _genNotifyId() {
+  let id;
+  do { id = Math.random().toString(36).slice(2, 8); } while (notifyJobs.has(id));
+  return id;
+}
+
+// "07:30" / "7:30" (24h, UTC) → {hour, minute} | null
+function parseNotifyTime(raw) {
+  const m = (raw ?? "").trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!m) return null;
+  return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10) };
+}
+
+// "7d" / "2w" / "1mo" / "2026-12-31" / "forever" → {endAt, label} | null
+function parseNotifyDuration(raw) {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (!s || ["forever", "always", "sempre", "indefinite", "-"].includes(s)) {
+    return { endAt: null, label: "Forever" };
+  }
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 23, 59, 59));
+    if (isNaN(d.getTime())) return null;
+    return { endAt: d.getTime(), label: `Until ${m[0]}` };
+  }
+  m = s.match(/^(\d+)\s*(d|w|mo)$/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n <= 0) return null;
+    const unitMs = { d: 86_400_000, w: 7 * 86_400_000, mo: 30 * 86_400_000 }[m[2]];
+    const names  = { d: "day", w: "week", mo: "month" };
+    return { endAt: Date.now() + n * unitMs, label: `${n} ${names[m[2]]}${n === 1 ? "" : "s"}` };
+  }
+  return null;
+}
+
+function _notifyNextRunTs(job) {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), job.hour, job.minute, 0));
+  if (next.getTime() <= Date.now() || job.lastSentDate === todayStr) next.setUTCDate(next.getUTCDate() + 1);
+  return Math.floor(next.getTime() / 1000);
+}
+
+async function _fetchImageBuffer(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch { return null; }
+}
+
+function _notifyJobSummary(job) {
+  const endStr = job.endAt ? `<t:${Math.floor(job.endAt / 1000)}:D>` : "no end date";
+  return [
+    `**ID:** \`${job.id}\`  ·  ${job.active ? "<:019TXTWhite_Yes:1521327983279996999> Active" : "⏸️ Paused"}`,
+    `**Time:** \`${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")}\` UTC · daily`,
+    `**Runs until:** ${endStr}${job.active ? ` · next <t:${_notifyNextRunTs(job)}:R>` : ""}`,
+    `**Servers:** ${job.targets.length}`,
+    `**Message:** ${job.message.length > 120 ? job.message.slice(0, 120) + "…" : job.message}`,
+  ].join("\n");
+}
+
+// ── Hub panel ──────────────────────────────────────────────────────────────
+function _notifyHubEmbed() {
+  const jobs = [...notifyJobs.values()];
+  const active = jobs.filter(j => j.active).length;
+  return {
+    color: PINK,
+    title: "📢  Notify System",
+    description: [
+      "Broadcast a message on a daily schedule through webhooks placed across any servers the bot is in.",
+      "",
+      `**Active jobs:** ${active}  ·  **Total:** ${jobs.length}`,
+    ].join("\n"),
+    footer: { text: "Times are set in UTC · webhooks use each server's name & icon" },
+  };
+}
+function _notifyHubComponents() {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_new").setLabel("New Notify").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("ntf_list").setLabel("Active Notifies").setEmoji("<:RUSH_list:1521415268000337961>").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("ntf_close").setLabel("Close").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Secondary),
+  )];
+}
+
+// ── Wizard step renderers ────────────────────────────────────────────────────
+function _notifyStepGuilds(wiz) {
+  const allGuilds = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name));
+  if (!allGuilds.length) {
+    return {
+      embeds: [{ color: PINK, title: "📢 Notify Setup", description: "The bot isn't in any servers." }],
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger))],
+    };
+  }
+  const totalPages = Math.max(1, Math.ceil(allGuilds.length / 25));
+  const pageGuilds = allGuilds.slice(wiz.guildPage * 25, wiz.guildPage * 25 + 25);
+  const options = pageGuilds.map(g => new StringSelectMenuOptionBuilder()
+    .setLabel(g.name.slice(0, 100))
+    .setValue(g.id)
+    .setDescription(`ID: ${g.id}`)
+    .setDefault(wiz.guildIds.includes(g.id)));
+
+  const selectRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId("ntf_pick_guilds").setPlaceholder("Select servers to notify...")
+      .setMinValues(0).setMaxValues(options.length).addOptions(options)
+  );
+  const navRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_guild_prev").setLabel("◀ Prev").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage <= 0),
+    new ButtonBuilder().setCustomId("ntf_guild_next").setLabel("Next ▶").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage >= totalPages - 1),
+    new ButtonBuilder().setCustomId("ntf_guilds_confirm").setLabel(`Confirm (${wiz.guildIds.length})`).setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success).setDisabled(wiz.guildIds.length === 0),
+    new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
+  );
+
+  const selectedNames = wiz.guildIds.length
+    ? wiz.guildIds.map(id => client.guilds.cache.get(id)?.name ?? id).join(", ")
+    : "*none yet*";
+
+  return {
+    embeds: [{
+      color: PINK, title: "📢 Notify Setup — Step 1/3: Select servers",
+      description: `Page **${wiz.guildPage + 1}/${totalPages}** — tick every server that should receive this notification. Selections carry over between pages.\n\n**Selected so far:** ${selectedNames}`,
+      footer: { text: "Tick servers, use Prev/Next for more, then Confirm." },
+    }],
+    components: [selectRow, navRow],
+  };
+}
+
+async function _notifyStepChannel(wiz) {
+  if (!wiz.pendingGuilds.length) {
+    wiz.step = "review";
+    return _notifyStepReview(wiz);
+  }
+  const guildId = wiz.pendingGuilds[0];
+  const guild   = client.guilds.cache.get(guildId);
+  const total   = wiz.guildIds.length;
+  const doneCount = total - wiz.pendingGuilds.length;
+
+  if (!guild) {
+    wiz.guildIds = wiz.guildIds.filter(g => g !== guildId);
+    wiz.pendingGuilds.shift();
+    return _notifyStepChannel(wiz);
+  }
+
+  await guild.channels.fetch().catch(() => {});
+  const channels = [...guild.channels.cache.values()]
+    .filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+    .sort((a, b) => (a.rawPosition ?? a.position ?? 0) - (b.rawPosition ?? b.position ?? 0))
+    .slice(0, 25);
+
+  const navRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_channel_skip").setLabel("Skip this server").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
+  );
+
+  if (!channels.length) {
+    return {
+      embeds: [{ color: PINK, title: `📢 Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Skip this server or cancel setup.` }],
+      components: [navRow],
+    };
+  }
+
+  const options = channels.map(c => new StringSelectMenuOptionBuilder().setLabel(`#${c.name}`.slice(0, 100)).setValue(c.id));
+  const selectRow = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId("ntf_pick_channel").setPlaceholder(`Channel in ${guild.name}`.slice(0, 150)).addOptions(options)
+  );
+
+  return {
+    embeds: [{
+      color: PINK, title: `📢 Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
+      description: `Pick the channel in **${guild.name}** where the webhook should post.`,
+      thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
+    }],
+    components: [selectRow, navRow],
+  };
+}
+
+function _notifyStepReview(wiz) {
+  const entries = Object.entries(wiz.targets);
+  const lines = entries.map(([gid, cid]) => {
+    const g  = client.guilds.cache.get(gid);
+    const ch = g?.channels.cache.get(cid);
+    return `**${g?.name ?? gid}** → ${ch ? `#${ch.name}` : cid}`;
+  });
+  const endStr = wiz.endAt ? `<t:${Math.floor(wiz.endAt / 1000)}:D>` : "no end date (runs until stopped)";
+
+  return {
+    embeds: [{
+      color: PINK, title: "📢 Notify Setup — Step 3/3: Review",
+      description: [
+        `**Message:**\n> ${wiz.message.length > 300 ? wiz.message.slice(0, 300) + "…" : wiz.message}`,
+        ``,
+        `**Time:** \`${String(wiz.hour).padStart(2, "0")}:${String(wiz.minute).padStart(2, "0")}\` UTC, daily`,
+        `**Duration:** ${wiz.durationLabel} — runs until ${endStr}`,
+        `**Targets (${entries.length}):**`,
+        lines.join("\n") || "*none*",
+      ].join("\n"),
+      footer: { text: "Pressing Activate creates one webhook per channel right now." },
+    }],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("ntf_activate").setLabel("Activate").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
+    )],
+  };
+}
+
+// ── ,notify command — hub + text management shortcuts ───────────────────────
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(",")) return;
+    const args = message.content.slice(1).trim().split(/ +/);
+    const command = args[0].toLowerCase();
+    if (command !== "notify") return;
+    if (!isOwner(message.author.id)) return err(message, "Owner only.");
+
+    const sub = args[1]?.toLowerCase();
+
+    if (sub === "list") {
+      const jobs = [...notifyJobs.values()];
+      if (!jobs.length) return err(message, "No notify jobs configured yet. Run `,notify` to create one.");
+      return message.reply({ embeds: [{
+        color: PINK, title: "📢 Notify Jobs",
+        description: jobs.map(_notifyJobSummary).join("\n\n"),
+        footer: { text: ",notify stop/start/delete <id>" },
+      }] }).catch(() => {});
+    }
+
+    if (sub === "stop" || sub === "start") {
+      const job = notifyJobs.get(args[2]);
+      if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
+      job.active = sub === "start";
+      saveNotifyJobs();
+      return ok(message, `Notify \`${job.id}\` ${job.active ? "resumed" : "paused"}.`);
+    }
+
+    if (sub === "delete") {
+      const job = notifyJobs.get(args[2]);
+      if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
+      notifyJobs.delete(job.id);
+      saveNotifyJobs();
+      return ok(message, `Notify \`${job.id}\` deleted. (Webhooks were left in place in their channels.)`);
+    }
+
+    const sent = await message.reply({ embeds: [_notifyHubEmbed()], components: _notifyHubComponents() }).catch(() => null);
+    if (!sent) return;
+  } catch (e) {
+    console.error(`[notify] CRASH: ${e.message}\n${e.stack}`);
+    message.reply({ content: `<:steal:1521327958634135655> Notify error: \`${e.message}\`` }).catch(() => {});
+  }
+});
+
+// ── ,notify interaction handler ──────────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  try {
+    const id = interaction.customId;
+    if (!id || !id.startsWith("ntf_")) return;
+    if (!isOwner(interaction.user.id)) return interaction.reply({ content: "Owner only.", flags: 64 }).catch(() => {});
+
+    if (!client._notifyWizards) client._notifyWizards = new Map();
+    const wizKey = interaction.user.id;
+
+    // Hub buttons
+    if (id === "ntf_close" && interaction.isButton()) {
+      client._notifyWizards.delete(wizKey);
+      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Notify panel closed." }], components: [] }).catch(() => {});
+    }
+
+    if (id === "ntf_list" && interaction.isButton()) {
+      const jobs = [...notifyJobs.values()];
+      if (!jobs.length) return interaction.reply({ content: "No notify jobs configured yet.", flags: 64 }).catch(() => {});
+      const options = jobs.slice(0, 25).map(j => new StringSelectMenuOptionBuilder()
+        .setLabel(`${j.id} · ${j.active ? "Active" : "Paused"}`)
+        .setDescription((j.message || "").slice(0, 90) || "(no message)")
+        .setValue(j.id));
+      return interaction.reply({
+        embeds: [{ color: PINK, title: "📢 Notify Jobs", description: jobs.map(_notifyJobSummary).join("\n\n") }],
+        components: [new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder().setCustomId("ntf_manage_pick").setPlaceholder("Manage a job...").addOptions(options)
+        )],
+        flags: 64,
+      }).catch(() => {});
+    }
+
+    if (id === "ntf_manage_pick" && interaction.isStringSelectMenu()) {
+      const job = notifyJobs.get(interaction.values[0]);
+      if (!job) return interaction.update({ content: "That job no longer exists.", embeds: [], components: [] }).catch(() => {});
+      return interaction.update({
+        embeds: [{ color: PINK, title: `📢 Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setEmoji(job.active ? "⏸️" : "▶️").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setEmoji("<:RUSH_trash_can:1521415241190215721>").setStyle(ButtonStyle.Danger),
+        )],
+      }).catch(() => {});
+    }
+
+    if (id.startsWith("ntf_toggle:") && interaction.isButton()) {
+      const jobId = id.split(":")[1];
+      const job = notifyJobs.get(jobId);
+      if (!job) return interaction.update({ content: "That job no longer exists.", embeds: [], components: [] }).catch(() => {});
+      job.active = !job.active;
+      saveNotifyJobs();
+      return interaction.update({
+        embeds: [{ color: PINK, title: `📢 Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setEmoji(job.active ? "⏸️" : "▶️").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setEmoji("<:RUSH_trash_can:1521415241190215721>").setStyle(ButtonStyle.Danger),
+        )],
+      }).catch(() => {});
+    }
+
+    if (id.startsWith("ntf_delete:") && interaction.isButton()) {
+      const jobId = id.split(":")[1];
+      notifyJobs.delete(jobId);
+      saveNotifyJobs();
+      return interaction.update({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Notify \`${jobId}\` deleted.` }], components: [] }).catch(() => {});
+    }
+
+    // New notify — open details modal
+    if (id === "ntf_new" && interaction.isButton()) {
+      const modal = new ModalBuilder().setCustomId("ntf_modal_details").setTitle("New Notify — Message & Schedule");
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("msg").setLabel("Message to send").setStyle(TextInputStyle.Paragraph).setMaxLength(1800).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("time").setLabel("Time — 24h UTC, e.g. 14:30").setStyle(TextInputStyle.Short).setMaxLength(5).setPlaceholder("14:30").setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("duration").setLabel("Duration: 7d / 2w / 1mo / date / forever").setStyle(TextInputStyle.Short).setPlaceholder("1w").setRequired(true)),
+      );
+      return interaction.showModal(modal);
+    }
+
+    if (id === "ntf_modal_details" && interaction.isModalSubmit()) {
+      const msg  = interaction.fields.getTextInputValue("msg").trim();
+      const time = parseNotifyTime(interaction.fields.getTextInputValue("time"));
+      const dur  = parseNotifyDuration(interaction.fields.getTextInputValue("duration"));
+      if (!msg)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Message can't be empty.", flags: 64 }).catch(() => {});
+      if (!time) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid time — use 24h UTC format like `14:30`.", flags: 64 }).catch(() => {});
+      if (!dur)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid duration — try `7d`, `2w`, `1mo`, a date `2026-12-31`, or `forever`.", flags: 64 }).catch(() => {});
+
+      client._notifyWizards.set(wizKey, {
+        authorId: interaction.user.id,
+        channelId: interaction.message.channelId,
+        msgId: interaction.message.id,
+        message: msg, hour: time.hour, minute: time.minute,
+        endAt: dur.endAt, durationLabel: dur.label,
+        guildIds: [], guildPage: 0,
+        pendingGuilds: [], targets: {}, step: "guilds",
+      });
+
+      await interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Saved — check the panel above.", flags: 64 }).catch(() => {});
+      const ch = await interaction.client.channels.fetch(interaction.message.channelId).catch(() => null);
+      const msgObj = ch ? await ch.messages.fetch(interaction.message.id).catch(() => null) : null;
+      if (msgObj) await msgObj.edit(_notifyStepGuilds(client._notifyWizards.get(wizKey))).catch(() => {});
+      return;
+    }
+
+    const wiz = client._notifyWizards.get(wizKey);
+
+    if (id === "ntf_pick_guilds" && interaction.isStringSelectMenu()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const allGuilds  = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name));
+      const pageGuilds = allGuilds.slice(wiz.guildPage * 25, wiz.guildPage * 25 + 25).map(g => g.id);
+      wiz.guildIds = wiz.guildIds.filter(gid => !pageGuilds.includes(gid));
+      wiz.guildIds.push(...interaction.values);
+      return interaction.update(_notifyStepGuilds(wiz)).catch(() => {});
+    }
+
+    if ((id === "ntf_guild_prev" || id === "ntf_guild_next") && interaction.isButton()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      wiz.guildPage += id === "ntf_guild_next" ? 1 : -1;
+      return interaction.update(_notifyStepGuilds(wiz)).catch(() => {});
+    }
+
+    if (id === "ntf_guilds_confirm" && interaction.isButton()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      if (!wiz.guildIds.length) return interaction.reply({ content: "Pick at least one server first.", flags: 64 }).catch(() => {});
+      wiz.pendingGuilds = [...wiz.guildIds];
+      wiz.targets = {};
+      return interaction.update(await _notifyStepChannel(wiz)).catch(() => {});
+    }
+
+    if (id === "ntf_pick_channel" && interaction.isStringSelectMenu()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const guildId = wiz.pendingGuilds[0];
+      if (guildId) { wiz.targets[guildId] = interaction.values[0]; wiz.pendingGuilds.shift(); }
+      return interaction.update(await _notifyStepChannel(wiz)).catch(() => {});
+    }
+
+    if (id === "ntf_channel_skip" && interaction.isButton()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const guildId = wiz.pendingGuilds.shift();
+      wiz.guildIds = wiz.guildIds.filter(g => g !== guildId);
+      return interaction.update(await _notifyStepChannel(wiz)).catch(() => {});
+    }
+
+    if (id === "ntf_cancel" && interaction.isButton()) {
+      client._notifyWizards.delete(wizKey);
+      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Notify setup cancelled." }], components: [] }).catch(() => {});
+    }
+
+    if (id === "ntf_activate" && interaction.isButton()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const targetsEntries = Object.entries(wiz.targets);
+      if (!targetsEntries.length) return interaction.reply({ content: "No servers/channels configured.", flags: 64 }).catch(() => {});
+
+      await interaction.deferUpdate().catch(() => {});
+      await interaction.editReply({ embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> Creating webhooks..." }], components: [] }).catch(() => {});
+
+      const targets  = [];
+      const failures = [];
+      for (const [guildId, channelId] of targetsEntries) {
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) { failures.push(`Guild ${guildId} (no longer available)`); continue; }
+        const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
+        if (!channel) { failures.push(`${guild.name} (channel not found)`); continue; }
+        try {
+          const iconBuf = await _fetchImageBuffer(guild.iconURL({ extension: "png", size: 256 }));
+          const wh = await channel.createWebhook({
+            name: (guild.name || "Notify").slice(0, 80),
+            avatar: iconBuf || undefined,
+            reason: `Notify system job by ${interaction.user.tag}`,
+          });
+          targets.push({ guildId, guildName: guild.name, channelId, webhookId: wh.id, webhookToken: wh.token });
+        } catch (e) {
+          failures.push(`${guild.name} — ${e.message}`);
+        }
+      }
+
+      client._notifyWizards.delete(wizKey);
+
+      if (!targets.length) {
+        return interaction.editReply({ embeds: [{ color: PINK, title: "<:steal:1521327958634135655> Notify setup failed", description: `Couldn't create any webhooks:\n${failures.map(f => `• ${f}`).join("\n")}` }], components: [] }).catch(() => {});
+      }
+
+      const job = {
+        id: _genNotifyId(), ownerId: interaction.user.id, message: wiz.message,
+        hour: wiz.hour, minute: wiz.minute, endAt: wiz.endAt, durationLabel: wiz.durationLabel,
+        targets, active: true, lastSentDate: null, createdAt: Date.now(),
+      };
+      notifyJobs.set(job.id, job);
+      saveNotifyJobs();
+
+      const desc = [
+        `**ID:** \`${job.id}\` — use \`,notify stop/start/delete ${job.id}\` to manage it later.`,
+        _notifyJobSummary(job),
+        failures.length ? `\n<:RUSH_warning:1521415214799654985> Failed on ${failures.length} server(s):\n${failures.map(f => `• ${f}`).join("\n")}` : "",
+      ].filter(Boolean).join("\n");
+
+      return interaction.editReply({ embeds: [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999> Notify job created!", description: desc }], components: [] }).catch(() => {});
+    }
+  } catch (e) {
+    console.error(`[notify] interaction CRASH: ${e.message}\n${e.stack}`);
+  }
+});
+
+// ── Scheduler — fires every 30s, checks every active job against UTC clock ──
+setInterval(async () => {
+  const now      = new Date();
+  const hh       = now.getUTCHours(), mm = now.getUTCMinutes();
+  const todayStr = now.toISOString().slice(0, 10);
+  const nowMs    = now.getTime();
+
+  for (const [jobId, job] of notifyJobs.entries()) {
+    if (!job.active) continue;
+    if (job.endAt && nowMs > job.endAt) { job.active = false; saveNotifyJobs(); continue; }
+    if (job.hour !== hh || job.minute !== mm) continue;
+    if (job.lastSentDate === todayStr) continue;
+
+    job.lastSentDate = todayStr;
+    saveNotifyJobs();
+
+    for (const t of job.targets) {
+      try {
+        const wh = new WebhookClient({ id: t.webhookId, token: t.webhookToken });
+        await wh.send({ content: job.message });
+      } catch (e) {
+        console.error(`[Notify] send failed job=${jobId} guild=${t.guildId}: ${e.message}`);
+      }
+    }
+    console.log(`[Notify] job ${jobId} fired to ${job.targets.length} target(s)`);
+  }
+}, 30 * 1000);
+
+// ── Help entry ────────────────────────────────────────────────────────────
+if (!global._helpExtraCategories) global._helpExtraCategories = {};
+Object.assign(global._helpExtraCategories, {
+  notify: {
+    label: "Notify System",
+    emoji: "📢",
+    description: "Scheduled daily webhook broadcasts across multiple servers",
+    commands: [
+      [",notify",             "Open the setup panel — message, time, duration, servers & channels"],
+      [",notify list",        "List all notify jobs and their status"],
+      [",notify stop <id>",   "Pause a notify job"],
+      [",notify start <id>",  "Resume a paused notify job"],
+      [",notify delete <id>", "Delete a notify job (webhooks are left in place)"],
+    ],
+  },
+});
+
 
 // ── LOGIN ────────────────────────────────────────────────────────────────────
 client.login(process.env.TOKEN).catch(e => {
