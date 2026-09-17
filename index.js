@@ -16444,9 +16444,14 @@ Object.assign(global._helpExtraCategories, {
 // ,notify opens a guided panel (message + time + duration → pick servers →
 // pick a channel per server → review) that creates one webhook per target
 // channel — named after that server, using its icon as the avatar — then
-// fires the configured message through every webhook at the same UTC time
-// each day for as long as the job is scheduled to run. Owner-only, and fully
-// persisted so jobs survive a restart.
+// fires the configured message through every webhook, all at the same time,
+// at the same Italy-time (Europe/Rome) clock time each day for as long as the
+// job is scheduled to run. Every time a job fires (scheduled or via
+// ,notify start), the target channel is purged of its messages first, then
+// the webhook posts. ,notify edit <id> lets you add a server by ID (in case
+// it isn't showing in the normal server list) or change the channel of a
+// server already in the job. Owner-only, and fully persisted so jobs survive
+// a restart.
 
 const { WebhookClient, ChannelType } = require("discord.js");
 
@@ -16459,7 +16464,28 @@ function _genNotifyId() {
   return id;
 }
 
-// "07:30" / "7:30" (24h, UTC) → {hour, minute} | null
+// ── Italy (Europe/Rome) time helpers — the notify schedule runs on Italy's
+// local wall clock (CET/CEST), not UTC, so DST is handled automatically. ──────
+function _italyParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Rome", hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
+  return {
+    year: +parts.year, month: +parts.month, day: +parts.day,
+    hour: +parts.hour, minute: +parts.minute, second: +parts.second,
+    dateStr: `${parts.year}-${parts.month}-${parts.day}`,
+  };
+}
+
+function _italyOffsetMinutes(date = new Date()) {
+  const p = _italyParts(date);
+  const asUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return Math.round((asUTC - date.getTime()) / 60000);
+}
+
+// "07:30" / "7:30" (24h, Italy time) → {hour, minute} | null
 function parseNotifyTime(raw) {
   const m = (raw ?? "").trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
   if (!m) return null;
@@ -16491,10 +16517,11 @@ function parseNotifyDuration(raw) {
 
 function _notifyNextRunTs(job) {
   const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), job.hour, job.minute, 0));
-  if (next.getTime() <= Date.now() || job.lastSentDate === todayStr) next.setUTCDate(next.getUTCDate() + 1);
-  return Math.floor(next.getTime() / 1000);
+  const p = _italyParts(now);
+  const offsetMin = _italyOffsetMinutes(now);
+  let candidateMs = Date.UTC(p.year, p.month - 1, p.day, job.hour, job.minute, 0) - offsetMin * 60000;
+  if (candidateMs <= now.getTime() || job.lastSentDate === p.dateStr) candidateMs += 86_400_000;
+  return Math.floor(candidateMs / 1000);
 }
 
 async function _fetchImageBuffer(url) {
@@ -16506,11 +16533,58 @@ async function _fetchImageBuffer(url) {
   } catch { return null; }
 }
 
+// Deletes every message in the channel (paginated, with a bulkDelete fast
+// path and a one-by-one fallback for anything older than 14 days that
+// Discord's bulk endpoint refuses). Best-effort — a permission error here
+// never blocks the webhook send that follows.
+async function _purgeChannelMessages(channel) {
+  try {
+    let guard = 0;
+    while (guard++ < 50) { // safety cap (~5000 messages) so a stuck channel can't loop forever
+      const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      if (!fetched || !fetched.size) break;
+      try {
+        await channel.bulkDelete(fetched, true);
+      } catch {
+        for (const m of fetched.values()) await m.delete().catch(() => {});
+      }
+      if (fetched.size < 100) break;
+    }
+  } catch (e) {
+    console.error(`[Notify] purge error in channel ${channel.id}: ${e.message}`);
+  }
+}
+
+// Purges the target channel, then sends the message through its webhook.
+async function _notifyPurgeAndSend(target, message) {
+  try {
+    const guild = client.guilds.cache.get(target.guildId);
+    let channel = guild?.channels.cache.get(target.channelId);
+    if (!channel && guild) channel = await guild.channels.fetch(target.channelId).catch(() => null);
+    if (channel?.isTextBased?.()) await _purgeChannelMessages(channel);
+  } catch (e) {
+    console.error(`[Notify] purge failed guild=${target.guildId}: ${e.message}`);
+  }
+  try {
+    const wh = new WebhookClient({ id: target.webhookId, token: target.webhookToken });
+    await wh.send({ content: message });
+  } catch (e) {
+    console.error(`[Notify] send failed job target guild=${target.guildId}: ${e.message}`);
+  }
+}
+
+// Fires every target of a job AT THE SAME TIME (Promise.all) instead of one
+// after another, so a job with many servers doesn't trickle out slowly.
+async function _notifyFireJob(job, jobId) {
+  await Promise.all(job.targets.map(t => _notifyPurgeAndSend(t, job.message)));
+  console.log(`[Notify] job ${jobId} fired to ${job.targets.length} target(s)`);
+}
+
 function _notifyJobSummary(job) {
   const endStr = job.endAt ? `<t:${Math.floor(job.endAt / 1000)}:D>` : "no end date";
   return [
     `**ID:** \`${job.id}\`  ·  ${job.active ? "<:019TXTWhite_Yes:1521327983279996999> Active" : "⏸️ Paused"}`,
-    `**Time:** \`${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")}\` UTC · daily`,
+    `**Time:** \`${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")}\` Italy time · daily`,
     `**Runs until:** ${endStr}${job.active ? ` · next <t:${_notifyNextRunTs(job)}:R>` : ""}`,
     `**Servers:** ${job.targets.length}`,
     `**Message:** ${job.message.length > 120 ? job.message.slice(0, 120) + "…" : job.message}`,
@@ -16529,7 +16603,7 @@ function _notifyHubEmbed() {
       "",
       `**Active jobs:** ${active}  ·  **Total:** ${jobs.length}`,
     ].join("\n"),
-    footer: { text: "Times are set in UTC · webhooks use each server's name & icon" },
+    footer: { text: "Times are set in Italy time (Europe/Rome) · webhooks use each server's name & icon" },
   };
 }
 function _notifyHubComponents() {
@@ -16646,7 +16720,7 @@ function _notifyStepReview(wiz) {
       description: [
         `**Message:**\n> ${wiz.message.length > 300 ? wiz.message.slice(0, 300) + "…" : wiz.message}`,
         ``,
-        `**Time:** \`${String(wiz.hour).padStart(2, "0")}:${String(wiz.minute).padStart(2, "0")}\` UTC, daily`,
+        `**Time:** \`${String(wiz.hour).padStart(2, "0")}:${String(wiz.minute).padStart(2, "0")}\` Italy time, daily`,
         `**Duration:** ${wiz.durationLabel} — runs until ${endStr}`,
         `**Targets (${entries.length}):**`,
         lines.join("\n") || "*none*",
@@ -16656,6 +16730,74 @@ function _notifyStepReview(wiz) {
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("ntf_activate").setLabel("Activate").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
+    )],
+  };
+}
+
+// ── Edit panel — add a server by ID, or change the channel of a target ─────
+function _notifyEditHub(job) {
+  const targetLines = job.targets.map(t => {
+    const g  = client.guilds.cache.get(t.guildId);
+    const ch = g?.channels.cache.get(t.channelId);
+    return `**${g?.name ?? t.guildId}** → ${ch ? `#${ch.name}` : t.channelId}`;
+  });
+
+  const rows = [];
+  if (job.targets.length) {
+    const options = job.targets.slice(0, 25).map(t => {
+      const g  = client.guilds.cache.get(t.guildId);
+      const ch = g?.channels.cache.get(t.channelId);
+      return new StringSelectMenuOptionBuilder()
+        .setLabel((g?.name ?? t.guildId).slice(0, 100))
+        .setDescription((ch ? `#${ch.name}` : "channel unknown").slice(0, 100))
+        .setValue(t.guildId);
+    });
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId("ntf_edit_change_channel_pick").setPlaceholder("Change channel for a server...").addOptions(options)
+    ));
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_edit_add_server").setLabel("Add Server by ID").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary),
+  ));
+
+  return {
+    embeds: [{
+      color: PINK, title: `📢 Editing Notify \`${job.id}\``,
+      description: [
+        `**Current targets (${job.targets.length}):**`,
+        targetLines.join("\n") || "*none*",
+        "",
+        "Pick a server above to change its channel, or add a server that isn't showing in the normal list by typing its ID.",
+      ].join("\n"),
+    }],
+    components: rows,
+  };
+}
+
+async function _notifyEditChannelPicker(guild) {
+  await guild.channels.fetch().catch(() => {});
+  const channels = [...guild.channels.cache.values()]
+    .filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+    .sort((a, b) => (a.rawPosition ?? a.position ?? 0) - (b.rawPosition ?? b.position ?? 0))
+    .slice(0, 25);
+
+  if (!channels.length) {
+    return {
+      embeds: [{ color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**.` }],
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary))],
+    };
+  }
+
+  const options = channels.map(c => new StringSelectMenuOptionBuilder().setLabel(`#${c.name}`.slice(0, 100)).setValue(c.id));
+  return {
+    embeds: [{
+      color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`,
+      description: `Pick the channel in **${guild.name}** where the webhook should post.`,
+      thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
+    }],
+    components: [new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId("ntf_edit_pick_new_channel").setPlaceholder(`Channel in ${guild.name}`.slice(0, 150)).addOptions(options)
     )],
   };
 }
@@ -16686,8 +16828,20 @@ client.on("messageCreate", async (message) => {
       const job = notifyJobs.get(args[2]);
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       job.active = sub === "start";
+
+      if (sub === "start") {
+        // Mark today as already-sent so the 30s scheduler doesn't double-fire,
+        // then send to every webhook right now, all at once, instead of
+        // waiting for the scheduled time.
+        job.lastSentDate = _italyParts().dateStr;
+        saveNotifyJobs();
+        ok(message, `Notify \`${job.id}\` resumed — sending to all ${job.targets.length} target(s) now, at the same time.`);
+        _notifyFireJob(job, job.id).catch(e => console.error(`[Notify] manual start fire failed job=${job.id}: ${e.message}`));
+        return;
+      }
+
       saveNotifyJobs();
-      return ok(message, `Notify \`${job.id}\` ${job.active ? "resumed" : "paused"}.`);
+      return ok(message, `Notify \`${job.id}\` paused.`);
     }
 
     if (sub === "delete") {
@@ -16696,6 +16850,14 @@ client.on("messageCreate", async (message) => {
       notifyJobs.delete(job.id);
       saveNotifyJobs();
       return ok(message, `Notify \`${job.id}\` deleted. (Webhooks were left in place in their channels.)`);
+    }
+
+    if (sub === "edit") {
+      const job = notifyJobs.get(args[2]);
+      if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
+      if (!client._notifyEditWizards) client._notifyEditWizards = new Map();
+      client._notifyEditWizards.set(message.author.id, { jobId: job.id, mode: null, pendingGuildId: null });
+      return message.reply(_notifyEditHub(job)).catch(() => {});
     }
 
     const sent = await message.reply({ embeds: [_notifyHubEmbed()], components: _notifyHubComponents() }).catch(() => null);
@@ -16755,6 +16917,11 @@ client.on("interactionCreate", async (interaction) => {
       const job = notifyJobs.get(jobId);
       if (!job) return interaction.update({ content: "That job no longer exists.", embeds: [], components: [] }).catch(() => {});
       job.active = !job.active;
+      if (job.active) {
+        // Resuming via the button also fires immediately, same as ,notify start.
+        job.lastSentDate = _italyParts().dateStr;
+        _notifyFireJob(job, job.id).catch(e => console.error(`[Notify] manual toggle fire failed job=${job.id}: ${e.message}`));
+      }
       saveNotifyJobs();
       return interaction.update({
         embeds: [{ color: PINK, title: `📢 Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
@@ -16772,12 +16939,109 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Notify \`${jobId}\` deleted.` }], components: [] }).catch(() => {});
     }
 
+    // ── Edit panel (,notify edit <id>) ────────────────────────────────────────
+    if (!client._notifyEditWizards) client._notifyEditWizards = new Map();
+
+    if (id === "ntf_edit_close" && interaction.isButton()) {
+      client._notifyEditWizards.delete(interaction.user.id);
+      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Edit panel closed." }], components: [] }).catch(() => {});
+    }
+
+    if (id === "ntf_edit_change_channel_pick" && interaction.isStringSelectMenu()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const guildId = interaction.values[0];
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
+      ewiz.mode = "changeChannel";
+      ewiz.pendingGuildId = guildId;
+      const panel = await _notifyEditChannelPicker(guild);
+      return interaction.update(panel).catch(() => {});
+    }
+
+    if (id === "ntf_edit_add_server" && interaction.isButton()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const modal = new ModalBuilder().setCustomId("ntf_edit_modal_addserver").setTitle("Add Server by ID");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("guildid").setLabel("Server (Guild) ID").setStyle(TextInputStyle.Short).setMaxLength(20).setPlaceholder("123456789012345678").setRequired(true)
+      ));
+      return interaction.showModal(modal);
+    }
+
+    if (id === "ntf_edit_modal_addserver" && interaction.isModalSubmit()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const job = notifyJobs.get(ewiz.jobId);
+      if (!job) return interaction.reply({ content: "That notify job no longer exists.", flags: 64 }).catch(() => {});
+
+      const guildId = interaction.fields.getTextInputValue("guildid").trim();
+      if (!isValidSnowflake(guildId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid server ID.", flags: 64 }).catch(() => {});
+      if (job.targets.some(t => t.guildId === guildId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That server is already part of this notify job — pick it from the list above to change its channel instead.", flags: 64 }).catch(() => {});
+
+      let guild = client.guilds.cache.get(guildId);
+      if (!guild) guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) return interaction.reply({ content: "<:steal:1521327958634135655> The bot isn't in a server with that ID (or the ID is invalid).", flags: 64 }).catch(() => {});
+
+      ewiz.mode = "add";
+      ewiz.pendingGuildId = guild.id;
+      const panel = await _notifyEditChannelPicker(guild);
+      return interaction.reply({ ...panel, flags: 64 }).catch(() => {});
+    }
+
+    if (id === "ntf_edit_pick_new_channel" && interaction.isStringSelectMenu()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const job = notifyJobs.get(ewiz.jobId);
+      if (!job) return interaction.reply({ content: "That notify job no longer exists.", flags: 64 }).catch(() => {});
+      const guild = client.guilds.cache.get(ewiz.pendingGuildId);
+      if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
+
+      const newChannelId = interaction.values[0];
+      const newChannel = guild.channels.cache.get(newChannelId) ?? await guild.channels.fetch(newChannelId).catch(() => null);
+      if (!newChannel) return interaction.reply({ content: "Couldn't find that channel.", flags: 64 }).catch(() => {});
+
+      await interaction.deferUpdate().catch(() => {});
+
+      try {
+        const iconBuf = await _fetchImageBuffer(guild.iconURL({ extension: "png", size: 256 }));
+        const wh = await newChannel.createWebhook({
+          name: (guild.name || "Notify").slice(0, 80),
+          avatar: iconBuf || undefined,
+          reason: `Notify system edit by ${interaction.user.tag}`,
+        });
+
+        if (ewiz.mode === "changeChannel") {
+          const target = job.targets.find(t => t.guildId === guild.id);
+          if (target) {
+            const oldId = target.webhookId, oldToken = target.webhookToken;
+            target.channelId = newChannel.id;
+            target.webhookId = wh.id;
+            target.webhookToken = wh.token;
+            target.guildName = guild.name;
+            client.fetchWebhook(oldId, oldToken).then(old => old.delete().catch(() => {})).catch(() => {});
+          }
+        } else {
+          job.targets.push({ guildId: guild.id, guildName: guild.name, channelId: newChannel.id, webhookId: wh.id, webhookToken: wh.token });
+        }
+        saveNotifyJobs();
+        client._notifyEditWizards.delete(interaction.user.id);
+
+        return interaction.editReply({
+          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${guild.name}** → #${newChannel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
+          components: [],
+        }).catch(() => {});
+      } catch (e) {
+        return interaction.editReply({ content: `<:steal:1521327958634135655> Failed: ${e.message}`, embeds: [], components: [] }).catch(() => {});
+      }
+    }
+
     // New notify — open details modal
     if (id === "ntf_new" && interaction.isButton()) {
       const modal = new ModalBuilder().setCustomId("ntf_modal_details").setTitle("New Notify — Message & Schedule");
       modal.addComponents(
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("msg").setLabel("Message to send").setStyle(TextInputStyle.Paragraph).setMaxLength(1800).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("time").setLabel("Time — 24h UTC, e.g. 14:30").setStyle(TextInputStyle.Short).setMaxLength(5).setPlaceholder("14:30").setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("time").setLabel("Time — 24h Italy time, e.g. 14:30").setStyle(TextInputStyle.Short).setMaxLength(5).setPlaceholder("14:30").setRequired(true)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("duration").setLabel("Duration: 7d / 2w / 1mo / date / forever").setStyle(TextInputStyle.Short).setPlaceholder("1w").setRequired(true)),
       );
       return interaction.showModal(modal);
@@ -16788,7 +17052,7 @@ client.on("interactionCreate", async (interaction) => {
       const time = parseNotifyTime(interaction.fields.getTextInputValue("time"));
       const dur  = parseNotifyDuration(interaction.fields.getTextInputValue("duration"));
       if (!msg)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Message can't be empty.", flags: 64 }).catch(() => {});
-      if (!time) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid time — use 24h UTC format like `14:30`.", flags: 64 }).catch(() => {});
+      if (!time) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid time — use 24h Italy time format like `14:30`.", flags: 64 }).catch(() => {});
       if (!dur)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid duration — try `7d`, `2w`, `1mo`, a date `2026-12-31`, or `forever`.", flags: 64 }).catch(() => {});
 
       client._notifyWizards.set(wizKey, {
@@ -16907,12 +17171,12 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ── Scheduler — fires every 30s, checks every active job against UTC clock ──
+// ── Scheduler — fires every 30s, checks every active job against Italy time ──
 setInterval(async () => {
-  const now      = new Date();
-  const hh       = now.getUTCHours(), mm = now.getUTCMinutes();
-  const todayStr = now.toISOString().slice(0, 10);
-  const nowMs    = now.getTime();
+  const nowP     = _italyParts();
+  const hh       = nowP.hour, mm = nowP.minute;
+  const todayStr = nowP.dateStr;
+  const nowMs    = Date.now();
 
   for (const [jobId, job] of notifyJobs.entries()) {
     if (!job.active) continue;
@@ -16923,15 +17187,7 @@ setInterval(async () => {
     job.lastSentDate = todayStr;
     saveNotifyJobs();
 
-    for (const t of job.targets) {
-      try {
-        const wh = new WebhookClient({ id: t.webhookId, token: t.webhookToken });
-        await wh.send({ content: job.message });
-      } catch (e) {
-        console.error(`[Notify] send failed job=${jobId} guild=${t.guildId}: ${e.message}`);
-      }
-    }
-    console.log(`[Notify] job ${jobId} fired to ${job.targets.length} target(s)`);
+    await _notifyFireJob(job, jobId);
   }
 }, 30 * 1000);
 
@@ -16943,11 +17199,12 @@ Object.assign(global._helpExtraCategories, {
     emoji: "📢",
     description: "Scheduled daily webhook broadcasts across multiple servers",
     commands: [
-      [",notify",             "Open the setup panel — message, time, duration, servers & channels"],
+      [",notify",             "Open the setup panel — message, time, duration, servers & channels (times are Italy time)"],
       [",notify list",        "List all notify jobs and their status"],
       [",notify stop <id>",   "Pause a notify job"],
-      [",notify start <id>",  "Resume a paused notify job"],
+      [",notify start <id>",  "Resume a notify job and immediately fire it to every target at once"],
       [",notify delete <id>", "Delete a notify job (webhooks are left in place)"],
+      [",notify edit <id>",   "Add a server by ID or change the channel of a server already in the job"],
     ],
   },
 });
