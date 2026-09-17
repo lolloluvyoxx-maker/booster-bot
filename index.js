@@ -16580,6 +16580,31 @@ async function _notifyFireJob(job, jobId) {
   console.log(`[Notify] job ${jobId} fired to ${job.targets.length} target(s)`);
 }
 
+// Deletes every webhook already sitting in a channel so it ends up with
+// exactly one webhook — the one the notify system is about to create.
+async function _notifyEnsureSingleWebhook(channel) {
+  try {
+    const hooks = await channel.fetchWebhooks();
+    for (const wh of hooks.values()) {
+      await wh.delete("Notify system — keeping only the bot's own webhook in this channel").catch(() => {});
+    }
+  } catch (e) {
+    console.error(`[Notify] couldn't clear existing webhooks in channel ${channel.id}: ${e.message}`);
+  }
+}
+
+// Clears any other webhook out of the channel, then creates the one and
+// only webhook the notify system will use there, named/iconed after the guild.
+async function _notifyCreateWebhookForTarget(guild, channel, reason) {
+  await _notifyEnsureSingleWebhook(channel);
+  const iconBuf = await _fetchImageBuffer(guild.iconURL({ extension: "png", size: 256 }));
+  return channel.createWebhook({
+    name: (guild.name || "Notify").slice(0, 80),
+    avatar: iconBuf || undefined,
+    reason,
+  });
+}
+
 function _notifyJobSummary(job) {
   const endStr = job.endAt ? `<t:${Math.floor(job.endAt / 1000)}:D>` : "no end date";
   return [
@@ -16679,13 +16704,14 @@ async function _notifyStepChannel(wiz) {
     .slice(0, 25);
 
   const navRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_channel_by_id").setLabel("Enter Channel ID").setEmoji("🔢").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("ntf_channel_skip").setLabel("Skip this server").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
   );
 
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `📢 Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Skip this server or cancel setup.` }],
+      embeds: [{ color: PINK, title: `📢 Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID, skip this server, or cancel setup.` }],
       components: [navRow],
     };
   }
@@ -16698,7 +16724,7 @@ async function _notifyStepChannel(wiz) {
   return {
     embeds: [{
       color: PINK, title: `📢 Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
-      description: `Pick the channel in **${guild.name}** where the webhook should post.`,
+      description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
     }],
     components: [selectRow, navRow],
@@ -16782,10 +16808,15 @@ async function _notifyEditChannelPicker(guild) {
     .sort((a, b) => (a.rawPosition ?? a.position ?? 0) - (b.rawPosition ?? b.position ?? 0))
     .slice(0, 25);
 
+  const idRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("ntf_edit_channel_by_id").setLabel("Enter Channel ID").setEmoji("🔢").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary),
+  );
+
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**.` }],
-      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary))],
+      embeds: [{ color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID instead.` }],
+      components: [idRow],
     };
   }
 
@@ -16793,13 +16824,39 @@ async function _notifyEditChannelPicker(guild) {
   return {
     embeds: [{
       color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`,
-      description: `Pick the channel in **${guild.name}** where the webhook should post.`,
+      description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
     }],
-    components: [new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId("ntf_edit_pick_new_channel").setPlaceholder(`Channel in ${guild.name}`.slice(0, 150)).addOptions(options)
-    )],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId("ntf_edit_pick_new_channel").setPlaceholder(`Channel in ${guild.name}`.slice(0, 150)).addOptions(options)
+      ),
+      idRow,
+    ],
   };
+}
+
+// Creates the (sole) webhook for the chosen channel and applies it to the
+// job — either as a brand-new target, or replacing an existing target's
+// channel/webhook. Shared by both the channel-select menu and the
+// "Enter Channel ID" modal.
+async function _notifyApplyEditChannelChoice(job, ewiz, guild, channel, userTag) {
+  const wh = await _notifyCreateWebhookForTarget(guild, channel, `Notify system edit by ${userTag}`);
+  if (ewiz.mode === "changeChannel") {
+    const target = job.targets.find(t => t.guildId === guild.id);
+    if (target) {
+      const oldId = target.webhookId, oldToken = target.webhookToken;
+      target.channelId = channel.id;
+      target.webhookId = wh.id;
+      target.webhookToken = wh.token;
+      target.guildName = guild.name;
+      client.fetchWebhook(oldId, oldToken).then(old => old.delete().catch(() => {})).catch(() => {});
+    }
+  } else {
+    job.targets.push({ guildId: guild.id, guildName: guild.name, channelId: channel.id, webhookId: wh.id, webhookToken: wh.token });
+  }
+  saveNotifyJobs();
+  return wh;
 }
 
 // ── ,notify command — hub + text management shortcuts ───────────────────────
@@ -16989,6 +17046,45 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ ...panel, flags: 64 }).catch(() => {});
     }
 
+    if (id === "ntf_edit_channel_by_id" && interaction.isButton()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const modal = new ModalBuilder().setCustomId("ntf_edit_modal_channelid").setTitle("Channel by ID");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("channelid").setLabel("Channel ID").setStyle(TextInputStyle.Short).setMaxLength(20).setPlaceholder("123456789012345678").setRequired(true)
+      ));
+      return interaction.showModal(modal);
+    }
+
+    if (id === "ntf_edit_modal_channelid" && interaction.isModalSubmit()) {
+      const ewiz = client._notifyEditWizards.get(interaction.user.id);
+      if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
+      const job = notifyJobs.get(ewiz.jobId);
+      if (!job) return interaction.reply({ content: "That notify job no longer exists.", flags: 64 }).catch(() => {});
+      const guild = client.guilds.cache.get(ewiz.pendingGuildId);
+      if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
+
+      const channelId = interaction.fields.getTextInputValue("channelid").trim();
+      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
+
+      const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `<:steal:1521327958634135655> That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
+      if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
+        return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That channel isn't a text channel.", flags: 64 }).catch(() => {});
+      }
+
+      await interaction.deferReply({ flags: 64 }).catch(() => {});
+      try {
+        await _notifyApplyEditChannelChoice(job, ewiz, guild, channel, interaction.user.tag);
+        client._notifyEditWizards.delete(interaction.user.id);
+        return interaction.editReply({
+          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${guild.name}** → #${channel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
+        }).catch(() => {});
+      } catch (e) {
+        return interaction.editReply({ content: `<:steal:1521327958634135655> Failed: ${e.message}` }).catch(() => {});
+      }
+    }
+
     if (id === "ntf_edit_pick_new_channel" && interaction.isStringSelectMenu()) {
       const ewiz = client._notifyEditWizards.get(interaction.user.id);
       if (!ewiz) return interaction.reply({ content: "Session expired — run `,notify edit <id>` again.", flags: 64 }).catch(() => {});
@@ -17004,27 +17100,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferUpdate().catch(() => {});
 
       try {
-        const iconBuf = await _fetchImageBuffer(guild.iconURL({ extension: "png", size: 256 }));
-        const wh = await newChannel.createWebhook({
-          name: (guild.name || "Notify").slice(0, 80),
-          avatar: iconBuf || undefined,
-          reason: `Notify system edit by ${interaction.user.tag}`,
-        });
-
-        if (ewiz.mode === "changeChannel") {
-          const target = job.targets.find(t => t.guildId === guild.id);
-          if (target) {
-            const oldId = target.webhookId, oldToken = target.webhookToken;
-            target.channelId = newChannel.id;
-            target.webhookId = wh.id;
-            target.webhookToken = wh.token;
-            target.guildName = guild.name;
-            client.fetchWebhook(oldId, oldToken).then(old => old.delete().catch(() => {})).catch(() => {});
-          }
-        } else {
-          job.targets.push({ guildId: guild.id, guildName: guild.name, channelId: newChannel.id, webhookId: wh.id, webhookToken: wh.token });
-        }
-        saveNotifyJobs();
+        await _notifyApplyEditChannelChoice(job, ewiz, guild, newChannel, interaction.user.tag);
         client._notifyEditWizards.delete(interaction.user.id);
 
         return interaction.editReply({
@@ -17097,6 +17173,40 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.update(await _notifyStepChannel(wiz)).catch(() => {});
     }
 
+    if (id === "ntf_channel_by_id" && interaction.isButton()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const modal = new ModalBuilder().setCustomId("ntf_modal_channelid_new").setTitle("Channel by ID");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("channelid").setLabel("Channel ID").setStyle(TextInputStyle.Short).setMaxLength(20).setPlaceholder("123456789012345678").setRequired(true)
+      ));
+      return interaction.showModal(modal);
+    }
+
+    if (id === "ntf_modal_channelid_new" && interaction.isModalSubmit()) {
+      if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
+      const guildId = wiz.pendingGuilds[0];
+      const guild = guildId ? client.guilds.cache.get(guildId) : null;
+      if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
+
+      const channelId = interaction.fields.getTextInputValue("channelid").trim();
+      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
+
+      const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `<:steal:1521327958634135655> That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
+      if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
+        return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That channel isn't a text channel.", flags: 64 }).catch(() => {});
+      }
+
+      wiz.targets[guildId] = channel.id;
+      wiz.pendingGuilds.shift();
+
+      await interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Channel set.", flags: 64 }).catch(() => {});
+      const ch = await interaction.client.channels.fetch(interaction.message.channelId).catch(() => null);
+      const msgObj = ch ? await ch.messages.fetch(interaction.message.id).catch(() => null) : null;
+      if (msgObj) await msgObj.edit(await _notifyStepChannel(wiz)).catch(() => {});
+      return;
+    }
+
     if (id === "ntf_pick_channel" && interaction.isStringSelectMenu()) {
       if (!wiz) return interaction.reply({ content: "Session expired — run `,notify` again.", flags: 64 }).catch(() => {});
       const guildId = wiz.pendingGuilds[0];
@@ -17132,12 +17242,7 @@ client.on("interactionCreate", async (interaction) => {
         const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
         if (!channel) { failures.push(`${guild.name} (channel not found)`); continue; }
         try {
-          const iconBuf = await _fetchImageBuffer(guild.iconURL({ extension: "png", size: 256 }));
-          const wh = await channel.createWebhook({
-            name: (guild.name || "Notify").slice(0, 80),
-            avatar: iconBuf || undefined,
-            reason: `Notify system job by ${interaction.user.tag}`,
-          });
+          const wh = await _notifyCreateWebhookForTarget(guild, channel, `Notify system job by ${interaction.user.tag}`);
           targets.push({ guildId, guildName: guild.name, channelId, webhookId: wh.id, webhookToken: wh.token });
         } catch (e) {
           failures.push(`${guild.name} — ${e.message}`);
