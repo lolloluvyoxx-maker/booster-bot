@@ -16467,6 +16467,15 @@ function _genNotifyId() {
   return id;
 }
 
+// ,notify list shows each ID wrapped in backticks (`abc123`) for easy
+// copying, but a highlight-and-copy on mobile or Discord's own rendering can
+// drag those backticks (or stray whitespace/case) along with it. Since real
+// IDs are always lowercase base36, stripping markdown chars and lowercasing
+// here means a pasted ID still resolves even if it came through "dirty".
+function _cleanNotifyId(raw) {
+  return (raw ?? "").trim().replace(/[`*_~]/g, "").toLowerCase();
+}
+
 // ── Italy (Europe/Rome) time helpers — the notify schedule runs on Italy's
 // local wall clock (CET/CEST), not UTC, so DST is handled automatically. ──────
 function _italyParts(date = new Date()) {
@@ -16900,7 +16909,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (sub === "stop" || sub === "start") {
-      const job = notifyJobs.get(args[2]);
+      const job = notifyJobs.get(_cleanNotifyId(args[2]));
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       job.active = sub === "start";
 
@@ -16920,7 +16929,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (sub === "delete") {
-      const job = notifyJobs.get(args[2]);
+      const job = notifyJobs.get(_cleanNotifyId(args[2]));
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       notifyJobs.delete(job.id);
       saveNotifyJobs();
@@ -16928,7 +16937,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (sub === "sync") {
-      const job = notifyJobs.get(args[2]);
+      const job = notifyJobs.get(_cleanNotifyId(args[2]));
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       const pending = job.targets.filter(t => !t.everSent);
       if (!pending.length) return ok(message, `Notify \`${job.id}\` — every server already has the message, nothing to sync.`);
@@ -16939,7 +16948,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (sub === "edit") {
-      const job = notifyJobs.get(args[2]);
+      const job = notifyJobs.get(_cleanNotifyId(args[2]));
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       if (!client._notifyEditWizards) client._notifyEditWizards = new Map();
       client._notifyEditWizards.set(message.author.id, { jobId: job.id, mode: null, pendingGuildId: null });
