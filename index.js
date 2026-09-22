@@ -6,7 +6,7 @@ const path = require("path");
 // Prints immediately on boot, before the DB/login sequence. If you don't see
 // this exact line at the top of the Railway logs after "Starting Container",
 // the deployed file is NOT this one — check your GitHub push / build.
-console.log("🔖 BUILD MARKER: owner-fix-v5 (,clone + ,servers rewritten as standalone owner-gated listeners, full try/catch, 2 owner IDs)");
+console.log("BUILD MARKER: owner-fix-v5 (,clone + ,servers rewritten as standalone owner-gated listeners, full try/catch, 2 owner IDs)");
 
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
@@ -52,7 +52,7 @@ let _db = null; // pg.Pool instance
 
 async function initDB() {
   if (!process.env.DATABASE_URL) {
-    console.warn('[DB] <:RUSH_warning:1521415214799654985> DATABASE_URL not set — running without persistence');
+    console.warn('[DB] DATABASE_URL not set — running without persistence');
     return false;
   }
   try {
@@ -72,10 +72,10 @@ async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> Railway PostgreSQL connected & table ready');
+    console.log('[DB] Railway PostgreSQL connected & table ready');
     return true;
   } catch (e) {
-    console.error('[DB] <:steal:1521327958634135655> Connection failed:', e.message);
+    console.error('[DB] Connection failed:', e.message);
     _db = null;
     return false;
   }
@@ -333,7 +333,7 @@ async function loadAllData() {
         _generalCfg.set(k, v);
       });
       const secGuilds = [..._generalCfg.entries()].filter(([,v]) => v.riskyPerms?.length || v.riskyRoles?.roles?.length || Object.keys(v.actionLimits||{}).length);
-      console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> _generalCfg restored (${_generalCfg.size} guilds; ${secGuilds.length} with active Security V2 config)`);
+      console.log(`[DB] _generalCfg restored (${_generalCfg.size} guilds; ${secGuilds.length} with active Security V2 config)`);
     }
     if (cfg.ketoConfig instanceof Map)        { ketoConfig.clear();        cfg.ketoConfig.forEach((v,k)       => {
       if (v.channelIds && !(v.channelIds instanceof Set)) v.channelIds = new Set(Array.isArray(v.channelIds) ? v.channelIds : []);
@@ -344,7 +344,7 @@ async function loadAllData() {
       const valid = {};
       for (const [k, v] of Object.entries(saved)) {
         if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
-          console.warn(`[DB] <:RUSH_warning:1521415214799654985> guild_configs: skipping invalid ${k}: "${v}"`);
+          console.warn(`[DB] guild_configs: skipping invalid ${k}: "${v}"`);
           continue;
         }
         valid[k] = v;
@@ -352,55 +352,55 @@ async function loadAllData() {
       Object.assign(perksSystemConfig, valid);
     }
     if (cfg.customMessages    && typeof cfg.customMessages    === 'object') Object.assign(customMessages, cfg.customMessages);
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> guild_configs restored');
+    console.log('[DB] guild_configs restored');
   }
 
   // ── Warnings ───────────────────────────────────────────────────────────────
   if (d[DB.WARNS] instanceof Map) {
     warns.clear();
     d[DB.WARNS].forEach((v, k) => warns.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> warns restored (${warns.size} guilds)`);
+    console.log(`[DB] warns restored (${warns.size} guilds)`);
   }
 
   // ── XP / Leveling ──────────────────────────────────────────────────────────
   if (d[DB.XP] instanceof Map) {
     xpData.clear();
     d[DB.XP].forEach((v, k) => xpData.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> xp restored (${xpData.size} guilds)`);
+    console.log(`[DB] xp restored (${xpData.size} guilds)`);
   }
 
   // ── Giveaways ──────────────────────────────────────────────────────────────
   if (d[DB.GIVEAWAYS] instanceof Map) {
     giveaways.clear();
     d[DB.GIVEAWAYS].forEach((v, k) => giveaways.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> giveaways restored (${giveaways.size} active)`);
+    console.log(`[DB] giveaways restored (${giveaways.size} active)`);
   }
 
   // ── Sticky messages ────────────────────────────────────────────────────────
   if (d[DB.STICKY] instanceof Map) {
     stickyMessages.clear();
     d[DB.STICKY].forEach((v, k) => stickyMessages.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> sticky restored (${stickyMessages.size})`);
+    console.log(`[DB] sticky restored (${stickyMessages.size})`);
   }
 
   // ── Reminders ──────────────────────────────────────────────────────────────
   if (d[DB.REMINDERS] instanceof Map) {
     remindersData.clear();
     d[DB.REMINDERS].forEach((v, k) => remindersData.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> reminders restored (${remindersData.size} users)`);
+    console.log(`[DB] reminders restored (${remindersData.size} users)`);
   }
 
   // ── Birthdays ──────────────────────────────────────────────────────────────
   if (d[DB.BIRTHDAYS] instanceof Map) {
     birthdayData.clear();
     d[DB.BIRTHDAYS].forEach((v, k) => birthdayData.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> birthdays restored (${birthdayData.size})`);
+    console.log(`[DB] birthdays restored (${birthdayData.size})`);
   }
 
   // ── Mod stats ──────────────────────────────────────────────────────────────
   if (d[DB.MODSTATS] && typeof d[DB.MODSTATS] === 'object') {
     Object.assign(banStats, d[DB.MODSTATS]);
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> modstats restored');
+    console.log('[DB] modstats restored');
   }
 
   // ── Booster state ──────────────────────────────────────────────────────────
@@ -418,13 +418,13 @@ async function loadAllData() {
       recentBoosters.clear();
       bs.recent.forEach(id => recentBoosters.add(id));
     }
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> booster_state restored');
+    console.log('[DB] booster_state restored');
   }
 
   // ── Active massDM job ──────────────────────────────────────────────────────
   if (d[DB.MASSDM] && typeof d[DB.MASSDM] === 'object') {
     activeMassDM = d[DB.MASSDM];
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> massdm state restored — will resume');
+    console.log('[DB] massdm state restored — will resume');
   }
 
   // ── Global bot config ──────────────────────────────────────────────────────
@@ -434,7 +434,7 @@ async function loadAllData() {
       const valid = {};
       for (const [k, v] of Object.entries(saved)) {
         if ((k === 'sourceGuildId' || k === 'targetGuildId') && !isValidSnowflake(v)) {
-          console.warn(`[DB] <:RUSH_warning:1521415214799654985> Skipping invalid ${k}: "${v}" — not a valid Discord snowflake. Keeping hardcoded default.`);
+          console.warn(`[DB] Skipping invalid ${k}: "${v}" — not a valid Discord snowflake. Keeping hardcoded default.`);
           continue;
         }
         valid[k] = v;
@@ -442,28 +442,28 @@ async function loadAllData() {
       Object.assign(perksSystemConfig, valid);
     }
     if (d[DB.BOT_CFG].customMessages)    Object.assign(customMessages,    d[DB.BOT_CFG].customMessages);
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> bot_config restored');
+    console.log('[DB] bot_config restored');
   }
 
   // ── Mod cases ──────────────────────────────────────────────────────────────
   if (d[DB.CASES]) {
     if (d[DB.CASES].cases instanceof Map)       { cases.clear();       d[DB.CASES].cases.forEach((v,k)       => cases.set(k, v)); }
     if (d[DB.CASES].caseCounter instanceof Map) { caseCounter.clear(); d[DB.CASES].caseCounter.forEach((v,k) => caseCounter.set(k, v)); }
-    console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> cases restored');
+    console.log('[DB] cases restored');
   }
 
   // ── Economy ────────────────────────────────────────────────────────────────
   if (d[DB.ECONOMY] instanceof Map) {
     economy.clear();
     d[DB.ECONOMY].forEach((v, k) => economy.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> economy restored (${economy.size} users)`);
+    console.log(`[DB] economy restored (${economy.size} users)`);
   }
 
   // ── AFK ────────────────────────────────────────────────────────────────────
   if (d[DB.AFK] instanceof Map) {
     afkUsers.clear();
     d[DB.AFK].forEach((v, k) => afkUsers.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> afk restored (${afkUsers.size})`);
+    console.log(`[DB] afk restored (${afkUsers.size})`);
   }
 
   // ── Polls ──────────────────────────────────────────────────────────────────
@@ -473,56 +473,56 @@ async function loadAllData() {
       if (v?.votes && !(v.votes instanceof Map)) v.votes = new Map(Object.entries(v.votes));
       pollData.set(k, v);
     });
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> polls restored (${pollData.size})`);
+    console.log(`[DB] polls restored (${pollData.size})`);
   }
 
   // ── Todos ──────────────────────────────────────────────────────────────────
   if (d[DB.TODOS] instanceof Map) {
     todoLists.clear();
     d[DB.TODOS].forEach((v, k) => todoLists.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> todos restored (${todoLists.size})`);
+    console.log(`[DB] todos restored (${todoLists.size})`);
   }
 
   // ── Tags ───────────────────────────────────────────────────────────────────
   if (d[DB.TAGS] instanceof Map) {
     tagData.clear();
     d[DB.TAGS].forEach((v, k) => tagData.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> tags restored (${tagData.size})`);
+    console.log(`[DB] tags restored (${tagData.size})`);
   }
 
   // ── Highlights ─────────────────────────────────────────────────────────────
   if (d[DB.HIGHLIGHTS] instanceof Map) {
     highlights.clear();
     d[DB.HIGHLIGHTS].forEach((v, k) => highlights.set(k, v instanceof Set ? v : new Set(Array.isArray(v) ? v : [])));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> highlights restored (${highlights.size})`);
+    console.log(`[DB] highlights restored (${highlights.size})`);
   }
 
   // ── Temp bans ──────────────────────────────────────────────────────────────
   if (d[DB.TEMPBANS] instanceof Map) {
     tempBans.clear();
     d[DB.TEMPBANS].forEach((v, k) => tempBans.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> temp_bans restored (${tempBans.size})`);
+    console.log(`[DB] temp_bans restored (${tempBans.size})`);
   }
 
   // ── Server stats ───────────────────────────────────────────────────────────
   if (d[DB.STATS] instanceof Map) {
     serverStats.clear();
     d[DB.STATS].forEach((v, k) => serverStats.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> server_stats restored (${serverStats.size} guilds)`);
+    console.log(`[DB] server_stats restored (${serverStats.size} guilds)`);
   }
 
   // ── Mute history ───────────────────────────────────────────────────────────
   if (d[DB.MUTE_HIST] instanceof Map) {
     muteHistory.clear();
     d[DB.MUTE_HIST].forEach((v, k) => muteHistory.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> mute_history restored (${muteHistory.size})`);
+    console.log(`[DB] mute_history restored (${muteHistory.size})`);
   }
 
   // ── Channel perms ──────────────────────────────────────────────────────────
   if (d[DB.CH_PERMS] instanceof Map) {
     channelPerms.clear();
     d[DB.CH_PERMS].forEach((v, k) => channelPerms.set(k, v));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> channel_perms restored (${channelPerms.size})`);
+    console.log(`[DB] channel_perms restored (${channelPerms.size})`);
   }
 
   // ── Video scraper config ────────────────────────────────────────────────
@@ -537,7 +537,7 @@ async function loadAllData() {
         lastRunAt: null, lastRunResult: null, ...v,
       });
     });
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
+    console.log(`[DB] scraper_cfg restored (${videoScraperCfg.size} guild(s))`);
   }
 
   // ── Scraper cursors — one snowflake per source channel ───────────────────
@@ -546,7 +546,7 @@ async function loadAllData() {
     d[DB.SCRAPER_CURSOR].forEach((v, guildId) => {
       scraperCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
     });
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> scraper_cursor restored (${scraperCursors.size} guild(s))`);
+    console.log(`[DB] scraper_cursor restored (${scraperCursors.size} guild(s))`);
   }
 
   // ── Twitter repost config ─────────────────────────────────────────────────
@@ -561,7 +561,7 @@ async function loadAllData() {
         lastRunAt: null, lastRunResult: null, ...v,
       });
     });
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> twitter_cfg restored (${twitterRepostCfg.size} guild(s))`);
+    console.log(`[DB] twitter_cfg restored (${twitterRepostCfg.size} guild(s))`);
   }
 
   // ── Twitter cursors — one tweet ID per monitored account ─────────────────
@@ -570,7 +570,7 @@ async function loadAllData() {
     d[DB.TWITTER_CURSOR].forEach((v, guildId) => {
       twitterCursors.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
     });
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> twitter_cursor restored (${twitterCursors.size} guild(s))`);
+    console.log(`[DB] twitter_cursor restored (${twitterCursors.size} guild(s))`);
   }
 
   // ── Notify jobs ────────────────────────────────────────────────────────────
@@ -579,14 +579,14 @@ async function loadAllData() {
     d[DB.NOTIFY].forEach((v, k) => notifyJobs.set(k, {
       active: true, lastSentDate: null, targets: [], ...v,
     }));
-    console.log(`[DB] <:019TXTWhite_Yes:1521327983279996999> notify_jobs restored (${notifyJobs.size})`);
+    console.log(`[DB] notify_jobs restored (${notifyJobs.size})`);
   }
 
   // ── Re-start enabled scrapers ─────────────────────────────────────────────
   for (const [guildId, cfg] of videoScraperCfg.entries()) {
     if (cfg.enabled && cfg.targetChannelId && cfg.sources.length > 0) {
       rescheduleScraperTimer(guildId);
-      console.log(`[Scraper] ▶ resumed for guild ${guildId}`);
+      console.log(`[Scraper] resumed for guild ${guildId}`);
     }
   }
 
@@ -594,11 +594,11 @@ async function loadAllData() {
   for (const [guildId, cfg] of twitterRepostCfg.entries()) {
     if (cfg.enabled && cfg.targetChannelId && cfg.accounts.length > 0) {
       rescheduleTwitterTimer(guildId);
-      console.log(`[Twitter] ▶ resumed for guild ${guildId}`);
+      console.log(`[Twitter] resumed for guild ${guildId}`);
     }
   }
 
-  console.log('[DB] <:019TXTWhite_Yes:1521327983279996999> All data loaded from Railway PostgreSQL');
+  console.log('[DB] All data loaded from Railway PostgreSQL');
 }
 
 // ── Auto-save every 60 seconds (safety net — catches any missed save triggers) ─
@@ -644,34 +644,34 @@ const PINK = 0xA8A9AD;  // Grey theme
 // Returns the embed color for a guild (falls back to PINK)
 function guildColor(guildId) { return embedColors.get(guildId) ?? PINK; }
 
-// <:019TXTWhite_Yes:1521327983279996999> Success response -- pink embed, no title, inline style
+// Success response -- pink embed, no title, inline style
 function ok(message, text) {
   const color = guildColor(message.guild?.id);
-  const embed = { color, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} ${text}` };
+  const embed = { color, description: `${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
 }
 
-// <:steal:1521327958634135655> Error response
+// Error response
 function err(message, text) {
   const color = guildColor(message.guild?.id);
-  const embed = { color, description: `<:steal:1521327958634135655> ${message.author} ${text}` };
+  const embed = { color, description: `${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
 }
 
-// ℹ️ Info response
+//Info response
 function info(message, text) {
   const color = guildColor(message.guild?.id);
-  const embed = { color, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} ${text}` };
+  const embed = { color, description: `${message.author} ${text}` };
   return message.reply({ embeds: [embed] }).catch(() =>
     message.channel.send({ embeds: [embed] }).catch(() => {})
   );
 }
 
-// <:RUSH_list:1521415268000337961> Data embed with fields
+// Data embed with fields
 function embed(title, fields, color = PINK) {
   return {
     embeds: [{
@@ -684,7 +684,7 @@ function embed(title, fields, color = PINK) {
   };
 }
 
-// 🧹 Delete ALL messages from a userId across every text channel in a guild
+// Delete ALL messages from a userId across every text channel in a guild
 // Runs in background — fire and forget (pass statusMsg to get a summary edit)
 async function purgeUserMessages(guild, userId, statusMsg = null) {
   const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
@@ -714,31 +714,31 @@ async function purgeUserMessages(guild, userId, statusMsg = null) {
       }
     } catch { /* skip channels we can't read */ }
   }
-  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `<:RUSH_trash_can:1521415241190215721> Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
+  if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, description: `Deleted **${totalDeleted}** messages from <@${userId}> across all channels.` }] }).catch(() => {});
   return totalDeleted;
 }
 
-// <:RUSH_unlock:1521415218037526641> Confirm button (for dangerous actions like nuke, unbanall, etc.)
+// Confirm button (for dangerous actions like nuke, unbanall, etc.)
 async function confirm(message, text, onConfirm) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("confirm_yes").setLabel("Approve").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("confirm_no").setLabel("Decline").setStyle(ButtonStyle.Danger)
   );
   const msg = await message.reply({
-    embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }],
+    embeds: [{ color: PINK, description: `${text}` }],
     components: [row]
   });
   const collector = msg.createMessageComponentCollector({ filter: () => true });
   collector.on("collect", async i => {
     try {
       if (i.user.id !== message.author.id) {
-        return i.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+        return i.reply({ embeds: [{ color: PINK, description: "This menu belongs to someone else." }], flags: 64 });
       }
       if (i.customId === "confirm_yes") {
-        await i.update({ embeds: [{ color: PINK, description: "🌸 Executing..." }], components: [] });
+        await i.update({ embeds: [{ color: PINK, description: "Executing..." }], components: [] });
         await onConfirm();
       } else {
-        await i.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Action cancelled." }], components: [] });
+        await i.update({ embeds: [{ color: PINK, description: "Action cancelled." }], components: [] });
       }
     } catch (e) {
       msg.edit({ components: [] }).catch(() => {});
@@ -922,7 +922,7 @@ function isOwner(id) { return OWNER_IDS.has(String(id ?? "").trim()); }
 // flags anything malformed, so a bad ID shows up in the Railway logs
 // immediately instead of surfacing later as a silent "Owner only." block.
 for (const id of OWNER_IDS) {
-  if (!isValidSnowflake(id)) console.warn(`[Config] ⚠️  OWNER_IDS contains a malformed id: "${id}" — isOwner() will never match it.`);
+  if (!isValidSnowflake(id)) console.warn(`[Config] OWNER_IDS contains a malformed id: "${id}" — isOwner() will never match it.`);
 }
 console.log(`[Config] ${OWNER_IDS.size} owner ID(s) loaded: ${[...OWNER_IDS].join(", ")}`);
 
@@ -990,7 +990,7 @@ const hiddenPaidPerksChannels = new Set();
 
 // ===== CUSTOM MESSAGES (in-memory, editable with !setmsg) =====
 const customMessages = {
-  boost:`<:SENSATIONAL:1475072755467550781>  {user}  Boosting grants you __access to our locked vault__  a space reserved for boosters. Inside, you’ll find all creator channels listed under *perks*.
+  boost:` {user}  Boosting grants you __access to our locked vault__  a space reserved for boosters. Inside, you’ll find all creator channels listed under *perks*.
 
 The *invite link* is private — **sharing it is forbidden** and will get you **blacklisted**. If you ever **remove your boost**, you’ll be **automatically removed** from the vault.
 
@@ -1022,7 +1022,7 @@ function utcTimestamp() {
 
 function log(message, type = "info") {
   const timestamp = new Date().toLocaleTimeString();
-  const prefix = type === "error" ? "<:steal:1521327958634135655>" : type === "success" ? "<:019TXTWhite_Yes:1521327983279996999>" : "ℹ️";
+  const prefix = type === "error" ? "" : type === "success" ? "" : "";
   console.log(`[${timestamp}] ${prefix} ${message}`);
 }
 
@@ -1201,7 +1201,7 @@ async function checkAllTargetMembers() {
       }
     }
 
-    log(`<:019TXTWhite_Yes:1521327983279996999> Check complete! Updated ${updatedCount} members, ${errorCount} errors`, "success");
+    log(`Check complete! Updated ${updatedCount} members, ${errorCount} errors`, "success");
     return { updated: updatedCount, errors: errorCount, total: targetMembers.size };
 
   } catch (error) {
@@ -1322,7 +1322,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   for (const role of addedRoles.values()) {
     if (role.permissions.has(PermissionFlagsBits.Administrator) && newMember.id !== newMember.guild.ownerId) {
       // Someone assigned themselves an admin role -- ban immediately
-      log(`<:RUSH_warning:1521415214799654985> ${newMember.user.username} assigned themselves admin role: ${role.name}`, "error");
+      log(`${newMember.user.username} assigned themselves admin role: ${role.name}`, "error");
       // Remove the role first
       await newMember.roles.remove(role).catch(() => {});
       // Ban them
@@ -1330,7 +1330,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       // DM the owner
       const owner = await client.users.fetch(OWNER_ID).catch(() => null);
       if (owner) {
-        owner.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Admin Role Self-Assignment Detected", description: `**${newMember.user.username}** (\`${newMember.id}\`) assigned themselves the role **${role.name}** which has **Administrator** permissions.
+        owner.send({ embeds: [{ color: PINK, title: "Admin Role Self-Assignment Detected", description: `**${newMember.user.username}** (\`${newMember.id}\`) assigned themselves the role **${role.name}** which has **Administrator** permissions.
 
 They have been **automatically banned**.`, footer: { text: newMember.guild.name }, timestamp: new Date() }] }).catch(() => {});
       }
@@ -1393,11 +1393,11 @@ client.on("messageCreate", async (message) => {
   if (command === "viewmsg") {
     const embed = {
       color: PINK,
-      title: "<:RUSH_comment:1491884212297531572> Current Messages",
+      title: "Current Messages",
       fields: [
-        { name: "💜 Boost DM", value: customMessages.boost.substring(0, 1024) },
-        { name: "😔 Unboost DM", value: customMessages.unboost.substring(0, 1024) },
-        { name: "📣 Perks channel ping", value: customMessages.ping }
+        { name: "Boost DM", value: customMessages.boost.substring(0, 1024) },
+        { name: "Unboost DM", value: customMessages.unboost.substring(0, 1024) },
+        { name: "Perks channel ping", value: customMessages.ping }
       ],
       footer: { text: "Edit with !setmsg boost/unboost/ping <text>" }
     };
@@ -1478,28 +1478,28 @@ client.on("messageCreate", async (message) => {
 
       if (sourceMember) {
         const boosting = isBoosting(sourceMember);
-        response += `Source server: ${boosting ? "<:019TXTWhite_Yes:1521327983279996999> Boosting" : "<:steal:1521327958634135655> Not boosting"}\n`;
+        response += `Source server: ${boosting ? "Boosting" : "Not boosting"}\n`;
 
         if (boosting) {
           // Role management handled by guildMemberUpdate only
-          response += `Custom role: <:019TXTWhite_Yes:1521327983279996999> Added\n`;
+          response += `Custom role: Added\n`;
           recentBoosters.add(userId);
         } else {
           // Role management handled by guildMemberUpdate only
-          response += `Custom role: <:019TXTWhite_Yes:1521327983279996999> Removed\n`;
+          response += `Custom role: Removed\n`;
         }
 
         await updateTargetServerAccess(userId, boosting);
-        response += `Target access: ${boosting ? "<:019TXTWhite_Yes:1521327983279996999> Granted" : "<:steal:1521327958634135655> Denied"}`;
+        response += `Target access: ${boosting ? "Granted" : "Denied"}`;
       } else {
         response += `User not in source server\n`;
         await updateTargetServerAccess(userId, false);
-        response += `Target access: <:steal:1521327958634135655> Denied`;
+        response += `Target access: Denied`;
       }
 
       message.reply(response);
     } catch (error) {
-      message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: ${error.message}` }] });
+      message.reply({ embeds: [{ color: PINK, description: `Error: ${error.message}` }] });
     }
   }
 
@@ -1537,7 +1537,7 @@ client.on("messageCreate", async (message) => {
 
       message.reply({ embeds: [embed] });
     } catch (error) {
-      message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: ${error.message}` }] });
+      message.reply({ embeds: [{ color: PINK, description: `Error: ${error.message}` }] });
     }
   }
 });
@@ -1613,7 +1613,7 @@ client.on("messageCreate", async (message) => {
     });
     return {
       color: PINK,
-      title: "<:RUSH_list:1521415268000337961> Mod Stats",
+      title: "Mod Stats",
       description: lines.join("\n\n"),
       footer: { text: `Page ${p + 1}/${totalPages} • ${message.guild.name}` },
       timestamp: new Date()
@@ -1624,12 +1624,12 @@ client.on("messageCreate", async (message) => {
     return new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("modstats_prev")
-        .setLabel("◀")
+        .setLabel("Prev")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(p === 0),
       new ButtonBuilder()
         .setCustomId("modstats_next")
-        .setLabel("▶")
+        .setLabel("Next")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(p >= totalPages - 1)
     );
@@ -1647,7 +1647,7 @@ client.on("messageCreate", async (message) => {
   collector.on("collect", async i => {
     try {
       if (i.user.id !== message.author.id) {
-        return i.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+        return i.reply({ embeds: [{ color: PINK, description: "This menu belongs to someone else." }], flags: 64 });
       }
       if (i.customId === "modstats_prev" && page > 0) page--;
       else if (i.customId === "modstats_next" && page < totalPages - 1) page++;
@@ -1680,7 +1680,7 @@ function startVanityMonitor() {
 
           const owner = await client.users.fetch(OWNER_ID);
           await owner.send(
-            `<:RUSH_warning:1521415214799654985> **VANITY AVAILABLE** <:RUSH_warning:1521415214799654985>\n\n` +
+            `**VANITY AVAILABLE**\n\n` +
             `Vanity: **discord.gg/${vanity}**\n` +
             `Time: **${utcTimestamp()}**`
           );
@@ -1809,7 +1809,7 @@ client.on("messageCreate", async (message) => {
   if (data.xp >= needed) {
     data.level += 1;
     data.xp = 0;
-    message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${message.author} reached level **${data.level}**! <:RUSH_giveaway:1521415256772186132>` }] }).catch(() => {});
+    message.channel.send({ embeds: [{ color: PINK, description: `${message.author} reached level **${data.level}**!` }] }).catch(() => {});
   }
   xpData.set(key, data);
     saveXP();
@@ -1858,7 +1858,7 @@ client.on("messageReactionAdd", async (reaction, user) => {
     const ch = reaction.message.guild.channels.cache.get(config.channelId);
     if (!ch) return;
     const msg = reaction.message;
-    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `⭐ ${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
+    await ch.send({ embeds: [{ color: PINK, author: { name: msg.author.username, icon_url: msg.author.displayAvatarURL() }, description: msg.content || null, image: msg.attachments.first() ? { url: msg.attachments.first().url } : null, footer: { text: `${reaction.count} | #${msg.channel.name}` }, timestamp: msg.createdAt }] });
     starboardSent.add(reaction.message.id);
   }
 });
@@ -1869,12 +1869,12 @@ client.on("messageCreate", async (message) => {
   // Remove AFK if user sends a message
   if (afkUsers.has(`${message.guild.id}-${message.author.id}`)) {
     afkUsers.delete(`${message.guild.id}-${message.author.id}`);
-    message.reply({ embeds: [{ color: PINK, description: `<a:009Cinnamoroll_Wave:1265534373873320047> ${message.author} **Welcome back**, your AFK has been removed.` }] }).catch(() => {});
+    message.reply({ embeds: [{ color: PINK, description: `${message.author} **Welcome back**, your AFK has been removed.` }] }).catch(() => {});
   }
   // Notify if mentioning an AFK user
   for (const mentioned of message.mentions.users.values()) {
     const afk = afkUsers.get(`${message.guild.id}-${mentioned.id}`);
-    if (afk) message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${mentioned.username}** is currently AFK: **${afk}**` }] }).catch(() => {});
+    if (afk) message.reply({ embeds: [{ color: PINK, description: `**${mentioned.username}** is currently AFK: **${afk}**` }] }).catch(() => {});
   }
 });
 
@@ -1884,7 +1884,7 @@ setInterval(() => {
   for (const [userId, rems] of remindersData.entries()) {
     const remaining = rems.filter(r => {
       if (r.time <= now) {
-        client.users.fetch(userId).then(u => u.send(`<:RUSH_clock:1521415225058791454> Reminder: **${r.text}**`)).catch(() => {});
+        client.users.fetch(userId).then(u => u.send(`Reminder: **${r.text}**`)).catch(() => {});
         return false;
       }
       return true;
@@ -1908,11 +1908,11 @@ setInterval(async () => {
       const channel = await guild.channels.fetch(gw.channelId);
       const msg = await channel.messages.fetch(msgId);
       if (gw.entries.length === 0) {
-        await channel.send(`<:RUSH_giveaway:1521415256772186132> Giveaway ended! No valid entries for **${gw.prize}**.`);
+        await channel.send(`Giveaway ended! No valid entries for **${gw.prize}**.`);
       } else {
         const winner = gw.entries[Math.floor(Math.random() * gw.entries.length)];
-        await channel.send(`<:RUSH_giveaway:1521415256772186132> Congratulations <@${winner}>! You won **${gw.prize}**!`);
-        await msg.edit({ embeds: [{ color: PINK, title: "<:RUSH_giveaway:1521415256772186132> GIVEAWAY ENDED", description: `**Prize:** ${gw.prize}\n**Winner:** <@${winner}>` }] });
+        await channel.send(`Congratulations <@${winner}>! You won **${gw.prize}**!`);
+        await msg.edit({ embeds: [{ color: PINK, title: "GIVEAWAY ENDED", description: `**Prize:** ${gw.prize}\n**Winner:** <@${winner}>` }] });
       }
     } catch {}
   }
@@ -2388,8 +2388,8 @@ client.on("messageCreate", async (message) => {
     const banSuccess = await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     if (!banSuccess) return err(message, `failed to ban **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, "ban", target.id, message.author.id, reason);
-    target.user.send({ embeds: [{ color: PINK, description: `🔨 You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
-    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    target.user.send({ embeds: [{ color: PINK, description: `You have been banned from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    const banPurgeMsg = await ok(message, `banned **${target.user.username}** | ${reason} — deleting messages...`);
     purgeUserMessages(message.guild, target.id, banPurgeMsg);
     return;
   }
@@ -2413,7 +2413,7 @@ client.on("messageCreate", async (message) => {
     if (isProtectedBooster(target) && !isOwner(message.author.id)) return err(message, `**${target.user.username}** is a booster and cannot be punished.`);
     if (hierarchyBlocked(message, target)) return;
     const reason = args.slice(2).join(" ") || "No reason provided";
-    target.send({ embeds: [{ color: PINK, description: `👢 You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
+    target.send({ embeds: [{ color: PINK, description: `You have been kicked from **${message.guild.name}**\nReason: ${reason}` }] }).catch(() => {});
     const kickSuccess = await target.kick(reason).catch(() => null);
     if (!kickSuccess) return err(message, `failed to kick **${target.user.username}** — check my role hierarchy`);
     addCase(message.guild.id, 'kick', target.id, message.author.id, reason);
@@ -2431,7 +2431,7 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(3).join(" ") || "No reason provided";
     const muteResult = await target.timeout(minutes * 60 * 1000, reason).catch(() => null);
     if (!muteResult) return err(message, `failed to mute **${target.user.username}** — check my role hierarchy`);
-    target.send({ embeds: [{ color: PINK, description: `🔇 You have been muted in **${message.guild.name}** for **${minutes} minutes**\nReason: ${reason}` }] }).catch(() => {});
+    target.send({ embeds: [{ color: PINK, description: `You have been muted in **${message.guild.name}** for **${minutes} minutes**\nReason: ${reason}` }] }).catch(() => {});
     return ok(message, `muted **${target.user.username}** for **${minutes}min** | ${reason}`);
   }
 
@@ -2450,7 +2450,7 @@ client.on("messageCreate", async (message) => {
     const amount = Math.min(parseInt(args[1]) || 10, 100);
     const deleted = await message.channel.bulkDelete(amount + 1, true).catch(() => null);
     const actualCount = deleted ? deleted.size - 1 : amount;
-    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${actualCount}** messages` }] });
+    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `deleted **${actualCount}** messages` }] });
     setTimeout(() => msg.delete().catch(() => {}), 3000);
   }
 
@@ -2545,7 +2545,7 @@ client.on("messageCreate", async (message) => {
     list.push({ reason, mod: message.author.username, date: new Date().toLocaleDateString() });
     warns.set(key, list);
     saveWarns();
-    target.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
+    target.send({ embeds: [{ color: PINK, title: "Warning", description: `You have been warned in **${message.guild.name}**\nReason: ${reason}`, footer: { text: `Warn #${list.length}` } }] }).catch(() => {});
     return ok(message, `warned **${target.username}** (warn #${list.length}) | ${reason}`);
   }
 
@@ -2756,11 +2756,11 @@ client.on("messageCreate", async (message) => {
     // -- SINGLE CHANNEL --
     if (targetChannel) {
       const waitMsg = await message.reply({
-        embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Counting videos in <#${targetChannel.id}>...` }]
+        embeds: [{ color: PINK, description: `Counting videos in <#${targetChannel.id}>...` }]
       }).catch(() => null);
       const count = await countVideosInChannel(targetChannel);
       const embed = {
-        color: PINK, title: `<:movieslotbluedns:1414214240218120295> Video Count — #${targetChannel.name}`,
+        color: PINK, title: `Video Count — #${targetChannel.name}`,
         description: `Found **${count}** video${count !== 1 ? 's' : ''} in <#${targetChannel.id}>`,
         footer: { text: 'sensational • white edition' }, timestamp: new Date(),
       };
@@ -2769,7 +2769,7 @@ client.on("messageCreate", async (message) => {
 
     // -- WHOLE SERVER --
     const waitMsg = await message.reply({
-      embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning **all channels** for videos — this may take a while...` }]
+      embeds: [{ color: PINK, description: `Scanning **all channels** for videos — this may take a while...` }]
     }).catch(() => null);
 
     const textChannels = message.guild.channels.cache.filter(ch => ch.isTextBased?.());
@@ -2785,7 +2785,7 @@ client.on("messageCreate", async (message) => {
       // Live update every 10 channels
       if (scanned % 10 === 0 && waitMsg) {
         await waitMsg.edit({
-          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning... **${scanned}/${textChannels.size}** channels checked — **${serverTotal}** videos found so far` }]
+          embeds: [{ color: PINK, description: `Scanning... **${scanned}/${textChannels.size}** channels checked — **${serverTotal}** videos found so far` }]
         }).catch(() => {});
       }
     }
@@ -2799,7 +2799,7 @@ client.on("messageCreate", async (message) => {
 
     const resultEmbed = {
       color: PINK,
-      title: `<:movieslotbluedns:1414214240218120295> Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
+      title: `Video Count — ${message.guild.name}${message.guild.name.endsWith(')') ? '' : ''}`,
       description: `**Total: ${serverTotal}** videos across **${textChannels.size}** channels`,
       fields,
       footer: { text: 'sensational • white edition' },
@@ -2840,10 +2840,10 @@ client.on("messageCreate", async (message) => {
     const question = args.slice(1).join(" ");
     if (!question) return err(message, "missing required argument");
 
-    const embed = { color: PINK, title: "<:RUSH_list:1521415268000337961> Poll", description: question, footer: { text: `Asked by ${message.author.username}` } };
+    const embed = { color: PINK, title: "Poll", description: question, footer: { text: `Asked by ${message.author.username}` } };
     const msg = await message.channel.send({ embeds: [embed] });
-    await msg.react("👍");
-    await msg.react("👎");
+    await msg.react("");
+    await msg.react("");
     message.delete().catch(() => {});
   }
 
@@ -2891,7 +2891,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     const text = args.slice(2).join(" ");
     if (!text) return err(message, "Please provide a message.");
-    await target.send(`<:RUSH_comment:1491884212297531572> Message from **${message.guild.name}**:\n${text}`).catch(() => null);
+    await target.send(`Message from **${message.guild.name}**:\n${text}`).catch(() => null);
     return ok(message, `DM sent to **${target.username}**`);
   }
 
@@ -2957,7 +2957,7 @@ client.on("messageCreate", async (message) => {
         if (newChannel) {
           await newChannel.setPosition(channel.position);
           await channel.delete().catch(() => null);
-          newChannel.send({ embeds: [{ color: PINK, description: "💥 Channel has been nuked." }] });
+          newChannel.send({ embeds: [{ color: PINK, description: "Channel has been nuked." }] });
         }
       }
     );
@@ -3011,7 +3011,7 @@ client.on("messageCreate", async (message) => {
     const categoriess = {
       moderation: {
         label: "Moderation",
-        emoji: "<:RUSH_caution:1521415278355808297>",
+        
         description: "Ban, kick, mute, jail and more",
         commands: [
           [",ban <user> [reason]", "Ban a user from the server"],
@@ -3066,7 +3066,7 @@ client.on("messageCreate", async (message) => {
       },
       security: {
         label: "Security",
-        emoji: "<:RUSH_unlock:1521415218037526641>",
+        
         description: "AntiNuke, AntiRaid, AutoMod",
         commands: [
           [",antinuke on/off", "Enable/disable AntiNuke"],
@@ -3098,7 +3098,7 @@ client.on("messageCreate", async (message) => {
       },
       info: {
         label: "Information",
-        emoji: "<:RUSH_list:1521415268000337961>",
+        
         description: "User, server, role info and more",
         commands: [
           [",userinfo [user]", "Detailed user information"],
@@ -3154,7 +3154,7 @@ client.on("messageCreate", async (message) => {
       },
       config: {
         label: "Server Config",
-        emoji: "<:RUSH_gear:1521415230184489061>",
+        
         description: "Setup, welcome, roles, tickets...",
         commands: [
           [",setup", "Create jail/log channels & roles"],
@@ -3206,7 +3206,7 @@ client.on("messageCreate", async (message) => {
       },
       economy: {
         label: "Economy",
-        emoji: "<:RUSH_dollar:1521415308206669926>",
+        
         description: "Coins, gambling, work and more",
         commands: [
           [",balance [user]", "Check coin balance"],
@@ -3230,7 +3230,7 @@ client.on("messageCreate", async (message) => {
       },
       fun: {
         label: "Fun",
-        emoji: "🎮",
+        
         description: "Games, generators and more",
         commands: [
           [",coinflip", "Flip a coin"],
@@ -3275,12 +3275,12 @@ client.on("messageCreate", async (message) => {
           [",vaporwave <text>", "Vaporwave text"],
           [",zalgo <text>", "Zalgo text"],
           [",reverse <text>", "Reverse text"],
-          [",clap <text>", "Add 👏 claps"],
+          [",clap <text>", "Add claps"],
         ]
       },
       utility: {
         label: "Utility",
-        emoji: "<:RUSH_maintenance:1521415300254404648>",
+        
         description: "Useful tools and helpers",
         commands: [
           [",remind <time> <text>", "Set a reminder (e.g. 30m, 1h)"],
@@ -3323,7 +3323,7 @@ client.on("messageCreate", async (message) => {
       },
       lastfm: {
         label: "Last.fm",
-        emoji: "<:musicnote:1521415310941618208>",
+        
         description: "Music tracking with Last.fm",
         commands: [
           [",fm set <username>", "Link your Last.fm account"],
@@ -3337,7 +3337,7 @@ client.on("messageCreate", async (message) => {
       },
       leveling: {
         label: "Leveling",
-        emoji: "<:RUSH_poll:1521415317614628976>",
+        
         description: "XP and level system",
         commands: [
           [",rank [user]", "View your rank and XP"],
@@ -3348,7 +3348,7 @@ client.on("messageCreate", async (message) => {
       },
       perks: {
         label: "Perks Tools",
-        emoji: "<:awhitestar:1521415243954393159>",
+        
         description: "Clone, sort and manage perks servers",
         commands: [
           [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
@@ -3366,7 +3366,7 @@ client.on("messageCreate", async (message) => {
       },
       nsfw: {
         label: "NSFW (Owner Only)",
-        emoji: "<:18plus:1521415320538054748>",
+        
         description: "Anti-minors system — owner only",
         commands: [
           [",addc #channel", "Add channel to minor monitoring"],
@@ -3380,7 +3380,7 @@ client.on("messageCreate", async (message) => {
           ["Detection:", ""],
           ["• Ages 10–17", "Deleted + warning logged"],
           ["• Reversed bypass (61 reversed)", "Deleted + warning logged"],
-          ["• Emoji numbers (1️⃣5️⃣)", "Normalized + detected"],
+          ["• Emoji numbers (15)", "Normalized + detected"],
           ["• underage / minor / still in hs", "Instant flag"],
           ["• No 18+ age mentioned", "Silently deleted"],
           ["• Suspiciously high age (99m)", "Flagged as bypass"],
@@ -3388,7 +3388,6 @@ client.on("messageCreate", async (message) => {
       }
     };
 
-    // Build select menu using top-level imports (StringSelectMenuBuilder / StringSelectMenuOptionBuilder)
     // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
     const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
     let selectMenu, mainEmbed, msg;
@@ -3399,39 +3398,36 @@ client.on("messageCreate", async (message) => {
       selectMenu = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId("help_category")
-          .setPlaceholder("Choose a category...")
+          .setPlaceholder("Select a category")
           .addOptions(
             visibleCategories.map(([key, cat]) =>
               new StringSelectMenuOptionBuilder()
                 .setLabel(cat.label)
                 .setDescription(cat.description.slice(0, 100))
                 .setValue(key)
-                .setEmoji(cat.emoji)
             )
           )
       );
 
+      const totalCommands = visibleCategories.reduce((a, [, c]) => a + _helpTags(c).length, 0);
       mainEmbed = {
         color: PINK,
-        author: { name: message.guild.name, icon_url: message.guild.iconURL() },
-        title: "Command Help",
-        description: [
-          "**information**",
-          "[ ] = optional, < > = required",
-          "",
-          "**Invite**",
-          `[invite](https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot) • [support](https://discord.gg/) • view on web`,
-          "",
-          "Select a category from the dropdown menu below to view commands."
-        ].join("\n"),
+        image: HELP_BANNER_URL ? { url: HELP_BANNER_URL } : undefined,
         thumbnail: { url: client.user.displayAvatarURL() },
-        footer: { text: `${client.user.username} • ${Object.values(mergedCategories).reduce((a, c) => a + c.commands.length, 0)}+ commands` }
+        title: `${client.user.username} help`,
+        description: "Experience the ultimate Discord bot designed for seamless management and community engagement.",
+        fields: [
+          { name: "Prefix", value: "`,`", inline: true },
+          { name: "Commands", value: `\`${totalCommands}\``, inline: true },
+          { name: "Modules", value: `\`${visibleCategories.length}\``, inline: true },
+        ],
+        footer: { text: "Use ,help (command) for details on a specific command" },
       };
 
       msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
     } catch (e) {
       log(`[help] Failed to build/send help panel: ${e.message}`, "error");
-      return message.reply({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Could not build the help panel: ${e.message}` }] }).catch(() => {});
+      return message.reply({ embeds: [{ color: PINK, description: `Could not build the help panel: ${e.message}` }] }).catch(() => {});
     }
 
     // Store session in global map — handled by the global interactionCreate handler below
@@ -3440,10 +3436,6 @@ client.on("messageCreate", async (message) => {
       selectMenu,
       categories: mergedCategories,
       authorId: message.author.id,
-      guildIconUrl: message.guild.iconURL(),
-      currentCategory: null,
-      currentPage: 0,
-      currentPages: [],
     });
     // Auto-cleanup after 60 minutes
     setTimeout(() => helpSessions.delete(msg.id), 60 * 60 * 1000);
@@ -3451,66 +3443,73 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+// ── Help panel layout helpers ─────────────────────────────────────────────────
+const HELP_BANNER_URL = null; // set an image URL here to show a banner across the top of the help panel
+
+// Turns a raw command entry (e.g. ",ban <user> [reason]") into a bare tag (e.g. "ban").
+// Rows that aren't real commands (blank separators, "Detection:" notes, bullet lines) return null.
+function _helpTagFor(cmdStr) {
+  if (!cmdStr || !cmdStr.trim().startsWith(",")) return null;
+  const word = cmdStr.trim().slice(1).split(/\s+/)[0];
+  return word || null;
+}
+function _helpTags(cat) {
+  const seen = new Set();
+  const out = [];
+  for (const [cmd] of cat.commands) {
+    const tag = _helpTagFor(cmd);
+    if (tag && !seen.has(tag)) { seen.add(tag); out.push(tag); }
+  }
+  return out;
+}
+function _helpBuildCategoryEmbed(cat) {
+  const tags = _helpTags(cat).map(t => `\`${t}\``).join(" ");
+  let body = `**${cat.label}**\n${cat.description}\n\n${tags}`;
+  if (body.length > 4000) body = body.slice(0, 3997) + "...";
+  return {
+    color: PINK,
+    image: HELP_BANNER_URL ? { url: HELP_BANNER_URL } : undefined,
+    thumbnail: { url: client.user.displayAvatarURL() },
+    title: `${client.user.username} help`,
+    description: body,
+    footer: { text: "Use ,help (command) for details on a specific command" },
+  };
+}
+function _helpHomeRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary)
+  );
+}
+
 // ── Global help panel interaction handler ─────────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.message) return;
   const id = interaction.customId;
-  if (!id || (id !== "help_category" && !id.startsWith("help_"))) return;
+  if (!id || (id !== "help_category" && id !== "help_home")) return;
 
   const sess = helpSessions.get(interaction.message.id);
-  if (!sess) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired — type `,help` again.", flags: 64 });
+  if (!sess) return interaction.reply({ content: "Session expired — type `,help` again.", flags: 64 });
 
   if (interaction.user.id !== sess.authorId)
-    return interaction.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This menu belongs to someone else." }], flags: 64 });
+    return interaction.reply({ embeds: [{ color: PINK, description: "This menu belongs to someone else." }], flags: 64 });
 
   try {
     await interaction.deferUpdate();
   } catch { return; }
 
-  function buildCatEmbed(cat, p) {
-    return {
-      color: PINK,
-      title: `${cat.emoji} ${cat.label}`,
-      description: sess.currentPages[p].map(([cmd, desc]) => cmd ? `\`${cmd}\`\n${desc}` : (desc || '')).join("\n\n"),
-      footer: { text: `Page ${p + 1}/${sess.currentPages.length} • ${cat.commands.length} commands` },
-    };
-  }
-  function buildNavRow(p) {
-    return new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("help_back").setLabel("◀").setStyle(ButtonStyle.Secondary).setDisabled(p === 0),
-      new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("help_next").setLabel("▶").setStyle(ButtonStyle.Secondary).setDisabled(p >= sess.currentPages.length - 1),
-    );
-  }
-
   try {
+    if (id === "help_home") {
+      await interaction.editReply({ embeds: [sess.mainEmbed], components: [sess.selectMenu] });
+      return;
+    }
     if (interaction.isStringSelectMenu()) {
       const cat = sess.categories[interaction.values[0]];
       if (!cat) return;
-      sess.currentCategory = cat;
-      sess.currentPage     = 0;
-      sess.currentPages    = [];
-      const PER = 10;
-      for (let p = 0; p < cat.commands.length; p += PER) sess.currentPages.push(cat.commands.slice(p, p + PER));
       await interaction.editReply({
-        embeds: [buildCatEmbed(cat, 0)],
-        components: sess.currentPages.length > 1 ? [buildNavRow(0), sess.selectMenu] : [sess.selectMenu],
+        embeds: [_helpBuildCategoryEmbed(cat)],
+        components: [_helpHomeRow(), sess.selectMenu],
       });
       return;
-    }
-    if (interaction.isButton()) {
-      if (id === "help_home") {
-        sess.currentCategory = null; sess.currentPage = 0; sess.currentPages = [];
-        await interaction.editReply({ embeds: [sess.mainEmbed], components: [sess.selectMenu] });
-        return;
-      }
-      if (!sess.currentCategory) return;
-      if (id === "help_back" && sess.currentPage > 0) sess.currentPage--;
-      if (id === "help_next" && sess.currentPage < sess.currentPages.length - 1) sess.currentPage++;
-      await interaction.editReply({
-        embeds: [buildCatEmbed(sess.currentCategory, sess.currentPage)],
-        components: [buildNavRow(sess.currentPage), sess.selectMenu],
-      });
     }
   } catch (e) {
     log(`[help] interaction error: ${e.message}`, "error");
@@ -3566,9 +3565,9 @@ function buildPerksEmbed() {
 
   return {
     color: PINK,
-    title: "<:019TXTWhite_Yes:1521327983279996999> Perks System Panel",
-    description: `### <:019TXTWhite_Yes:1521327983279996999>  Boost Protection & Messages\n\n\`\`\`ansi\n${lines}\n\`\`\`\n*Use the buttons below to edit each section.*`,
-    footer: { text: "✨ sensational • white edition • owner only" },
+    title: "Perks System Panel",
+    description: `###  Boost Protection & Messages\n\n\`\`\`ansi\n${lines}\n\`\`\`\n*Use the buttons below to edit each section.*`,
+    footer: { text: "sensational • white edition • owner only" },
     timestamp: new Date(),
   };
 }
@@ -3576,15 +3575,15 @@ function buildPerksEmbed() {
 function buildPerksRows() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("perks_servers").setLabel("Servers").setEmoji("<:RUSH_globe:1521415284496273489>").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("perks_roles"  ).setLabel("🎭 Roles").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("perks_channel").setLabel("📣 Ping Channel").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_servers").setLabel("Servers").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_roles"  ).setLabel("Roles").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("perks_channel").setLabel("Ping Channel").setStyle(ButtonStyle.Primary),
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("Boost Message").setEmoji("<:RUSH_comment:1491884212297531572>").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("perks_unboost_msg").setLabel("💔 Unboost Message").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("perks_ping_msg"   ).setLabel("📣 Ping Message").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("Close").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("perks_boost_msg"  ).setLabel("Boost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_unboost_msg").setLabel("Unboost Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_ping_msg"   ).setLabel("Ping Message").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("perks_close"      ).setLabel("Close").setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -3606,7 +3605,7 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton() && !interaction.isModalSubmit()) return;
   const id = interaction.customId;
   if (!id || !id.startsWith("perks_")) return;
-  if (!isOwner(interaction.user.id)) return interaction.reply({ content: "<:steal:1521327958634135655> Owner only.", flags: 64 });
+  if (!isOwner(interaction.user.id)) return interaction.reply({ content: "Owner only.", flags: 64 });
 
   const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 
@@ -3623,12 +3622,12 @@ client.on("interactionCreate", async (interaction) => {
   // ── Close ──
   if (id === "perks_close") {
     perksSessions.delete(interaction.user.id);
-    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Perks panel closed." }], components: [] });
+    return interaction.update({ embeds: [{ color: PINK, description: "Perks panel closed." }], components: [] });
   }
 
   // ── Modal: Servers ──
   if (id === "perks_servers") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("✅ Server IDs");
+    const modal = new ModalBuilder().setCustomId("perks_modal_servers").setTitle("Server IDs");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("source_id").setLabel("Source Server ID (where boosts happen)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.sourceGuildId)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("target_id").setLabel("Target / Vault Server ID").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.targetGuildId)),
@@ -3638,7 +3637,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Roles ──
   if (id === "perks_roles") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("✅ Role IDs");
+    const modal = new ModalBuilder().setCustomId("perks_modal_roles").setTitle("Role IDs");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("discord_boost").setLabel("Discord Boost Role ID (auto-given by Discord)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.discordBoostRoleId)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("custom_boost").setLabel("Custom Boost Role ID (bot gives this)").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.boostRoleId)),
@@ -3650,7 +3649,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Ping Channel ──
   if (id === "perks_channel") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("✅ Ping Channel");
+    const modal = new ModalBuilder().setCustomId("perks_modal_channel").setTitle("Ping Channel");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_channel").setLabel("Channel ID for silent boost ping").setStyle(TextInputStyle.Short).setRequired(true).setValue(perksSystemConfig.pingChannelId)),
     );
@@ -3659,7 +3658,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Boost message ──
   if (id === "perks_boost_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("✅ Boost DM Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_boost_msg").setTitle("Boost DM Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("boost_msg").setLabel("Message sent to user when they boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.boost).setMaxLength(1800)),
     );
@@ -3668,7 +3667,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Unboost message ──
   if (id === "perks_unboost_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("✅ Unboost DM Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_unboost_msg").setTitle("Unboost DM Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("unboost_msg").setLabel("Message sent when user removes boost. Use {user}").setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(customMessages.unboost).setMaxLength(1800)),
     );
@@ -3677,7 +3676,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Modal: Ping message ──
   if (id === "perks_ping_msg") {
-    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("✅ Ping Message");
+    const modal = new ModalBuilder().setCustomId("perks_modal_ping_msg").setTitle("Ping Message");
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("ping_msg").setLabel("Message posted in ping channel. Use {user}").setStyle(TextInputStyle.Short).setRequired(true).setValue(customMessages.ping)),
     );
@@ -3691,13 +3690,13 @@ client.on("interactionCreate", async (interaction) => {
     const srcId = interaction.fields.getTextInputValue("source_id").trim();
     const tgtId = interaction.fields.getTextInputValue("target_id").trim();
     if (!isValidSnowflake(srcId) || !isValidSnowflake(tgtId)) {
-      return interaction.reply({ content: "<:steal:1521327958634135655> Invalid server ID(s). IDs must be Discord snowflakes (15–20 digit numbers only).", flags: 64 });
+      return interaction.reply({ content: "Invalid server ID(s). IDs must be Discord snowflakes (15–20 digit numbers only).", flags: 64 });
     }
     perksSystemConfig.sourceGuildId = srcId;
     perksSystemConfig.targetGuildId = tgtId;
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Server IDs updated.", flags: 64 });
+    return interaction.reply({ content: "Server IDs updated.", flags: 64 });
   }
 
   if (id === "perks_modal_roles") {
@@ -3707,35 +3706,35 @@ client.on("interactionCreate", async (interaction) => {
     perksSystemConfig.deniedRoleId       = interaction.fields.getTextInputValue("denied_role").trim();
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Role IDs updated.", flags: 64 });
+    return interaction.reply({ content: "Role IDs updated.", flags: 64 });
   }
 
   if (id === "perks_modal_channel") {
     perksSystemConfig.pingChannelId = interaction.fields.getTextInputValue("ping_channel").trim();
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Ping channel updated.", flags: 64 });
+    return interaction.reply({ content: "Ping channel updated.", flags: 64 });
   }
 
   if (id === "perks_modal_boost_msg") {
     customMessages.boost = interaction.fields.getTextInputValue("boost_msg");
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Boost message updated.", flags: 64 });
+    return interaction.reply({ content: "Boost message updated.", flags: 64 });
   }
 
   if (id === "perks_modal_unboost_msg") {
     customMessages.unboost = interaction.fields.getTextInputValue("unboost_msg");
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Unboost message updated.", flags: 64 });
+    return interaction.reply({ content: "Unboost message updated.", flags: 64 });
   }
 
   if (id === "perks_modal_ping_msg") {
     customMessages.ping = interaction.fields.getTextInputValue("ping_msg");
     await saveAllConfigs();
     await refreshPanel(interaction);
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Ping message updated.", flags: 64 });
+    return interaction.reply({ content: "Ping message updated.", flags: 64 });
   }
 });
 
@@ -3774,8 +3773,8 @@ client.on("messageCreate", async (message) => {
     log(`[clone] panel sent OK — msgId=${sent.id}`, "success");
   } catch (e) {
     log(`[clone] CRASH: ${e.message}\n${e.stack}`, "error");
-    message.reply({ content: `<:steal:1521327958634135655> Clone panel error: \`${e.message}\`` }).catch(() =>
-      message.channel.send({ content: `<:steal:1521327958634135655> Clone panel error: \`${e.message}\`` }).catch(() => {})
+    message.reply({ content: `Clone panel error: \`${e.message}\`` }).catch(() =>
+      message.channel.send({ content: `Clone panel error: \`${e.message}\`` }).catch(() => {})
     );
   }
 });
@@ -3805,7 +3804,7 @@ client.on("messageCreate", async (message) => {
     log(`[servers] gathering ${guilds.length} guild(s)...`, "info");
 
     const statusMsg = await message.reply({
-      embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
+      embeds: [{ color: PINK, description: `Gathering **${guilds.length}** server${guilds.length === 1 ? "" : "s"} + invites — this can take a moment...` }],
     }).catch((e) => { log(`[servers] initial reply FAILED: ${e.message}`, "error"); return null; });
 
     // For each guild, reuse an existing invite if one is visible, otherwise
@@ -3837,10 +3836,10 @@ client.on("messageCreate", async (message) => {
       const inviteUrl = await getInvite(g);
       lines.push(
         `**${i + 1}. ${g.name}**  \`${g.memberCount} members\`\n` +
-        `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · <:steal:1521327958634135655> no invite available"}`
+        `ID: \`${g.id}\`${inviteUrl ? ` · [Join server](${inviteUrl})` : " · no invite available"}`
       );
       if (statusMsg && i % 20 === 19) {
-        await statusMsg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> Gathering invites... **${i + 1}/${guilds.length}**` }] }).catch(() => {});
+        await statusMsg.edit({ embeds: [{ color: PINK, description: `Gathering invites... **${i + 1}/${guilds.length}**` }] }).catch(() => {});
       }
     }
 
@@ -3851,7 +3850,7 @@ client.on("messageCreate", async (message) => {
 
     const firstBatch = chunks.slice(0, 10).map((chunk, idx) => ({
       color: PINK,
-      title: idx === 0 ? `<:RUSH_globe:1521415284496273489>  Servers (${guilds.length})` : undefined,
+      title: idx === 0 ? ` Servers (${guilds.length})` : undefined,
       description: chunk.join("\n\n"),
     }));
 
@@ -3866,8 +3865,8 @@ client.on("messageCreate", async (message) => {
     log(`[servers] done — listed ${guilds.length} guild(s)`, "success");
   } catch (e) {
     log(`[servers] CRASH: ${e.message}\n${e.stack}`, "error");
-    message.reply({ content: `<:steal:1521327958634135655> Servers list error: \`${e.message}\`` }).catch(() =>
-      message.channel.send({ content: `<:steal:1521327958634135655> Servers list error: \`${e.message}\`` }).catch(() => {})
+    message.reply({ content: `Servers list error: \`${e.message}\`` }).catch(() =>
+      message.channel.send({ content: `Servers list error: \`${e.message}\`` }).catch(() => {})
     );
   }
 });
@@ -3895,11 +3894,11 @@ client.on("messageCreate", async (message) => {
     const minutes = parseInt(args[2]) || 60;
     const reason = args.slice(3).join(" ") || "Temporary ban";
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    ok(message, `<:019TXTWhite_Yes:1521327983279996999> Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
+    ok(message, `Tempbanned **${target.user.username}** for ${minutes} minutes | ${reason}`);
     purgeUserMessages(message.guild, target.id);
     setTimeout(async () => {
       await message.guild.bans.remove(target.id).catch(() => {});
-      message.channel.send(`<:RUSH_unlock:1521415218037526641> **${target.user.username}**'s tempban has expired.`).catch(() => {});
+      message.channel.send(`**${target.user.username}**'s tempban has expired.`).catch(() => {});
     }, minutes * 60 * 1000);
   }
 
@@ -3914,7 +3913,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     await message.guild.bans.remove(target.id).catch(() => null);
-    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    const softPurgeMsg = await ok(message, `softbanned **${target.user.username}** | ${reason} — deleting messages...`);
     purgeUserMessages(message.guild, target.id, softPurgeMsg);
     return;
   }
@@ -3930,7 +3929,7 @@ client.on("messageCreate", async (message) => {
     recentBoosters.delete(target.id);
     await target.ban({ reason, deleteMessageSeconds: 604800 }).catch(() => null);
     addCase(message.guild.id, 'hardban', target.id, message.author.id, reason);
-    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    const hbPurgeMsg = await ok(message, `hardbanned **${target.user.username}** | ${reason} — deleting messages...`);
     purgeUserMessages(message.guild, target.id, hbPurgeMsg);
     return;
   }
@@ -3946,7 +3945,7 @@ client.on("messageCreate", async (message) => {
     const jailRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailRole) return err(message, "No role named `jailed` found. Create it first.");
     await target.roles.add(jailRole).catch(() => null);
-    try { await target.user.send(`<:RUSH_unlock:1521415218037526641> You have been jailed in **${message.guild.name}**: ${reason}`); } catch {}
+    try { await target.user.send(`You have been jailed in **${message.guild.name}**: ${reason}`); } catch {}
     return ok(message, `jailed **${target.user.username}** | ${reason}`);
   }
 
@@ -4004,7 +4003,7 @@ client.on("messageCreate", async (message) => {
     if (list.length === 0) return ok(message, `**${target.username}** has no warnings.`);
     const embed = {
       color: PINK,
-      title: `<:RUSH_warning:1521415214799654985> Warnings for ${target.username}`,
+      title: `Warnings for ${target.username}`,
       description: list.map((w, i) => `**${i + 1}.** ${w.reason} — by ${w.mod} (${w.date})`).join("\n")
     };
     return message.reply({ embeds: [embed] });
@@ -4068,14 +4067,14 @@ client.on("messageCreate", async (message) => {
     if (sub === "on" || sub === "enable") {
       moderationEnabled.set(message.guild.id, true);
       saveAllConfigs();
-      return ok(message, "moderation **enabled** <:019TXTWhite_Yes:1521327983279996999>");
+      return ok(message, "moderation **enabled**");
     }
 
     // ,moderation off
     if (sub === "off" || sub === "disable") {
       moderationEnabled.set(message.guild.id, false);
       saveAllConfigs();
-      return ok(message, "moderation **disabled** <:steal:1521327958634135655>");
+      return ok(message, "moderation **disabled**");
     }
 
     // ,moderation add <command> — adds a command to the per-guild block list
@@ -4105,9 +4104,9 @@ client.on("messageCreate", async (message) => {
       const defaultList = [...MOD_COMMANDS].map(c => `\`,${c}\``).join(" ");
       return message.reply({ embeds: [{
         color: PINK,
-        title: "<:RUSH_caution:1521415278355808297> Moderation Block List",
+        title: "Moderation Block List",
         description: [
-          `**Status:** ${isOn ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off"}`,
+          `**Status:** ${isOn ? "On" : "Off"}`,
           "",
           "**Default blocked commands** *(when moderation is off)*",
           defaultList,
@@ -4129,9 +4128,9 @@ client.on("messageCreate", async (message) => {
       : "no custom commands";
     return message.reply({ embeds: [{
       color: PINK,
-      title: "<:RUSH_caution:1521415278355808297> Moderation",
+      title: "Moderation",
       description: [
-        `**Status:** ${isOn ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled"}`,
+        `**Status:** ${isOn ? "Enabled" : "Disabled"}`,
         `**Custom block list:** ${customLine}`,
         "",
         "`moderation on/off` — toggle",
@@ -4166,12 +4165,12 @@ client.on("messageCreate", async (message) => {
       .filter(([k]) => k.startsWith(message.guild.id))
       .sort((a, b) => (b[1].level * 1000 + b[1].xp) - (a[1].level * 1000 + a[1].xp))
       .slice(0, 10);
-    if (guildEntries.length === 0) return message.reply("<:RUSH_list:1521415268000337961> No XP data yet.");
+    if (guildEntries.length === 0) return message.reply("No XP data yet.");
     const lines = guildEntries.map(([k, d], i) => {
       const userId = k.split("-")[1];
       return `**${i + 1}.** <@${userId}> — Level ${d.level} (${d.xp} XP)`;
     });
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_trophy:1521415294441226271> XP Leaderboard", description: lines.join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "XP Leaderboard", description: lines.join("\n") }] });
   }
 
   // ,setlevel <user> <level>
@@ -4202,7 +4201,7 @@ client.on("messageCreate", async (message) => {
   if (command === "balance" || command === "bal") {
     const target = message.mentions.users.first() || message.author;
     const bal = economy.get(target.id) || 0;
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_dollar:1521415308206669926> ${target.username}'s Balance`, description: `**${bal}** coins` }] });
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Balance`, description: `**${bal}** coins` }] });
   }
 
   // ,daily
@@ -4212,7 +4211,7 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     if (last && now - last < 86400000) {
       const remaining = Math.ceil((86400000 - (now - last)) / 3600000);
-      return info(message, `<:RUSH_clock:1521415225058791454> You already claimed your daily. Come back in **${remaining}h**.`);
+      return info(message, `You already claimed your daily. Come back in **${remaining}h**.`);
     }
     const current = economy.get(message.author.id) || 0;
     economy.set(message.author.id, current + 500);
@@ -4244,7 +4243,7 @@ client.on("messageCreate", async (message) => {
     if (bal < amount) return err(message, "Insufficient funds.");
     const win = Math.random() < 0.5;
     economy.set(message.author.id, win ? bal + amount : bal - amount);
-    return message.reply(win ? `<:RUSH_giveaway:1521415256772186132> You won **${amount} coins**! Balance: **${bal + amount}**` : `😔 You lost **${amount} coins**. Balance: **${bal - amount}**`);
+    return message.reply(win ? `You won **${amount} coins**! Balance: **${bal + amount}**` : `You lost **${amount} coins**. Balance: **${bal - amount}**`);
   }
 
   // ,blackjack / ,bj <amount>
@@ -4269,9 +4268,9 @@ client.on("messageCreate", async (message) => {
       .filter(([k]) => !k.startsWith("daily-"))
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10);
-    if (entries.length === 0) return message.reply("<:RUSH_list:1521415268000337961> No economy data yet.");
+    if (entries.length === 0) return message.reply("No economy data yet.");
     const lines = entries.map(([id, bal], i) => `**${i + 1}.** <@${id}> — **${bal}** coins`);
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_dollar:1521415308206669926> Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Rich List", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // -- REMINDERS --------------------------------------------
@@ -4289,15 +4288,15 @@ client.on("messageCreate", async (message) => {
     list.push({ time: Date.now() + ms, text, channelId: message.channel.id });
     remindersData.set(message.author.id, list);
     saveReminders();
-    return info(message, `<:RUSH_clock:1521415225058791454> I'll remind you in **${timeStr}**: ${text}`);
+    return info(message, `I'll remind you in **${timeStr}**: ${text}`);
   }
 
   // ,reminders
   if (command === "reminders") {
     const list = remindersData.get(message.author.id) || [];
-    if (list.length === 0) return message.reply("<:RUSH_task:1521415237813665813> You have no active reminders.");
+    if (list.length === 0) return message.reply("You have no active reminders.");
     const lines = list.map((r, i) => `**${i + 1}.** ${r.text} — <t:${Math.floor(r.time / 1000)}:R>`);
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_clock:1521415225058791454> Your Reminders", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Your Reminders", description: lines.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // -- GIVEAWAYS --------------------------------------------
@@ -4314,7 +4313,7 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
     const ms = parseInt(match[1]) * units[match[2]];
     const endTime = Date.now() + ms;
-    const embed = { color: PINK, title: "<:RUSH_giveaway:1521415256772186132> GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with <:RUSH_giveaway:1521415256772186132> to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.username}` } };
+    const embed = { color: PINK, title: "GIVEAWAY", description: `**Prize:** ${prize}\n\nReact with to enter!\n\nEnds: <t:${Math.floor(endTime / 1000)}:R>`, footer: { text: `Hosted by ${message.author.username}` } };
     const msg = await message.channel.send({ embeds: [embed] });
     await msg.react("1491885329978888212");
     giveaways.set(msg.id, { prize, endTime, entries: [], channelId: message.channel.id, guildId: message.guild.id, ended: false });
@@ -4398,13 +4397,13 @@ client.on("messageCreate", async (message) => {
     if (!input || input === "view") {
       const current = embedColors.get(message.guild.id);
       const hex = current ? `#${current.toString(16).toUpperCase().padStart(6, "0")}` : "#FF69B4 (default pink)";
-      return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "🎨 Embed Color", description: `Current color: **${hex}**\n\nUse \`,embedcolor #RRGGBB\` to change it.\nUse \`,embedcolor reset\` to go back to default pink.`, thumbnail: { url: `https://singlecolorimage.com/get/${(current ?? PINK).toString(16).padStart(6,"0")}/64x64` } }] });
+      return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "Embed Color", description: `Current color: **${hex}**\n\nUse \`,embedcolor #RRGGBB\` to change it.\nUse \`,embedcolor reset\` to go back to default pink.`, thumbnail: { url: `https://singlecolorimage.com/get/${(current ?? PINK).toString(16).padStart(6,"0")}/64x64` } }] });
     }
 
     if (input === "reset" || input === "default") {
       embedColors.delete(message.guild.id);
       saveAllConfigs();
-      return message.reply({ embeds: [{ color: PINK, title: "🎨 Embed Color Reset", description: "Embed color reset to default **#FF69B4** (pink)." }] });
+      return message.reply({ embeds: [{ color: PINK, title: "Embed Color Reset", description: "Embed color reset to default **#FF69B4** (pink)." }] });
     }
 
     // Parse hex: accept #RRGGBB or RRGGBB
@@ -4414,7 +4413,7 @@ client.on("messageCreate", async (message) => {
     const colorInt = parseInt(hex, 16);
     embedColors.set(message.guild.id, colorInt);
     saveAllConfigs();
-    return message.reply({ embeds: [{ color: colorInt, title: "🎨 Embed Color Updated", description: `All embeds in this server will now use **#${hex.toUpperCase()}**.` }] });
+    return message.reply({ embeds: [{ color: colorInt, title: "Embed Color Updated", description: `All embeds in this server will now use **#${hex.toUpperCase()}**.` }] });
   }
 
 
@@ -4458,7 +4457,7 @@ client.on("messageCreate", async (message) => {
 
     const threshold = parseInt(args[2]) || 3;
     starboardConfig.set(message.guild.id, { channelId: channel.id, threshold });
-    return ok(message, `Starboard set to ${channel} with threshold **${threshold}** <:awhitestar:1521415243954393159>`);
+    return ok(message, `Starboard set to ${channel} with threshold **${threshold}**`);
   }
 
   // ,setup -- creates jail-log channel and jailed role
@@ -4472,9 +4471,9 @@ client.on("messageCreate", async (message) => {
     let jailedRole = message.guild.roles.cache.find(r => r.name.toLowerCase() === "jailed");
     if (!jailedRole) {
       jailedRole = await message.guild.roles.create({ name: "Jailed", color: "#808080", reason: "Setup by bot" }).catch(() => null);
-      results.push(jailedRole ? `<:019TXTWhite_Yes:1521327983279996999> Created role **Jailed**` : `<:steal:1521327958634135655> Failed to create Jailed role`);
+      results.push(jailedRole ? `Created role **Jailed**` : `Failed to create Jailed role`);
     } else {
-      results.push(`ℹ️ Role **Jailed** already exists`);
+      results.push(`Role **Jailed** already exists`);
     }
 
     // Create jail-log channel if it doesn't exist
@@ -4487,9 +4486,9 @@ client.on("messageCreate", async (message) => {
           { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
         ]
       }).catch(() => null);
-      results.push(jailLog ? `<:019TXTWhite_Yes:1521327983279996999> Created channel **#jail-log**` : `<:steal:1521327958634135655> Failed to create jail-log`);
+      results.push(jailLog ? `Created channel **#jail-log**` : `Failed to create jail-log`);
     } else {
-      results.push(`ℹ️ Channel **#jail-log** already exists`);
+      results.push(`Channel **#jail-log** already exists`);
     }
 
     // Create jail channel if it doesn't exist
@@ -4503,9 +4502,9 @@ client.on("messageCreate", async (message) => {
           { id: message.guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
         ]
       }).catch(() => null);
-      results.push(jailChannel ? `<:019TXTWhite_Yes:1521327983279996999> Created channel **#jail**` : `<:steal:1521327958634135655> Failed to create jail channel`);
+      results.push(jailChannel ? `Created channel **#jail**` : `Failed to create jail channel`);
     } else {
-      results.push(`ℹ️ Channel **#jail** already exists`);
+      results.push(`Channel **#jail** already exists`);
     }
 
     // Apply Jailed role perms to ALL existing channels (deny send + view)
@@ -4521,10 +4520,10 @@ client.on("messageCreate", async (message) => {
         }).catch(() => {});
         applied++;
       }
-      results.push(`<:019TXTWhite_Yes:1521327983279996999> Applied Jailed perms to **${applied}** channels`);
+      results.push(`Applied Jailed perms to **${applied}** channels`);
     }
 
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ,setupmute -- creates muted roles with proper channel overwrites
@@ -4543,10 +4542,10 @@ client.on("messageCreate", async (message) => {
       let role = message.guild.roles.cache.find(r => r.name === cfg.name);
       if (!role) {
         role = await message.guild.roles.create({ name: cfg.name, color: "#808080", reason: "Setupmute by bot" }).catch(() => null);
-        if (!role) { results.push(`<:steal:1521327958634135655> Failed to create **${cfg.name}** role`); continue; }
-        results.push(`<:019TXTWhite_Yes:1521327983279996999> Created role **${cfg.name}**`);
+        if (!role) { results.push(`Failed to create **${cfg.name}** role`); continue; }
+        results.push(`Created role **${cfg.name}**`);
       } else {
-        results.push(`ℹ️ Role **${cfg.name}** already exists`);
+        results.push(`Role **${cfg.name}** already exists`);
       }
       // Apply to all text channels
       let applied = 0;
@@ -4557,7 +4556,7 @@ client.on("messageCreate", async (message) => {
       results.push(`  └ Applied to **${applied}** channels`);
     }
 
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Mute Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Mute Setup Complete", description: results.join("\n"), footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // -- SNIPE ------------------------------------------------
@@ -4566,14 +4565,14 @@ client.on("messageCreate", async (message) => {
   if (command === "snipe" || command === "s") {
     const s = sniped.get(message.channel.id);
     if (!s) return info(message, "nothing to snipe");
-    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, description: s.content, footer: { text: `🌸 deleted at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, description: s.content, footer: { text: `deleted at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
   }
 
   // ,editsnipe
   if (command === "editsnipe" || command === "esnipe" || command === "es") {
     const s = editSniped.get(message.channel.id);
     if (!s) return info(message, "nothing to snipe");
-    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `🌸 edited at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, author: { name: s.author, icon_url: s.avatarURL }, fields: [{ name: "Before", value: s.before }, { name: "After", value: s.after }], footer: { text: `edited at ${s.time.toLocaleTimeString()} • ${message.guild.name}` }, timestamp: new Date() }] });
   }
 
   // -- AFK --------------------------------------------------
@@ -4617,7 +4616,7 @@ client.on("messageCreate", async (message) => {
       const track = data.recenttracks?.track?.[0];
       if (!track) return err(message, "No recent tracks found.");
       const isPlaying = track["@attr"]?.nowplaying === "true";
-      return message.reply({ embeds: [{ color: PINK, author: { name: `${isPlaying ? "▶️ Now Playing" : "⏹️ Last Played"} — ${username}`, icon_url: target.displayAvatarURL() }, title: track.name, description: `by **${track.artist["#text"]}** on *${track.album["#text"]}*`, thumbnail: { url: track.image?.[2]?.["#text"] || "" } }] });
+      return message.reply({ embeds: [{ color: PINK, author: { name: `${isPlaying ? "Now Playing" : "Last Played"} — ${username}`, icon_url: target.displayAvatarURL() }, title: track.name, description: `by **${track.artist["#text"]}** on *${track.album["#text"]}*`, thumbnail: { url: track.image?.[2]?.["#text"] || "" } }] });
     } catch {
       return err(message, "Could not fetch Last.fm data. Make sure to add a Last.fm API key.");
     }
@@ -4633,7 +4632,7 @@ client.on("messageCreate", async (message) => {
       const artists = data.topartists?.artist;
       if (!artists) return err(message, "No data found.");
       const lines = artists.map((a, i) => `**${i + 1}.** ${a.name} — ${a.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Artists for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `Top Artists for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -4647,7 +4646,7 @@ client.on("messageCreate", async (message) => {
       const tracks = data.toptracks?.track;
       if (!tracks) return err(message, "No data found.");
       const lines = tracks.map((t, i) => `**${i + 1}.** ${t.name} by ${t.artist.name} — ${t.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Tracks for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `Top Tracks for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -4661,7 +4660,7 @@ client.on("messageCreate", async (message) => {
       const albums = data.topalbums?.album;
       if (!albums) return err(message, "No data found.");
       const lines = albums.map((a, i) => `**${i + 1}.** ${a.name} by ${a.artist.name} — ${a.playcount} plays`);
-      return message.reply({ embeds: [{ color: PINK, title: `<:musicnote:1521415310941618208> Top Albums for ${username}`, description: lines.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: `Top Albums for ${username}`, description: lines.join("\n") }] });
     } catch { return err(message, "Could not fetch Last.fm data."); }
   }
 
@@ -4713,7 +4712,7 @@ async function resumeMassDMIfNeeded() {
     log(`[MassDM] Resuming — ${remaining} users left from index ${activeMassDM.startIndex}`, "info");
     const notifyCh = client.channels.cache.get(activeMassDM.channelId);
     if (notifyCh) {
-      await notifyCh.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n<a:Loading:1521415253982969898> **${remaining}** users remaining (${activeMassDM.sent} sent, ${activeMassDM.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
+      await notifyCh.send({ embeds: [{ color: PINK, title: "Mass DM Resumed", description: `Bot restarted — resuming mass DM from where it stopped.\n**${remaining}** users remaining (${activeMassDM.sent} sent, ${activeMassDM.failed} failed so far)`, footer: { text: "Continuing..." } }] }).catch(() => {});
     }
     runMassDM(activeMassDM);
   } catch (e) {
@@ -4736,8 +4735,8 @@ async function runMassDM(state) {
   const total = targetIds.length;
 
   const statusMsg = statusCh ? await statusCh.send({ embeds: [{ color: PINK,
-    title: "<:RUSH_comment:1491884212297531572> Mass DM in progress...",
-    description: `Sending to **${total - startIndex}** remaining members (${startIndex > 0 ? `resumed from #${startIndex}` : 'started fresh'})\n\n<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${total - startIndex}**`,
+    title: "Mass DM in progress...",
+    description: `Sending to **${total - startIndex}** remaining members (${startIndex > 0 ? `resumed from #${startIndex}` : 'started fresh'})\n\nSent: **${sent}** | Failed: **${failed}** | Remaining: **${total - startIndex}**`,
     footer: { text: "React to cancel" }
   }] }).catch(() => null) : null;
 
@@ -4758,8 +4757,8 @@ async function runMassDM(state) {
     const remaining = total - startIndex;
     const eta = rate > 0 ? Math.ceil(remaining / rate) : "?";
     await statusMsg.edit({ embeds: [{ color: PINK,
-      title: "<:RUSH_comment:1491884212297531572> Mass DM in progress...",
-      description: `<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${remaining}**\n<:RUSH_thunder:1521415273943400580> **${rate.toFixed(1)}/s** | <:RUSH_clock:1521415225058791454> ETA: **${typeof eta === "number" ? eta + "s" : eta}**\n<:RUSH_pin:1521415247183872080> Progress saved — safe to restart`,
+      title: "Mass DM in progress...",
+      description: `Sent: **${sent}** | Failed: **${failed}** | Remaining: **${remaining}**\n**${rate.toFixed(1)}/s** | ETA: **${typeof eta === "number" ? eta + "s" : eta}**\nProgress saved — safe to restart`,
       footer: { text: `Elapsed: ${elapsed}s` }
     }] }).catch(() => {});
   };
@@ -4775,7 +4774,7 @@ async function runMassDM(state) {
         const user = await client.users.fetch(userId).catch(() => null);
         if (!user) { failed++; done = true; break; }
         await user.send({ embeds: [{ color: PINK,
-          title: `<:RUSH_comment:1491884212297531572> Message from ${guild?.name || "Server"}`,
+          title: `Message from ${guild?.name || "Server"}`,
           description: dmText,
           footer: { text: guild?.name || "Server" },
           timestamp: new Date()
@@ -4817,8 +4816,8 @@ async function runMassDM(state) {
 
   const elapsed = Math.floor((Date.now() - startTime) / 1000);
   if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK,
-    title: cancelled ? "<:RUSH_comment:1491884212297531572> Mass DM cancelled" : "<:RUSH_comment:1491884212297531572> Mass DM complete <:019TXTWhite_Yes:1521327983279996999>",
-    description: `<:019TXTWhite_Yes:1521327983279996999> Sent: **${sent}** | <:steal:1521327958634135655> Failed (DMs off): **${failed}**${rateLimited > 0 ? ` | <:RUSH_thunder:1521415273943400580> Rate limited: **${rateLimited}x**` : ""}\n<:RUSH_clock:1521415225058791454> Total time: **${elapsed}s** | 👥 Total: **${total}**`,
+    title: cancelled ? "Mass DM cancelled" : "Mass DM complete",
+    description: `Sent: **${sent}** | Failed (DMs off): **${failed}**${rateLimited > 0 ? ` | Rate limited: **${rateLimited}x**` : ""}\nTotal time: **${elapsed}s** | Total: **${total}**`,
     footer: { text: guild?.name || "Server" }, timestamp: new Date()
   }] }).catch(() => {});
 
@@ -4851,10 +4850,10 @@ async function closeNoResponseTicket(channelId, activity) {
       if (chId === channelId) { openTickets.delete(key); break; }
     }
     await new Promise(r => setTimeout(r, 5000));
-    await ch.delete("[Auto-Delete] No response in 30min").catch(e => log(`[Tickets] <:steal:1521327958634135655> Delete FAILED: ${e.message}`, "error"));
-    log(`[Tickets] <:019TXTWhite_Yes:1521327983279996999> Auto-deleted ${ch.name} (no creator response in 30min)`, "success");
+    await ch.delete("[Auto-Delete] No response in 30min").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] Auto-deleted ${ch.name} (no creator response in 30min)`, "success");
   } catch (e) {
-    log(`[Tickets] <:steal:1521327958634135655> closeNoResponseTicket error ${channelId}: ${e.message}`, "error");
+    log(`[Tickets] closeNoResponseTicket error ${channelId}: ${e.message}`, "error");
     ticketActivity.delete(channelId);
   }
 }
@@ -4872,17 +4871,17 @@ async function closeInactiveTicket(channelId, activity) {
 
     // DM creator
     client.users.fetch(activity.creatorId).then(creator => {
-      creator.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **2 hours** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      creator.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **2 hours** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
     }).catch(() => {});
 
     // Send warning in channel
-    await ch.send({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **2 hours** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
+    await ch.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **2 hours** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
 
     // Log
     const cfg = ticketConfig.get(guild.id);
     if (cfg?.logChannelId) {
       const logCh = guild.channels.cache.get(cfg.logChannelId);
-      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "<:RUSH_ticket:1521415234802417754> Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **2 hours** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **2 hours** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
     }
 
     // Cleanup
@@ -4894,10 +4893,10 @@ async function closeInactiveTicket(channelId, activity) {
 
     // Delete channel immediately (await so we know if it works)
     await new Promise(r => setTimeout(r, 5000));
-    await ch.delete("[Auto-Close] Inactive 2h").catch(e => log(`[Tickets] <:steal:1521327958634135655> Delete FAILED: ${e.message}`, "error"));
-    log(`[Tickets] <:019TXTWhite_Yes:1521327983279996999> Deleted ${ch.name}`, "success");
+    await ch.delete("[Auto-Close] Inactive 2h").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] Deleted ${ch.name}`, "success");
   } catch (e) {
-    log(`[Tickets] <:steal:1521327958634135655> Error closing ${channelId}: ${e.message}`, "error");
+    log(`[Tickets] Error closing ${channelId}: ${e.message}`, "error");
     ticketActivity.delete(channelId);
   }
 }
@@ -5053,7 +5052,7 @@ client.on("messageCreate", async (message) => {
         lastActivity: Date.now(),
         closing: false
       });
-      await ticketChannel.send({ embeds: [{ color: PINK, title: "<:RUSH_ticket:1521415234802417754> Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\n<:RUSH_warning:1521415214799654985> This ticket will be **automatically closed** if you don't respond within **2 hours**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
+      await ticketChannel.send({ embeds: [{ color: PINK, title: "Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\nThis ticket will be **automatically closed** if you don't respond within **2 hours**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
       return ok(message, `ticket created: ${ticketChannel}`);
     }
     if (sub === "close") {
@@ -5105,9 +5104,9 @@ client.on("messageCreate", async (message) => {
 
     const botChoice = choices[Math.floor(Math.random() * 3)];
     let result;
-    if (userChoice === botChoice) result = "🤝 It's a tie!";
-    else if ((userChoice === "rock" && botChoice === "scissors") || (userChoice === "paper" && botChoice === "rock") || (userChoice === "scissors" && botChoice === "paper")) result = "<:RUSH_giveaway:1521415256772186132> You win!";
-    else result = "😔 You lose!";
+    if (userChoice === botChoice) result = "It's a tie!";
+    else if ((userChoice === "rock" && botChoice === "scissors") || (userChoice === "paper" && botChoice === "rock") || (userChoice === "scissors" && botChoice === "paper")) result = "You win!";
+    else result = "You lose!";
     return info(message, `You: **${userChoice}** | Me: **${botChoice}** — ${result}`);
   }
 
@@ -5124,7 +5123,7 @@ client.on("messageCreate", async (message) => {
       const wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
       return wins.some(([a,b,c]) => board[a] === board[b] && board[b] === board[c] && ["X","O"].includes(board[a]));
     };
-    const msg = await message.channel.send(`🎮 TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
+    const msg = await message.channel.send(`TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
     const collector = message.channel.createMessageCollector({ filter: m => players.includes(m.author.id) && /^[1-9]$/.test(m.content), time: 60000 });
     collector.on("collect", async m => {
       if (m.author.id !== players[turn]) return;
@@ -5132,12 +5131,12 @@ client.on("messageCreate", async (message) => {
       if (["X","O"].includes(board[pos])) return;
       board[pos] = turn === 0 ? "X" : "O";
       m.delete().catch(() => {});
-      if (checkWin()) { collector.stop(); return msg.edit(`🎮 TicTacToe\n\`\`\`${render()}\`\`\`\n<:RUSH_giveaway:1521415256772186132> <@${players[turn]}> wins!`); }
-      if (!board.includes(...["1","2","3","4","5","6","7","8","9"].filter(n => board.includes(n)))) { collector.stop(); return msg.edit(`🎮 TicTacToe\n\`\`\`${render()}\`\`\`\n🤝 It's a draw!`); }
+      if (checkWin()) { collector.stop(); return msg.edit(`TicTacToe\n\`\`\`${render()}\`\`\`\n<@${players[turn]}> wins!`); }
+      if (!board.includes(...["1","2","3","4","5","6","7","8","9"].filter(n => board.includes(n)))) { collector.stop(); return msg.edit(`TicTacToe\n\`\`\`${render()}\`\`\`\nIt's a draw!`); }
       turn = turn === 0 ? 1 : 0;
-      msg.edit(`🎮 TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
+      msg.edit(`TicTacToe: <@${players[0]}> vs <@${players[1]}>\n<@${players[turn]}>'s turn (${turn === 0 ? "X" : "O"})\n\`\`\`${render()}\`\`\``);
     });
-    collector.on("end", (_, reason) => { if (reason === "time") msg.edit(`<:RUSH_clock:1521415225058791454> Game timed out.\n\`\`\`${render()}\`\`\``); });
+    collector.on("end", (_, reason) => { if (reason === "time") msg.edit(`Game timed out.\n\`\`\`${render()}\`\`\``); });
   }
 
   // ,hack <@user> -- joke command
@@ -5146,11 +5145,11 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument");
 
     const steps = [
-      { color: PINK, description: `🔍 Finding IP of **${target.username}**...` },
-      { color: PINK, description: `💻 Accessing mainframe...` },
-      { color: PINK, description: `<:RUSH_unlock:1521415218037526641> Bypassing firewall...` },
-      { color: PINK, description: `<:RUSH_folder:1521415227495940096> Stealing data...` },
-      { color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Successfully hacked **${target.username}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
+      { color: PINK, description: `Finding IP of **${target.username}**...` },
+      { color: PINK, description: `Accessing mainframe...` },
+      { color: PINK, description: `Bypassing firewall...` },
+      { color: PINK, description: `Stealing data...` },
+      { color: PINK, description: `Successfully hacked **${target.username}**!\nPassword: \`password123\` | Email: \`${target.username}@gmail.com\`` },
     ];
     let i = 0;
     const m = await message.reply({ embeds: [steps[0]] });
@@ -5167,7 +5166,7 @@ client.on("messageCreate", async (message) => {
     const u2 = [...message.mentions.users.values()][1] || message.author;
     const score = Math.floor(Math.random() * 101);
     const bar = "█".repeat(Math.floor(score / 10)) + "░".repeat(10 - Math.floor(score / 10));
-    return message.reply({ embeds: [{ color: PINK, title: "💕 Ship", description: `**${u1.username}** 💕 **${u2.username}**\n\n${bar} **${score}%**`, footer: { text: message.guild.name } }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Ship", description: `**${u1.username}** **${u2.username}**\n\n${bar} **${score}%**`, footer: { text: message.guild.name } }] });
   }
 
   // ,pp [user]
@@ -5347,7 +5346,7 @@ client.on("messageCreate", async (message) => {
       const current = data.current_condition[0];
       const area = data.nearest_area[0];
       const name = area.areaName[0].value + ", " + area.country[0].value;
-      return message.reply({ embeds: [{ color: PINK, title: `🌤️ Weather in ${name}`, fields: [{ name: "Condition", value: current.weatherDesc[0].value, inline: true }, { name: "Temp", value: `${current.temp_C}°C / ${current.temp_F}°F`, inline: true }, { name: "Humidity", value: `${current.humidity}%`, inline: true }, { name: "Wind", value: `${current.windspeedKmph} km/h`, inline: true }] }] });
+      return message.reply({ embeds: [{ color: PINK, title: `Weather in ${name}`, fields: [{ name: "Condition", value: current.weatherDesc[0].value, inline: true }, { name: "Temp", value: `${current.temp_C}°C / ${current.temp_F}°F`, inline: true }, { name: "Humidity", value: `${current.humidity}%`, inline: true }, { name: "Wind", value: `${current.windspeedKmph} km/h`, inline: true }] }] });
     } catch { return err(message, "Could not fetch weather data."); }
   }
 
@@ -5373,7 +5372,7 @@ client.on("messageCreate", async (message) => {
       const data = await res.json();
       const def = data.list?.[0];
       if (!def) return err(message, "No definition found.");
-      return message.reply({ embeds: [{ color: PINK, title: def.word, url: def.permalink, description: def.definition.substring(0, 1024), fields: [{ name: "Example", value: def.example.substring(0, 512) || "None" }], footer: { text: `👍 ${def.thumbs_up} | 👎 ${def.thumbs_down}` } }] });
+      return message.reply({ embeds: [{ color: PINK, title: def.word, url: def.permalink, description: def.definition.substring(0, 1024), fields: [{ name: "Example", value: def.example.substring(0, 512) || "None" }], footer: { text: `${def.thumbs_up} | ${def.thumbs_down}` } }] });
     } catch { return err(message, "Could not fetch definition."); }
   }
 
@@ -5455,7 +5454,7 @@ client.on("guildBanAdd", async (ban) => {
     if (cfg.whitelist.has(entry.executor.id)) return;
     if (trackAction(ban.guild.id, entry.executor.id, "ban", cfg.threshold)) {
       await punishUser(ban.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass ban detected`);
-      notifyOwner(ban.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Ban\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(ban.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Ban\n**Punishment:** ${cfg.punishment}`);
     }
   } catch {}
 });
@@ -5473,7 +5472,7 @@ client.on("guildMemberRemove", async (member) => {
     if (entry.target?.id !== member.id) return;
     if (trackAction(member.guild.id, entry.executor.id, "kick", cfg.threshold)) {
       await punishUser(member.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass kick detected`);
-      notifyOwner(member.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Kick\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(member.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Kick\n**Punishment:** ${cfg.punishment}`);
     }
   } catch {}
 });
@@ -5491,7 +5490,7 @@ client.on("channelDelete", async (channel) => {
     if (cfg.whitelist.has(entry.executor.id)) return;
     if (trackAction(channel.guild.id, entry.executor.id, "channelDelete", cfg.threshold)) {
       await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass channel delete`);
-      notifyOwner(channel.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Channel Delete\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Channel Delete\n**Punishment:** ${cfg.punishment}`);
     }
   } catch {}
 });
@@ -5508,7 +5507,7 @@ client.on("roleDelete", async (role) => {
     if (cfg.whitelist.has(entry.executor.id)) return;
     if (trackAction(role.guild.id, entry.executor.id, "roleDelete", cfg.threshold)) {
       await punishUser(role.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass role delete`);
-      notifyOwner(role.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Role Delete\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(role.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Role Delete\n**Punishment:** ${cfg.punishment}`);
     }
   } catch {}
 });
@@ -5525,7 +5524,7 @@ client.on("webhooksUpdate", async (channel) => {
     if (cfg.whitelist.has(entry.executor.id)) return;
     if (trackAction(channel.guild.id, entry.executor.id, "webhook", 1)) {
       await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized webhook`);
-      notifyOwner(channel.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Webhook Created\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Webhook Created\n**Punishment:** ${cfg.punishment}`);
     }
   } catch {}
 });
@@ -5545,7 +5544,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         if (cfg.whitelist.has(entry.executor.id)) return;
         if (trackAction(newMember.guild.id, entry.executor.id, "dangerousRole", cfg.threshold)) {
           await punishUser(newMember.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Dangerous role granted`);
-          notifyOwner(newMember.guild, `<:RUSH_warning:1521415214799654985> **AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Dangerous Role Grant\n**Punishment:** ${cfg.punishment}`);
+          notifyOwner(newMember.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Dangerous Role Grant\n**Punishment:** ${cfg.punishment}`);
         }
       } catch {}
     }
@@ -5567,7 +5566,7 @@ client.on("guildMemberAdd", async (member) => {
   if (joins.length >= cfg.joinThreshold) {
     if (!lockedGuilds.has(guildId)) {
       lockedGuilds.add(guildId);
-      notifyOwner(member.guild, `<:RUSH_warning:1521415214799654985> **AntiRaid** triggered!\n**${joins.length} joins** in ${cfg.joinWindow / 1000}s\n**Action:** ${cfg.action} + lockdown`);
+      notifyOwner(member.guild, `**AntiRaid** triggered!\n**${joins.length} joins** in ${cfg.joinWindow / 1000}s\n**Action:** ${cfg.action} + lockdown`);
       // Lock all channels
       const channels = member.guild.channels.cache.filter(c => c.type === 0);
       for (const ch of channels.values()) {
@@ -5654,7 +5653,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "status" || !sub) {
       const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
-      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_caution:1521415278355808297> AntiNuke Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled", inline: true }, { name: "Punishment", value: cfg.punishment, inline: true }, { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true }, { name: "Whitelist", value: wl }] }] });
+      return message.reply({ embeds: [{ color: PINK, title: "AntiNuke Status", fields: [{ name: "Status", value: cfg.enabled ? "Enabled" : "Disabled", inline: true }, { name: "Punishment", value: cfg.punishment, inline: true }, { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true }, { name: "Whitelist", value: wl }] }] });
     }
     return err(message, "missing required argument");
 
@@ -5703,7 +5702,7 @@ client.on("messageCreate", async (message) => {
       saveAllConfigs();return ok(message, "Server unlocked manually.");
     }
     if (sub === "status" || !sub) {
-      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> AntiRaid Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> Enabled" : "<:steal:1521327958634135655> Disabled", inline: true }, { name: "Action", value: cfg.action, inline: true }, { name: "Threshold", value: `${cfg.joinThreshold} joins`, inline: true }, { name: "Window", value: `${cfg.joinWindow / 1000}s`, inline: true }, { name: "Lockdown Active", value: lockedGuilds.has(message.guild.id) ? "<:RUSH_unlock:1521415218037526641> Yes" : "<:019TXTWhite_Yes:1521327983279996999> No", inline: true }] }] });
+      return message.reply({ embeds: [{ color: PINK, title: "AntiRaid Status", fields: [{ name: "Status", value: cfg.enabled ? "Enabled" : "Disabled", inline: true }, { name: "Action", value: cfg.action, inline: true }, { name: "Threshold", value: `${cfg.joinThreshold} joins`, inline: true }, { name: "Window", value: `${cfg.joinWindow / 1000}s`, inline: true }, { name: "Lockdown Active", value: lockedGuilds.has(message.guild.id) ? "Yes" : "No", inline: true }] }] });
     }
     return err(message, "missing required argument");
 
@@ -5742,13 +5741,13 @@ client.on("messageCreate", async (message) => {
     const nick = args.slice(1).join(" ") || null;
     const members = await message.guild.members.fetch();
     let count = 0;
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Changing nicknames for ${members.size} members...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Changing nicknames for ${members.size} members...` }] });
     for (const m of members.values()) {
       if (m.user.bot || m.id === message.guild.ownerId) continue;
       await m.setNickname(nick).catch(() => {});
       count++;
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Changed nicknames for **${count}** members.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Changed nicknames for **${count}** members.` }] });
   }
 
   // ,massrole <add|remove> <@role> -- add/remove a role from everyone
@@ -5759,7 +5758,7 @@ client.on("messageCreate", async (message) => {
     if (!role || !["add", "remove"].includes(action)) return err(message, "missing required argument");
 
     const members = await message.guild.members.fetch();
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Processing **${members.size}** members...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Processing **${members.size}** members...` }] });
     let count = 0;
     for (const m of members.values()) {
       if (m.user.bot) continue;
@@ -5767,7 +5766,7 @@ client.on("messageCreate", async (message) => {
       else await m.roles.remove(role).catch(() => {});
       count++;
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> ${action === "add" ? "Added" : "Removed"} **${role.name}** for **${count}** members.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + ${action === "add" ? "Added" : "Removed"} **${role.name}** for **${count}** members.` }] });
   }
 
   // ,addr inactive @role-to-add | @required-role1 @required-role2 ...
@@ -5799,11 +5798,11 @@ client.on("messageCreate", async (message) => {
     if (toKick.length === 0) return info(message, `no inactive members found — everyone has at least one of: ${roles.map(r => `**${r.name}**`).join(', ')}`);
 
     return confirm(message,
-      `This will kick **${toKick.length}** members who have NONE of: ${roles.map(r => `**${r.name}**`).join(', ')}\n\n<:RUSH_warning:1521415214799654985> Anyone with even ONE of these roles is safe.`,
+      `This will kick **${toKick.length}** members who have NONE of: ${roles.map(r => `**${r.name}**`).join(', ')}\n\nAnyone with even ONE of these roles is safe.`,
       async () => {
         const statusMsg = await message.channel.send({ embeds: [{ color: PINK,
-          title: "👢 Inactive Kick in progress...",
-          description: `Kicking **${toKick.length}** members...\n\n<:019TXTWhite_Yes:1521327983279996999> Kicked: **0** | <:steal:1521327958634135655> Failed: **0** | <a:Loading:1521415253982969898> Remaining: **${toKick.length}**`,
+          title: "Inactive Kick in progress...",
+          description: `Kicking **${toKick.length}** members...\n\nKicked: **0** | Failed: **0** | Remaining: **${toKick.length}**`,
           footer: { text: "Rate limit safe — 1 kick/s" }
         }] }).catch(() => null);
 
@@ -5832,8 +5831,8 @@ client.on("messageCreate", async (message) => {
 
           if ((kicked + failed) % 25 === 0 && statusMsg) {
             statusMsg.edit({ embeds: [{ color: PINK,
-              title: "👢 Inactive Kick in progress...",
-              description: `<:019TXTWhite_Yes:1521327983279996999> Kicked: **${kicked}** | <:steal:1521327958634135655> Failed: **${failed}** | <a:Loading:1521415253982969898> Remaining: **${toKick.length - kicked - failed}**`,
+              title: "Inactive Kick in progress...",
+              description: `Kicked: **${kicked}** | Failed: **${failed}** | Remaining: **${toKick.length - kicked - failed}**`,
               footer: { text: "Rate limit safe" }
             }] }).catch(() => {});
           }
@@ -5843,8 +5842,8 @@ client.on("messageCreate", async (message) => {
         }
 
         if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK,
-          title: "👢 Inactive Kick complete <:019TXTWhite_Yes:1521327983279996999>",
-          description: `<:019TXTWhite_Yes:1521327983279996999> Kicked: **${kicked}** | <:steal:1521327958634135655> Failed: **${failed}**\nMissing all of: ${roles.map(r => `**${r.name}**`).join(', ')}`,
+          title: "Inactive Kick complete",
+          description: `Kicked: **${kicked}** | Failed: **${failed}**\nMissing all of: ${roles.map(r => `**${r.name}**`).join(', ')}`,
           footer: { text: message.guild.name }, timestamp: new Date()
         }] }).catch(() => {});
 
@@ -5886,16 +5885,16 @@ client.on("messageCreate", async (message) => {
     return confirm(message,
       `This will add **${roleToAdd.name}** to **${inactive.size}** members who don't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`,
       async () => {
-        const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Adding **${roleToAdd.name}** to **${inactive.size}** members...` }] }).catch(() => null);
+        const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `Adding **${roleToAdd.name}** to **${inactive.size}** members...` }] }).catch(() => null);
         let count = 0;
         for (const m of inactive.values()) {
           await m.roles.add(roleToAdd).catch(() => {});
           count++;
           if (count % 25 === 0 && statusMsg) {
-            statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Progress: **${count}/${inactive.size}** members...` }] }).catch(() => {});
+            statusMsg.edit({ embeds: [{ color: PINK, description: `Progress: **${count}/${inactive.size}** members...` }] }).catch(() => {});
           }
         }
-        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999> Done", description: `Added **${roleToAdd.name}** to **${count}** members\nwho didn't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`, footer: { text: message.guild.name }, timestamp: new Date() }] }).catch(() => {});
+        if (statusMsg) statusMsg.edit({ embeds: [{ color: PINK, title: "Done", description: `Added **${roleToAdd.name}** to **${count}** members\nwho didn't have: ${requiredRoles.map(r => `**${r.name}**`).join(' or ')}`, footer: { text: message.guild.name }, timestamp: new Date() }] }).catch(() => {});
       }
     );
   }
@@ -5971,7 +5970,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
     const channel = message.mentions.channels.first() || message.channel;
     await channel.delete().catch(() => null);
-    if (channel.id !== message.channel.id) ok(message, `<:019TXTWhite_Yes:1521327983279996999> Deleted **${channel.name}**`);
+    if (channel.id !== message.channel.id) ok(message, `Deleted **${channel.name}**`);
   }
 
   // ,categorycreate <name>
@@ -5993,9 +5992,9 @@ client.on("messageCreate", async (message) => {
     if (!logs) return err(message, "Could not fetch audit logs.");
     let entries = [...logs.entries.values()];
     if (target) entries = entries.filter(e => e.target?.id === target.id || e.executor?.id === target.id);
-    if (entries.length === 0) return message.reply("<:RUSH_task:1521415237813665813> No recent mod actions found.");
+    if (entries.length === 0) return message.reply("No recent mod actions found.");
     const lines = entries.map(e => `**${e.action}** — by ${e.executor?.username || "Unknown"} on ${e.target?.username || e.target?.id || "Unknown"}\n*${e.reason || "No reason"}*`);
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Mod Logs", description: lines.join("\n\n").substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Mod Logs", description: lines.join("\n\n").substring(0, 4096) }] });
   }
 
   // ,timeout <user> <duration> [reason] -- discord native timeout
@@ -6034,7 +6033,7 @@ client.on("messageCreate", async (message) => {
 
     const ban = await message.guild.bans.fetch(userId).catch(() => null);
     if (!ban) return err(message, "User is not banned.");
-    return message.reply({ embeds: [{ color: PINK, title: `🔨 Ban Info`, fields: [{ name: "User", value: ban.user.username, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Ban Info`, fields: [{ name: "User", value: ban.user.username, inline: true }, { name: "ID", value: ban.user.id, inline: true }, { name: "Reason", value: ban.reason || "No reason" }], thumbnail: { url: ban.user.displayAvatarURL() } }] });
   }
 
   // ,memberinfo <user> -- detailed member info
@@ -6048,7 +6047,7 @@ client.on("messageCreate", async (message) => {
   if (command === "whois") {
     const target = message.mentions.members.first() || await message.guild.members.fetch(args[1]).catch(() => null) || message.member;
     const perms = target.permissions.toArray().slice(0, 5).join(", ");
-    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes <:019TXTWhite_Yes:1521327983279996999>" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
+    return message.reply({ embeds: [{ color: target.displayColor || PINK, title: target.user.username, thumbnail: { url: target.user.displayAvatarURL({ size: 256 }) }, fields: [{ name: "ID", value: target.id, inline: true }, { name: "Nickname", value: target.nickname || "None", inline: true }, { name: "Joined", value: `<t:${Math.floor(target.joinedTimestamp / 1000)}:R>`, inline: true }, { name: "Created", value: `<t:${Math.floor(target.user.createdTimestamp / 1000)}:R>`, inline: true }, { name: "Boosting", value: target.premiumSince ? "Yes" : "No", inline: true }, { name: `Roles (${target.roles.cache.size - 1})`, value: target.roles.cache.filter(r => r.id !== message.guild.id).map(r => `<@&${r.id}>`).slice(0, 8).join(" ") || "None" }, { name: "Key Perms", value: perms || "None" }] }] });
   }
 
   // ,newmembers [count] -- show most recently joined members
@@ -6066,7 +6065,7 @@ client.on("messageCreate", async (message) => {
     const count = Math.min(parseInt(args[1]) || 10, 20);
     const members = (await message.guild.members.fetch()).sort((a, b) => a.joinedTimestamp - b.joinedTimestamp).first(count);
     const lines = members.map((m, i) => `**${i + 1}.** ${m.user.username} — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`);
-    return message.reply({ embeds: [{ color: PINK, title: `👴 Oldest Members`, description: lines.join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Oldest Members`, description: lines.join("\n") }] });
   }
 
   // ,inrole <@role> -- list members with a role
@@ -6084,7 +6083,7 @@ client.on("messageCreate", async (message) => {
     const boosters = message.guild.members.cache.filter(m => m.premiumSince);
     if (boosters.size === 0) return message.reply("No boosters.");
     const list = boosters.map(m => `${m.user.username} — <t:${Math.floor(m.premiumSinceTimestamp / 1000)}:R>`).join("\n");
-    return message.reply({ embeds: [{ color: 0xFF73FA, title: `💜 Boosters (${boosters.size})`, description: list }] });
+    return message.reply({ embeds: [{ color: 0xFF73FA, title: `Boosters (${boosters.size})`, description: list }] });
   }
 
   // ,servericon
@@ -6202,9 +6201,9 @@ client.on("messageCreate", async (message) => {
 
   if (triggered) {
     await message.delete().catch(() => {});
-    const warn = await message.channel.send(`<:RUSH_warning:1521415214799654985> ${message.author} your message was removed: **${triggered}**`);
+    const warn = await message.channel.send(`${message.author} your message was removed: **${triggered}**`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
-    await sendModLog(message.guild, { color: PINK, title: "🤖 AutoMod", fields: [{ name: "User", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
+    await sendModLog(message.guild, { color: PINK, title: "AutoMod", fields: [{ name: "User", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
   }
 });
 
@@ -6226,7 +6225,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.author.bot).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} bot messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} bot messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6236,7 +6235,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.attachments.size > 0 || m.embeds.some(e => e.image)).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} image messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} image messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6246,7 +6245,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => /https?:\/\/[^\s]+/.test(m.content)).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} link messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} link messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6256,7 +6255,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.embeds.length > 0).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} embed messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} embed messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6266,7 +6265,7 @@ client.on("messageCreate", async (message) => {
     const target = message.mentions.users.first() || await client.users.fetch(args[2]).catch(() => null);
     if (!target) return err(message, "missing required argument: **user**\nusage: `,purge user @user`");
 
-    const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Scanning and deleting all messages from **${target.username}**... this may take a moment` }] });
+    const statusMsg = await message.channel.send({ embeds: [{ color: PINK, description: `Scanning and deleting all messages from **${target.username}**... this may take a moment` }] });
 
     let deleted = 0;
     let lastId = undefined;
@@ -6298,13 +6297,13 @@ client.on("messageCreate", async (message) => {
       }
 
       if (deleted > 0 && deleted % 50 === 0) {
-        statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Deleted **${deleted}** messages from **${target.username}** so far...` }] }).catch(() => {});
+        statusMsg.edit({ embeds: [{ color: PINK, description: `Deleted **${deleted}** messages from **${target.username}** so far...` }] }).catch(() => {});
       }
 
       if (batch.size < 100) keepGoing = false;
     }
 
-    await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${deleted}** messages from **${target.username}**` }] }).catch(() => {});
+    await statusMsg.edit({ embeds: [{ color: PINK, description: `deleted **${deleted}** messages from **${target.username}**` }] }).catch(() => {});
     setTimeout(() => statusMsg.delete().catch(() => {}), 5000);
     return;
   }
@@ -6318,7 +6317,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.content.toLowerCase().includes(text.toLowerCase())).first(parseInt(args[3]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages containing **${text}**.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} messages containing **${text}**.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6331,7 +6330,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.content.toLowerCase().startsWith(text.toLowerCase())).first(100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6341,7 +6340,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => m.mentions.users.size > 0).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} messages with mentions.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} messages with mentions.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6351,7 +6350,7 @@ client.on("messageCreate", async (message) => {
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const toDelete = msgs.filter(m => !m.author.bot).first(parseInt(args[2]) || 100);
     await message.channel.bulkDelete(toDelete, true).catch(() => {});
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Deleted ${toDelete.size} human messages.` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: ` + Deleted ${toDelete.size} human messages.` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 
@@ -6387,7 +6386,7 @@ client.on("messageCreate", async (message) => {
       cfg.mentions = !cfg.mentions;
       saveAllConfigs();return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
     }
-    if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "🤖 AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true }, { name: "Links", value: cfg.links ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Invites", value: cfg.invites ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Caps", value: cfg.caps ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Spam", value: cfg.spam ? "<:019TXTWhite_Yes:1521327983279996999>" : "<:steal:1521327958634135655>", inline: true }, { name: "Mentions", value: cfg.mentions ? `<:019TXTWhite_Yes:1521327983279996999> (max ${cfg.maxMentions})` : "<:steal:1521327958634135655>", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
+    if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "On" : "Off", inline: true }, { name: "Links", value: cfg.links ? "" : "", inline: true }, { name: "Invites", value: cfg.invites ? "" : "", inline: true }, { name: "Caps", value: cfg.caps ? "" : "", inline: true }, { name: "Spam", value: cfg.spam ? "" : "", inline: true }, { name: "Mentions", value: cfg.mentions ? `(max ${cfg.maxMentions})` : "", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
     return err(message, "missing required argument");
 
   }
@@ -6435,7 +6434,7 @@ client.on("messageCreate", async (message) => {
     const reason = args.slice(2).join(" ") || "Hackban";
     recentBoosters.delete(userId);
     await message.guild.members.ban(userId, { reason, deleteMessageSeconds: 604800 }).catch(() => null);
-    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — <:RUSH_trash_can:1521415241190215721> deleting messages...`);
+    const hkPurgeMsg = await ok(message, `hackbanned **${userId}** | ${reason} — deleting messages...`);
     purgeUserMessages(message.guild, userId, hkPurgeMsg);
     return;
   }
@@ -6447,7 +6446,7 @@ client.on("messageCreate", async (message) => {
     if (bans.size === 0) return info(message, "No banned users.");
     await confirm(message, `Are you sure you want to **unban all ${bans.size} users**?\n\nThis action is **irreversable**.`, async () => {
       for (const ban of bans.values()) await message.guild.bans.remove(ban.user.id).catch(() => {});
-      message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Unbanned **${bans.size}** users.` }] });
+      message.channel.send({ embeds: [{ color: PINK, description: `Unbanned **${bans.size}** users.` }] });
     });
   }
 
@@ -6476,10 +6475,10 @@ client.on("messageCreate", async (message) => {
     const warnList = warns.get(key) || [];
     const isBanned = await message.guild.bans.fetch(target.id).catch(() => null);
     const fields = [];
-    if (warnList.length > 0) fields.push({ name: `<:RUSH_warning:1521415214799654985> Warns (${warnList.length})`, value: warnList.map((w, i) => `${i + 1}. ${w.reason} — ${w.mod}`).join("\n").substring(0, 1024) });
-    if (isBanned) fields.push({ name: "🔨 Banned", value: isBanned.reason || "No reason" });
+    if (warnList.length > 0) fields.push({ name: `Warns (${warnList.length})`, value: warnList.map((w, i) => `${i + 1}. ${w.reason} — ${w.mod}`).join("\n").substring(0, 1024) });
+    if (isBanned) fields.push({ name: "Banned", value: isBanned.reason || "No reason" });
     if (fields.length === 0) fields.push({ name: "Clean record", value: "No moderation actions found." });
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_task:1521415237813665813> History: ${target.username}`, thumbnail: { url: target.displayAvatarURL() }, fields }] });
+    return message.reply({ embeds: [{ color: PINK, title: `History: ${target.username}`, thumbnail: { url: target.displayAvatarURL() }, fields }] });
   }
 
   // ,clearhistory <@user>
@@ -6604,7 +6603,7 @@ client.on("messageCreate", async (message) => {
     const seconds = parseInt(args[1]) ?? 0;
     const channels = message.guild.channels.cache.filter(c => c.type === 0);
     for (const ch of channels.values()) await ch.setRateLimitPerUser(seconds).catch(() => {});
-    return message.reply(seconds === 0 ? `<:019TXTWhite_Yes:1521327983279996999> Slowmode disabled in all channels.` : `<:019TXTWhite_Yes:1521327983279996999> Slowmode set to **${seconds}s** in all channels.`);
+    return message.reply(seconds === 0 ? `Slowmode disabled in all channels.` : `Slowmode set to **${seconds}s** in all channels.`);
   }
 
   // -- VOICE MODERATION --------------------------------─
@@ -6741,7 +6740,7 @@ client.on("messageCreate", async (message) => {
     if (!invites || invites.size === 0) return message.reply("No active invites.");
     const sorted = invites.sort((a, b) => (b.uses || 0) - (a.uses || 0));
     const list = sorted.map(i => `**discord.gg/${i.code}** — ${i.inviter?.username || "Unknown"} | ${i.uses} uses | expires: ${i.maxAge ? `${i.maxAge / 3600}h` : "never"}`).slice(0, 15).join("\n");
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_comment:1491884212297531572> Invites (${invites.size})`, description: list }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Invites (${invites.size})`, description: list }] });
   }
 
   // ,deleteinvite <code>
@@ -6794,7 +6793,7 @@ client.on("messageCreate", async (message) => {
     ].filter((id, i, arr) => arr.indexOf(id) === i); // dedupe
     if (ids.length === 0) return err(message, "Specifica almeno un utente o ID. Uso: `,massban @user1 @user2 123456789`");
 
-    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `🔨 Banning **${ids.length}** users...` }] });
+    const statusMsg = await message.reply({ embeds: [{ color: PINK, description: `Banning **${ids.length}** users...` }] });
     let banned = 0, failed = 0;
     for (const id of ids) {
       recentBoosters.delete(id);
@@ -6803,7 +6802,7 @@ client.on("messageCreate", async (message) => {
       addCase(message.guild.id, "ban", id, message.author.id, reason);
       if (ok2) purgeUserMessages(message.guild, id); // fire-and-forget per user
     }
-    return statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Massban complete — **${banned}** banned${failed ? `, **${failed}** failed` : ""} — <:RUSH_trash_can:1521415241190215721> messages deleted | ${reason}` }] });
+    return statusMsg.edit({ embeds: [{ color: PINK, description: `Massban complete — **${banned}** banned${failed ? `, **${failed}** failed` : ""} — messages deleted | ${reason}` }] });
   }
 
   // ,masskick <@user1> <@user2> ...
@@ -6812,9 +6811,9 @@ client.on("messageCreate", async (message) => {
     const targets = [...message.mentions.members.values()];
     if (targets.length === 0) return err(message, "missing required argument");
 
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Kicking **${targets.length}** users...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Kicking **${targets.length}** users...` }] });
     for (const t of targets) await t.kick(`[Masskick] by ${message.author.username}`).catch(() => {});
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Kicked **${targets.length}** users.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Kicked **${targets.length}** users.` }] });
   }
 
   // ,timeout all <duration> -- timeout everyone
@@ -6826,12 +6825,12 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000 };
     const ms = parseInt(match[1]) * units[match[2]];
     const members = await message.guild.members.fetch();
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Timing out **${members.size}** members...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Timing out **${members.size}** members...` }] });
     for (const m of members.values()) {
       if (m.user.bot || m.id === message.guild.ownerId) continue;
       await m.timeout(ms).catch(() => {});
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Timed out all members for **${timeStr}**.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Timed out all members for **${timeStr}**.` }] });
   }
 
   // ,untimeoutall
@@ -6865,7 +6864,7 @@ client.on("messageCreate", async (message) => {
     if (!target) return err(message, "missing required argument: **user**");
     const list = notes.get(`${message.guild.id}-${target.id}`) || [];
     if (list.length === 0) return info(message, `no notes for **${target.username}**.`);
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_task:1521415237813665813> Notes: ${target.username}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Notes: ${target.username}`, description: list.map((n, i) => `**${i + 1}.** ${n.text}\n— ${n.mod} (${n.date})`).join("\n\n") }] });
   }
 
   // ,clearnotes <@user>
@@ -6896,7 +6895,7 @@ client.on("messageCreate", async (message) => {
     const logChId = modlogChannel.get(message.guild.id);
     if (logChId) {
       const logCh = message.guild.channels.cache.get(logChId);
-      if (logCh) await logCh.send({ embeds: [{ color: PINK, title: "📢 User Report", fields: [{ name: "Reported User", value: target.username, inline: true }, { name: "Reported By", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: reason }], timestamp: new Date() }] });
+      if (logCh) await logCh.send({ embeds: [{ color: PINK, title: "User Report", fields: [{ name: "Reported User", value: target.username, inline: true }, { name: "Reported By", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: reason }], timestamp: new Date() }] });
     }
     return ok(message, `Report submitted for **${target.username}**`);
   }
@@ -6990,11 +6989,11 @@ setInterval(async () => {
         await guild.setVanityCode(cfg.code).catch(async () => {
           // Can't revert -- notify owner
           const owner = await client.users.fetch(guild.ownerId).catch(() => null);
-          if (owner) await owner.send(`<:RUSH_warning:1521415214799654985> **Vanity Lock Alert!**\nVanity \`${cfg.code}\` was changed and could NOT be restored!\nCurrent: \`${vanityData.code}\``).catch(() => {});
+          if (owner) await owner.send(`**Vanity Lock Alert!**\nVanity \`${cfg.code}\` was changed and could NOT be restored!\nCurrent: \`${vanityData.code}\``).catch(() => {});
         });
         if (cfg.notifyUserId) {
           const u = await client.users.fetch(cfg.notifyUserId).catch(() => null);
-          if (u) await u.send(`<:RUSH_unlock:1521415218037526641> **Vanity Lock**: \`${cfg.code}\` was changed. Attempting to restore...`).catch(() => {});
+          if (u) await u.send(`**Vanity Lock**: \`${cfg.code}\` was changed. Attempting to restore...`).catch(() => {});
         }
       }
     } catch {}
@@ -7020,7 +7019,7 @@ setInterval(async () => {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) continue;
       const ch = guild.channels.cache.get(cfg.channelId);
-      if (ch) ch.send("<:RUSH_clock:1521415225058791454> It's time to **bump** the server! Use `/bump` now!").catch(() => {});
+      if (ch) ch.send("It's time to **bump** the server! Use `/bump` now!").catch(() => {});
     }
   }
 }, 60000);
@@ -7096,7 +7095,7 @@ setInterval(async () => {
         const member = guild.members.cache.get(userId);
         if (!member) continue;
         const ch = guild.channels.cache.get(channelId);
-        if (ch) ch.send(`🎂 Happy Birthday <@${userId}>! <:RUSH_giveaway:1521415256772186132>`).catch(() => {});
+        if (ch) ch.send(`Happy Birthday <@${userId}>!`).catch(() => {});
       }
     }
   }
@@ -7158,7 +7157,7 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "status" || !sub) {
       const vanityData = await message.guild.fetchVanityData().catch(() => null);
-      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_unlock:1521415218037526641> Vanity Lock", fields: [{ name: "Status", value: cfg.locked ? "<:019TXTWhite_Yes:1521327983279996999> Locked" : "<:steal:1521327958634135655> Unlocked", inline: true }, { name: "Locked Code", value: cfg.code ? `discord.gg/${cfg.code}` : "None", inline: true }, { name: "Current Code", value: vanityData?.code ? `discord.gg/${vanityData.code}` : "None", inline: true }] }] });
+      return message.reply({ embeds: [{ color: PINK, title: "Vanity Lock", fields: [{ name: "Status", value: cfg.locked ? "Locked" : "Unlocked", inline: true }, { name: "Locked Code", value: cfg.code ? `discord.gg/${cfg.code}` : "None", inline: true }, { name: "Current Code", value: vanityData?.code ? `discord.gg/${vanityData.code}` : "None", inline: true }] }] });
     }
   }
 
@@ -7241,7 +7240,7 @@ client.on("messageCreate", async (message) => {
   if (command === "warnthresholds") {
     const list = warnThresholds.get(guildId) || [];
     if (list.length === 0) return message.reply("No warn thresholds set.");
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_warning:1521415214799654985> Warn Thresholds", description: list.map(t => `**${t.count}** warns → **${t.action}**`).join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Warn Thresholds", description: list.map(t => `**${t.count}** warns → **${t.action}**`).join("\n") }] });
   }
 
   // -- CUSTOM COMMANDS ----------------------------------─
@@ -7494,9 +7493,9 @@ client.on("messageCreate", async (message) => {
 
     const ch = message.guild.channels.cache.get(chId);
     if (!ch) return err(message, "Confession channel not found.");
-    await ch.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Anonymous Confession", description: text, footer: { text: `Confession #${(counters.get(`${guildId}-confessions`) || { count: 0 }).count + 1}` }, timestamp: new Date() }] });
+    await ch.send({ embeds: [{ color: PINK, title: "Anonymous Confession", description: text, footer: { text: `Confession #${(counters.get(`${guildId}-confessions`) || { count: 0 }).count + 1}` }, timestamp: new Date() }] });
     message.delete().catch(() => {});
-    await message.author.send("<:019TXTWhite_Yes:1521327983279996999> Your confession was submitted anonymously.").catch(() => {});
+    await message.author.send("Your confession was submitted anonymously.").catch(() => {});
   }
 
   // -- BUMP REMINDER ------------------------------------─
@@ -7594,7 +7593,7 @@ client.on("messageCreate", async (message) => {
 
       birthdayData.set(message.author.id, { day, month });
     saveBirthdays();
-      saveAllConfigs();return ok(message, `Birthday set to **${day}/${month}** 🎂`);
+      saveAllConfigs();return ok(message, `Birthday set to **${day}/${month}**`);
     }
     if (sub === "remove") {
       birthdayData.delete(message.author.id);
@@ -7615,7 +7614,7 @@ client.on("messageCreate", async (message) => {
         return `${m.user.username} — **${bd.day}/${bd.month}**`;
       }).slice(0, 20);
       if (list.length === 0) return message.reply("No birthdays set.");
-      return message.reply({ embeds: [{ color: PINK, title: "🎂 Birthdays", description: list.join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: "Birthdays", description: list.join("\n") }] });
     }
     if (sub === "today") {
       const now = new Date();
@@ -7624,7 +7623,7 @@ client.on("messageCreate", async (message) => {
         const bd = birthdayData.get(m.id);
         return bd && bd.day === now.getDate() && bd.month === now.getMonth() + 1;
       });
-      if (today.size === 0) return message.reply("🎂 No birthdays today.");
+      if (today.size === 0) return message.reply("No birthdays today.");
       return info(message, `Today's birthdays: ${today.map(m => m.user.username).join(", ")}`);
     }
     const target = message.mentions.users.first() || message.author;
@@ -7751,7 +7750,7 @@ client.on("messageCreate", async (message) => {
     for (const cat of cats.values()) {
       desc += `**${cat.name}**\n`;
       const children = cat.children.cache.sort((a, b) => a.position - b.position);
-      for (const ch of children.values()) desc += `  ${ch.type === 2 ? "🔊" : "#"} ${ch.name}\n`;
+      for (const ch of children.values()) desc += `  ${ch.type === 2 ? "VC" : "#"} ${ch.name}\n`;
     }
     return message.reply({ embeds: [{ color: PINK, title: `Channels (${message.guild.channels.cache.size})`, description: desc.substring(0, 4096) || "No channels" }] });
   }
@@ -7935,7 +7934,7 @@ client.on("messageCreate", async (message) => {
     const date = dateStr ? new Date(dateStr) : new Date();
     if (isNaN(date)) return err(message, "Invalid date.");
     const ts = Math.floor(date.getTime() / 1000);
-    return message.reply({ embeds: [{ color: PINK, title: "🕐 Timestamps", description: `\`<t:${ts}>\` → <t:${ts}>\n\`<t:${ts}:R>\` → <t:${ts}:R>\n\`<t:${ts}:F>\` → <t:${ts}:F>\n\`<t:${ts}:D>\` → <t:${ts}:D>` }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Timestamps", description: `\`<t:${ts}>\` → <t:${ts}>\n\`<t:${ts}:R>\` → <t:${ts}:R>\n\`<t:${ts}:F>\` → <t:${ts}:F>\n\`<t:${ts}:D>\` → <t:${ts}:D>` }] });
   }
 
   // ,charinfo <text> -- unicode info
@@ -7995,12 +7994,12 @@ client.on("messageCreate", async (message) => {
 
   // ,uppercase <text>
   if (command === "uppercase") {
-    return message.reply(args.slice(1).join(" ").toUpperCase() || "<:steal:1521327958634135655> No text provided.");
+    return message.reply(args.slice(1).join(" ").toUpperCase() || "No text provided.");
   }
 
   // ,lowercase <text>
   if (command === "lowercase") {
-    return message.reply(args.slice(1).join(" ").toLowerCase() || "<:steal:1521327958634135655> No text provided.");
+    return message.reply(args.slice(1).join(" ").toLowerCase() || "No text provided.");
   }
 
   // ,mock <text> -- SpOnGeBoB mOcKiNg
@@ -8011,12 +8010,12 @@ client.on("messageCreate", async (message) => {
     return message.reply(text.split("").map((c, i) => i % 2 === 0 ? c.toLowerCase() : c.toUpperCase()).join(""));
   }
 
-  // ,clap <text> -- add 👏 between words
+  // ,clap <text> -- add between words
   if (command === "clap") {
     const text = args.slice(1).join(" ");
     if (!text) return err(message, "missing required argument");
 
-    return message.reply(text.split(" ").join(" 👏 "));
+    return message.reply(text.split(" ").join(" "));
   }
 
   // ,google <query>
@@ -8056,7 +8055,7 @@ client.on("messageCreate", async (message) => {
       const entry = data[0];
       const meaning = entry.meanings[0];
       const def = meaning.definitions[0];
-      return message.reply({ embeds: [{ color: PINK, title: `📖 ${entry.word}`, fields: [{ name: meaning.partOfSpeech, value: def.definition }, { name: "Example", value: def.example || "None" }] }] });
+      return message.reply({ embeds: [{ color: PINK, title: `${entry.word}`, fields: [{ name: meaning.partOfSpeech, value: def.definition }, { name: "Example", value: def.example || "None" }] }] });
     } catch { return err(message, "Could not fetch definition."); }
   }
 
@@ -8087,7 +8086,7 @@ client.on("messageCreate", async (message) => {
     const url = args[1];
     if (!url) return err(message, "missing required argument");
 
-    return message.reply({ embeds: [{ color: PINK, title: "📸 Screenshot", image: { url: `https://api.apiflash.com/v1/urltoimage?access_key=free&url=${encodeURIComponent(url)}&width=1280&height=720` } }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Screenshot", image: { url: `https://api.apiflash.com/v1/urltoimage?access_key=free&url=${encodeURIComponent(url)}&width=1280&height=720` } }] });
   }
 
   // -- FUN EXTRAS ----------------------------------------
@@ -8098,7 +8097,7 @@ client.on("messageCreate", async (message) => {
     try {
       const res = await fetch("https://meme-api.com/gimme");
       const data = await res.json();
-      return message.reply({ embeds: [{ color: PINK, title: data.title, image: { url: data.url }, footer: { text: `👍 ${data.ups} | r/${data.subreddit} • ${message.guild.name}` } }] });
+      return message.reply({ embeds: [{ color: PINK, title: data.title, image: { url: data.url }, footer: { text: `${data.ups} | r/${data.subreddit} • ${message.guild.name}` } }] });
     } catch { return err(message, "Could not fetch meme."); }
   }
 
@@ -8215,8 +8214,8 @@ client.on("messageCreate", async (message) => {
     ];
     const q = questions[Math.floor(Math.random() * questions.length)];
     const msg = await message.reply({ embeds: [{ color: PINK, title: "Would you rather...", description: q, footer: { text: message.guild.name } }] });
-    await msg.react("1️⃣");
-    await msg.react("2️⃣");
+    await msg.react("1");
+    await msg.react("2");
   }
 
   // ,neverhaveiever
@@ -8264,11 +8263,11 @@ client.on("messageCreate", async (message) => {
 
   // ,slots -- slot machine
   if (command === "slots") {
-    const symbols = ["🍎", "🍋", "🍇", "<:awhitestar:1521415243954393159>", "💎", "7️⃣"];
+    const symbols = ["", "", "", "", "", "7"];
     const s = () => symbols[Math.floor(Math.random() * symbols.length)];
     const r = [s(), s(), s()];
     const win = r[0] === r[1] && r[1] === r[2];
-    return info(message, `${r.join(" | ")}\n${win ? "<:RUSH_giveaway:1521415256772186132> **JACKPOT!**" : "😔 Try again!"}`);
+    return info(message, `${r.join(" | ")}\n${win ? "**JACKPOT!**" : "Try again!"}`);
   }
 
   // ,dice <NdN> -- e.g. ,dice 2d6
@@ -8288,16 +8287,16 @@ client.on("messageCreate", async (message) => {
   // ,numberguess -- start a number guessing game
   if (command === "numberguess" || command === "guess") {
     const secret = Math.floor(Math.random() * 100) + 1;
-    await message.reply("🔢 I'm thinking of a number between 1-100. You have 10 seconds to guess! Type your number:");
+    await message.reply("I'm thinking of a number between 1-100. You have 10 seconds to guess! Type your number:");
     const collector = message.channel.createMessageCollector({ filter: m => m.author.id === message.author.id && !isNaN(m.content), time: 10000, max: 5 });
     let guessed = false;
     collector.on("collect", m => {
       const guess = parseInt(m.content);
-      if (guess === secret) { guessed = true; collector.stop(); message.channel.send(`<:RUSH_giveaway:1521415256772186132> Correct! The number was **${secret}**!`); }
-      else if (guess < secret) message.channel.send("⬆️ Higher!");
-      else message.channel.send("⬇️ Lower!");
+      if (guess === secret) { guessed = true; collector.stop(); message.channel.send(`Correct! The number was **${secret}**!`); }
+      else if (guess < secret) message.channel.send("Higher!");
+      else message.channel.send("Lower!");
     });
-    collector.on("end", () => { if (!guessed) message.channel.send(`<:RUSH_clock:1521415225058791454> Time's up! The number was **${secret}**.`); });
+    collector.on("end", () => { if (!guessed) message.channel.send(`Time's up! The number was **${secret}**.`); });
   }
 
   // -- APPEAL SYSTEM ------------------------------------─
@@ -8310,7 +8309,7 @@ client.on("messageCreate", async (message) => {
     const guildId2 = args[0]; // not used here, but for structure
     // Notify owner
     const owner = await client.users.fetch(message.guild?.ownerId || OWNER_ID).catch(() => null);
-    if (owner) await owner.send({ embeds: [{ color: PINK, title: "<:RUSH_comment:1491884212297531572> Ban Appeal", fields: [{ name: "User", value: `${message.author.username} (${message.author.id})` }, { name: "Reason", value: reason }], timestamp: new Date() }] }).catch(() => {});
+    if (owner) await owner.send({ embeds: [{ color: PINK, title: "Ban Appeal", fields: [{ name: "User", value: `${message.author.username} (${message.author.id})` }, { name: "Reason", value: reason }], timestamp: new Date() }] }).catch(() => {});
     return ok(message, "Your appeal has been submitted.");
   }
 });
@@ -8355,9 +8354,9 @@ client.on("messageCreate", async (message) => {
     const options = parts.slice(1);
     if (!question || options.length < 2) return err(message, "missing required argument");
 
-    const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+    const emojis = ["1","2","3","4","5","6","7","8","9",""];
     const desc = options.map((o, i) => `${emojis[i]} ${o}`).join("\n");
-    const msg = await message.channel.send({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> ${question}`, description: desc, footer: { text: "React to vote!" } }] });
+    const msg = await message.channel.send({ embeds: [{ color: PINK, title: `${question}`, description: desc, footer: { text: "React to vote!" } }] });
     for (let i = 0; i < options.length; i++) await msg.react(emojis[i]);
     pollData.set(msg.id, { question, options, votes: new Map() });
     savePolls();
@@ -8374,13 +8373,13 @@ client.on("messageCreate", async (message) => {
     if (!poll) return err(message, "Poll not found.");
     try {
       const msg = await message.channel.messages.fetch(msgId);
-      const emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+      const emojis = ["1","2","3","4","5","6","7","8","9",""];
       const results = poll.options.map((o, i) => {
         const reaction = msg.reactions.cache.get(emojis[i]);
         return { option: o, votes: (reaction?.count || 1) - 1 };
       }).sort((a, b) => b.votes - a.votes);
       const winner = results[0];
-      await message.channel.send({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> Poll Ended: ${poll.question}`, description: results.map((r, i) => `${i === 0 ? "<:RUSH_trophy:1521415294441226271>" : `${i+1}.`} **${r.option}** — ${r.votes} votes`).join("\n") }] });
+      await message.channel.send({ embeds: [{ color: PINK, title: `Poll Ended: ${poll.question}`, description: results.map((r, i) => `${i === 0 ? "" : `${i+1}.`} **${r.option}** — ${r.votes} votes`).join("\n") }] });
       pollData.delete(msgId);
     } catch { return err(message, "Could not fetch poll message."); }
   }
@@ -8466,9 +8465,9 @@ client.on("messageCreate", async (message) => {
     }
     if (sub === "clear") { todoLists.delete(message.author.id); return ok(message, "Todo list cleared."); }
     if (sub === "list" || !sub) {
-      if (list.length === 0) return message.reply("<:RUSH_task:1521415237813665813> Your todo list is empty.");
-      const lines = list.map((t, i) => `${t.done ? "<:019TXTWhite_Yes:1521327983279996999>" : "⬜"} **${i+1}.** ${t.text}`);
-      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Your Todo List", description: lines.join("\n") }] });
+      if (list.length === 0) return message.reply("Your todo list is empty.");
+      const lines = list.map((t, i) => `${t.done ? "" : ""} **${i+1}.** ${t.text}`);
+      return message.reply({ embeds: [{ color: PINK, title: "Your Todo List", description: lines.join("\n") }] });
     }
   }
 
@@ -8515,13 +8514,13 @@ client.on("messageCreate", async (message) => {
     const categoriess = g.channels.cache.filter(c => c.type === 4).size;
     const animated = g.emojis.cache.filter(e => e.animated).size;
     const static_ = g.emojis.cache.filter(e => !e.animated).size;
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_list:1521415268000337961> ${g.name} Stats`, thumbnail: { url: g.iconURL() }, fields: [
-      { name: "👥 Members", value: `Total: ${g.memberCount}\nHumans: ${humans}\nBots: ${bots}`, inline: true },
-      { name: "📢 Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categoriess}`, inline: true },
-      { name: "🏷️ Roles", value: `${g.roles.cache.size}`, inline: true },
-      { name: "😀 Emojis", value: `Static: ${static_}\nAnimated: ${animated}`, inline: true },
-      { name: "💜 Boosts", value: `${g.premiumSubscriptionCount} (Tier ${g.premiumTier})`, inline: true },
-      { name: "📅 Created", value: `<t:${Math.floor(g.createdTimestamp/1000)}:R>`, inline: true },
+    return message.reply({ embeds: [{ color: PINK, title: `${g.name} Stats`, thumbnail: { url: g.iconURL() }, fields: [
+      { name: "Members", value: `Total: ${g.memberCount}\nHumans: ${humans}\nBots: ${bots}`, inline: true },
+      { name: "Channels", value: `Text: ${textChannels}\nVoice: ${voiceChannels}\nCategories: ${categoriess}`, inline: true },
+      { name: "Roles", value: `${g.roles.cache.size}`, inline: true },
+      { name: "Emojis", value: `Static: ${static_}\nAnimated: ${animated}`, inline: true },
+      { name: "Boosts", value: `${g.premiumSubscriptionCount} (Tier ${g.premiumTier})`, inline: true },
+      { name: "Created", value: `<t:${Math.floor(g.createdTimestamp/1000)}:R>`, inline: true },
     ] }] });
   }
 
@@ -8545,7 +8544,7 @@ client.on("messageCreate", async (message) => {
     const online = members.filter(m => m.presence?.status === "online").size;
     const idle = members.filter(m => m.presence?.status === "idle").size;
     const dnd = members.filter(m => m.presence?.status === "dnd").size;
-    return info(message, `<:019TXTWhite_Yes:1521327983279996999> **${online}** online | 🌙 **${idle}** idle | ⛔ **${dnd}** dnd`);
+    return info(message, `**${online}** online | **${idle}** idle | **${dnd}** dnd`);
   }
 
   // -- USER SEARCH --------------------------------------─
@@ -8575,19 +8574,19 @@ client.on("messageCreate", async (message) => {
   if (command === "admins") {
     const admins = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.Administrator) && !m.user.bot);
     if (admins.size === 0) return message.reply("No admins found.");
-    return message.reply({ embeds: [{ color: PINK, title: `<:b_crownDNS:1521415303714705533> Admins (${admins.size})`, description: admins.map(m => m.user.username).join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Admins (${admins.size})`, description: admins.map(m => m.user.username).join("\n") }] });
   }
 
   // ,mods -- list members with ban/kick permissions
   if (command === "mods") {
     const mods = message.guild.members.cache.filter(m => (m.permissions.has(PermissionFlagsBits.BanMembers) || m.permissions.has(PermissionFlagsBits.KickMembers)) && !m.user.bot && !m.permissions.has(PermissionFlagsBits.Administrator));
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_caution:1521415278355808297> Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.username).join("\n") : "None" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Moderators (${mods.size})`, description: mods.size > 0 ? mods.map(m => m.user.username).join("\n") : "None" }] });
   }
 
   // ,bots -- list all bots in server
   if (command === "bots") {
     const bots = message.guild.members.cache.filter(m => m.user.bot);
-    return message.reply({ embeds: [{ color: PINK, title: `🤖 Bots (${bots.size})`, description: bots.map(m => m.user.username).join("\n").substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Bots (${bots.size})`, description: bots.map(m => m.user.username).join("\n").substring(0, 4096) }] });
   }
 
   // -- VOICE MANAGEMENT ----------------------------------
@@ -8595,9 +8594,9 @@ client.on("messageCreate", async (message) => {
   // ,voicelist -- list all voice channels and who's in them
   if (command === "voicelist" || command === "vc") {
     const vcs = message.guild.channels.cache.filter(c => c.type === 2 && c.members.size > 0);
-    if (vcs.size === 0) return message.reply("🔇 No one is in a voice channel.");
+    if (vcs.size === 0) return message.reply("No one is in a voice channel.");
     const desc = vcs.map(c => `**${c.name}** (${c.members.size})\n${c.members.map(m => `  └ ${m.user.username}`).join("\n")}`).join("\n\n");
-    return message.reply({ embeds: [{ color: PINK, title: "🔊 Voice Channels", description: desc.substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Voice Channels", description: desc.substring(0, 4096) }] });
   }
 
   // ,vclimit <#channel> <limit>
@@ -8683,7 +8682,7 @@ client.on("messageCreate", async (message) => {
 
     const msg = await message.channel.messages.fetch(msgId).catch(() => null);
     if (!msg) return err(message, "Message not found.");
-    await ch.send({ content: `<:RUSH_pin:1521415247183872080> Moved from <#${message.channel.id}>:\n${msg.content}`, embeds: msg.embeds });
+    await ch.send({ content: `Moved from <#${message.channel.id}>:\n${msg.content}`, embeds: msg.embeds });
     return ok(message, `Message moved to ${ch}`);
   }
 
@@ -8796,7 +8795,7 @@ client.on("messageCreate", async (message) => {
 
       const wh = await ch.createWebhook({ name }).catch(() => null);
       if (!wh) return err(message, "Could not create webhook.");
-      await message.author.send(`<:RUSH_link:1521415290687066212> Webhook URL (keep private!): ${wh.url}`).catch(() => {});
+      await message.author.send(`Webhook URL (keep private!): ${wh.url}`).catch(() => {});
       return ok(message, "Webhook created. URL sent to your DMs.");
     }
     if (sub === "delete") {
@@ -8822,7 +8821,7 @@ client.on("messageCreate", async (message) => {
     if (sub === "list") {
       const active = [...giveaways.entries()].filter(([, g]) => !g.ended && g.guildId === guildId);
       if (active.length === 0) return message.reply("No active giveaways.");
-      return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_giveaway:1521415256772186132> Active Giveaways", description: active.map(([id, g]) => `**${g.prize}** — ends <t:${Math.floor(g.endTime/1000)}:R> — [Jump](https://discord.com/channels/${guildId}/${g.channelId}/${id})`).join("\n") }] });
+      return message.reply({ embeds: [{ color: PINK, title: "Active Giveaways", description: active.map(([id, g]) => `**${g.prize}** — ends <t:${Math.floor(g.endTime/1000)}:R> — [Jump](https://discord.com/channels/${guildId}/${g.channelId}/${id})`).join("\n") }] });
     }
   }
 
@@ -8841,7 +8840,7 @@ client.on("messageCreate", async (message) => {
   // ,stafflist -- list all staff (admin + mod)
   if (command === "stafflist") {
     const staff = message.guild.members.cache.filter(m => m.permissions.has(PermissionFlagsBits.ModerateMembers) && !m.user.bot);
-    return message.reply({ embeds: [{ color: PINK, title: `👮 Staff (${staff.size})`, description: staff.map(m => `${m.user.username} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Staff (${staff.size})`, description: staff.map(m => `${m.user.username} — ${m.roles.highest.name}`).join("\n").substring(0, 4096) }] });
   }
 
   // ,slowmodechannel <#channel> <seconds>
@@ -8862,16 +8861,16 @@ client.on("messageCreate", async (message) => {
     const members = await message.guild.members.fetch();
     const suspects = members.filter(m => !m.user.bot && m.joinedTimestamp > Date.now() - 5 * 60 * 1000);
     if (suspects.size === 0) return ok(message, "No suspicious members found (joined in last 5 min).");
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Banning **${suspects.size}** suspicious members...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Banning **${suspects.size}** suspicious members...` }] });
     let count = 0;
     for (const m of suspects.values()) { await m.ban({ reason }).catch(() => {}); count++; }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Banned **${count}** members.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Banned **${count}** members.` }] });
   }
 
   // ,kick everyone -- kick all non-staff (requires confirmation)
   if (command === "kickeveryone") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator) || message.author.id !== message.guild.ownerId) return err(message, "Only server owner.");
-    if (args[1] !== "confirm") return message.reply("<:RUSH_warning:1521415214799654985> This will kick ALL non-staff members. Type `,kickeveryone confirm` to confirm.");
+    if (args[1] !== "confirm") return message.reply("This will kick ALL non-staff members. Type `,kickeveryone confirm` to confirm.");
     const members = await message.guild.members.fetch();
     let count = 0;
     for (const m of members.values()) {
@@ -8879,7 +8878,7 @@ client.on("messageCreate", async (message) => {
       await m.kick("Mass kick by owner").catch(() => {});
       count++;
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Kicked **${count}** members.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Kicked **${count}** members.` }] });
   }
 
   // ,dehoist -- remove hoisted characters from nicknames
@@ -8913,7 +8912,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
     const members = await message.guild.members.fetch();
     let count = 0;
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Dehoisting **${members.size}** members...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Dehoisting **${members.size}** members...` }] });
     for (const m of members.values()) {
       if (m.user.bot || m.id === message.guild.ownerId) continue;
       const name = m.nickname || m.user.username;
@@ -8922,7 +8921,7 @@ client.on("messageCreate", async (message) => {
         count++;
       }
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Dehoisted **${count}** members.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Dehoisted **${count}** members.` }] });
   }
 
   // ,resetnick <@user>
@@ -8938,12 +8937,12 @@ client.on("messageCreate", async (message) => {
   if (command === "resetallnicks") {
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
     const members = await message.guild.members.fetch();
-    message.reply({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Resetting ${members.size} nicknames...` }] });
+    message.reply({ embeds: [{ color: PINK, description: `Resetting ${members.size} nicknames...` }] });
     let count = 0;
     for (const m of members.values()) {
       if (m.nickname) { await m.setNickname(null).catch(() => {}); count++; }
     }
-    return message.channel.send({ embeds: [{ color: PINK, description: ` + <:019TXTWhite_Yes:1521327983279996999> Reset **${count}** nicknames.` }] });
+    return message.channel.send({ embeds: [{ color: PINK, description: ` + Reset **${count}** nicknames.` }] });
   }
 
   // -- LOGGING EVENTS EXTENDED --------------------------─
@@ -9085,7 +9084,7 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     if (last && now - last < 604800000) {
       const remaining = Math.ceil((604800000 - (now - last)) / 3600000);
-      return info(message, `<:RUSH_clock:1521415225058791454> Come back in **${remaining}h** for your weekly reward.`);
+      return info(message, `Come back in **${remaining}h** for your weekly reward.`);
     }
     const current = economy.get(message.author.id) || 0;
     economy.set(message.author.id, current + 2500);
@@ -9100,7 +9099,7 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     if (last && now - last < 2592000000) {
       const remaining = Math.ceil((2592000000 - (now - last)) / 86400000);
-      return info(message, `<:RUSH_clock:1521415225058791454> Come back in **${remaining}d** for your monthly reward.`);
+      return info(message, `Come back in **${remaining}d** for your monthly reward.`);
     }
     const current = economy.get(message.author.id) || 0;
     economy.set(message.author.id, current + 10000);
@@ -9159,7 +9158,7 @@ client.on("messageCreate", async (message) => {
     const now = Date.now();
     if (last && now - last < 3600000) {
       const remaining = Math.ceil((3600000 - (now - last)) / 60000);
-      return info(message, `<:RUSH_clock:1521415225058791454> You can work again in **${remaining} minutes**.`);
+      return info(message, `You can work again in **${remaining} minutes**.`);
     }
     const jobs = ["mowed the lawn", "delivered pizza", "wrote some code", "walked dogs", "fixed a computer"];
     const job = jobs[Math.floor(Math.random() * jobs.length)];
@@ -9174,7 +9173,7 @@ client.on("messageCreate", async (message) => {
     const key = `crime-${message.author.id}`;
     const last = economy.get(key);
     const now = Date.now();
-    if (last && now - last < 7200000) return info(message, `<:RUSH_clock:1521415225058791454> Too risky right now. Wait **${Math.ceil((7200000 - (now - last)) / 60000)} minutes**.`);
+    if (last && now - last < 7200000) return info(message, `Too risky right now. Wait **${Math.ceil((7200000 - (now - last)) / 60000)} minutes**.`);
     economy.set(key, now);
     const success = Math.random() > 0.4;
     const amount = Math.floor(Math.random() * 500) + 100;
@@ -9196,7 +9195,7 @@ client.on("messageCreate", async (message) => {
     const key = `rob-${message.author.id}`;
     const last = economy.get(key);
     const now = Date.now();
-    if (last && now - last < 3600000) return info(message, `<:RUSH_clock:1521415225058791454> Wait **${Math.ceil((3600000 - (now - last)) / 60000)} minutes** before robbing again.`);
+    if (last && now - last < 3600000) return info(message, `Wait **${Math.ceil((3600000 - (now - last)) / 60000)} minutes** before robbing again.`);
     economy.set(key, now);
     const targetBal = economy.get(target.id) || 0;
     if (targetBal < 100) return err(message, `**${target.username}** is too poor to rob.`);
@@ -9230,7 +9229,7 @@ client.on("messageCreate", async (message) => {
       if (c === " ") return "  ";
       return c;
     }).join("");
-    return message.reply(result.substring(0, 2000) || "<:steal:1521327958634135655>");
+    return message.reply(result.substring(0, 2000) || "");
   }
 
   // ,spoiler <text>
@@ -9280,11 +9279,11 @@ client.on("messageCreate", async (message) => {
     const n = Math.min(parseInt(args[1]) || 5, 10);
     if (isNaN(n) || n < 1) return err(message, "missing required argument");
 
-    const msg = await message.channel.send(`<a:Loading:1521415253982969898> **${n}**`);
+    const msg = await message.channel.send(`**${n}**`);
     let current = n - 1;
     const interval = setInterval(async () => {
-      if (current <= 0) { clearInterval(interval); await msg.edit({ embeds: [{ color: PINK, description: "<:RUSH_giveaway:1521415256772186132> **GO!**" }] }).catch(() => {}); return; }
-      await msg.edit({ embeds: [{ color: PINK, description: `<a:Loading:1521415253982969898> **${current}**` }] }).catch(() => { clearInterval(interval); });
+      if (current <= 0) { clearInterval(interval); await msg.edit({ embeds: [{ color: PINK, description: "**GO!**" }] }).catch(() => {}); return; }
+      await msg.edit({ embeds: [{ color: PINK, description: `**${current}**` }] }).catch(() => { clearInterval(interval); });
       current--;
     }, 1000);
   }
@@ -9358,7 +9357,7 @@ client.on("messageCreate", async (message) => {
 
   // ,yesno -- yes or no random
   if (command === "yesno") {
-    return message.reply(Math.random() < 0.5 ? "<:019TXTWhite_Yes:1521327983279996999> **Yes**" : "<:steal:1521327958634135655> **No**");
+    return message.reply(Math.random() < 0.5 ? "**Yes**" : "**No**");
   }
 
   // ,decide <option1> | <option2> | ...
@@ -9386,7 +9385,7 @@ client.on("messageCreate", async (message) => {
     const teams = [];
     for (let i = 0; i < shuffled.length; i += size) teams.push(shuffled.slice(i, i + size));
     const desc = teams.map((t, i) => `**Team ${i+1}:** ${t.map(u => u.username).join(", ")}`).join("\n");
-    return message.reply({ embeds: [{ color: PINK, title: "⚽ Teams", description: desc }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Teams", description: desc }] });
   }
 
   // ,shuffle <item1> | <item2> | ...
@@ -9403,7 +9402,7 @@ client.on("messageCreate", async (message) => {
     const length = Math.min(parseInt(args[1]) || 16, 64);
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
     const password = Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-    try { await message.author.send(`<:RUSH_unlock:1521415218037526641> Generated password: \`${password}\``); } catch {}
+    try { await message.author.send(`Generated password: \`${password}\``); } catch {}
     return ok(message, "Password sent to your DMs!");
   }
 
@@ -9422,7 +9421,7 @@ client.on("messageCreate", async (message) => {
     try {
       const res = await fetch("https://discordstatus.com/api/v2/status.json");
       const data = await res.json();
-      return message.reply({ embeds: [{ color: PINK, title: "📡 Discord Status", description: data.status.description }] });
+      return message.reply({ embeds: [{ color: PINK, title: "Discord Status", description: data.status.description }] });
     } catch { return err(message, "Could not fetch Discord status."); }
   }
 
@@ -9447,12 +9446,12 @@ client.on("messageCreate", async (message) => {
 
   // ,support -- support server
   if (command === "support") {
-    return message.reply("<:RUSH_comment:1491884212297531572> Join our support server for help!");
+    return message.reply("Join our support server for help!");
   }
 
   // ,source -- show bot source info
   if (command === "source") {
-    return message.reply({ embeds: [{ color: PINK, title: "📦 Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }], footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Bot Info", fields: [{ name: "Library", value: "discord.js v14", inline: true }, { name: "Runtime", value: `Node.js ${process.version}`, inline: true }, { name: "Memory", value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true }], footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 
   // ,shards -- shard info
@@ -9463,7 +9462,7 @@ client.on("messageCreate", async (message) => {
   // ,leave -- make bot leave server (owner only)
   if (command === "leave") {
     if (!isOwner(message.author.id)) return err(message, "Owner only.");
-    await message.reply("<a:009Cinnamoroll_Wave:1265534373873320047> Leaving server...");
+    await message.reply("Leaving server...");
     await message.guild.leave();
   }
 
@@ -9606,8 +9605,8 @@ client.on("messageCreate", async (message) => {
     const units = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
     const ms = parseInt(match[1]) * units[match[2]];
     await target.roles.add(role).catch(() => null);
-    ok(message, `<:019TXTWhite_Yes:1521327983279996999> Gave **${role.name}** to **${target.user.username}** for **${timeStr}**`);
-    setTimeout(async () => { await target.roles.remove(role).catch(() => {}); message.channel.send(`<:RUSH_clock:1521415225058791454> Removed **${role.name}** from **${target.user.username}**`).catch(() => {}); }, ms);
+    ok(message, `Gave **${role.name}** to **${target.user.username}** for **${timeStr}**`);
+    setTimeout(async () => { await target.roles.remove(role).catch(() => {}); message.channel.send(`Removed **${role.name}** from **${target.user.username}**`).catch(() => {}); }, ms);
   }
   if (command === "muterole") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
@@ -9656,7 +9655,7 @@ client.on("messageCreate", async (message) => {
     const rules = args.slice(1).join(" ").split("|").map((r, i) => `**${i+1}.** ${r.trim()}`).filter(Boolean);
     if (rules.length === 0) return err(message, "missing required argument");
 
-    return message.channel.send({ embeds: [{ color: PINK, title: `📜 ${message.guild.name} Rules`, description: rules.join("\n") }] });
+    return message.channel.send({ embeds: [{ color: PINK, title: `${message.guild.name} Rules`, description: rules.join("\n") }] });
   }
   if (command === "inviteinfo2") {
     const code = args[1];
@@ -9699,7 +9698,7 @@ client.on("messageCreate", async (message) => {
     return message.reply({ embeds: [{ color: PINK, image: { url } }] });
   }
   if (command === "cleardm") {
-    return message.author.send("📬 Discord does not allow bots to delete DMs.").catch(() => err(message, "Could not DM you."));
+    return message.author.send("Discord does not allow bots to delete DMs.").catch(() => err(message, "Could not DM you."));
   }
   if (command === "userperms") {
     const target = message.mentions.members.first() || message.member;
@@ -9709,7 +9708,7 @@ client.on("messageCreate", async (message) => {
     if (target.permissions.has(PermissionFlagsBits.KickMembers)) dangerous.push("Kick Members");
     if (target.permissions.has(PermissionFlagsBits.ManageGuild)) dangerous.push("Manage Server");
     if (target.permissions.has(PermissionFlagsBits.ManageRoles)) dangerous.push("Manage Roles");
-    return message.reply({ embeds: [{ color: PINK, title: `<:RUSH_warning:1521415214799654985> Key Perms: ${target.user.username}`, description: dangerous.length > 0 ? dangerous.join(", ") : "No dangerous permissions" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `Key Perms: ${target.user.username}`, description: dangerous.length > 0 ? dangerous.join(", ") : "No dangerous permissions" }] });
   }
   if (command === "vcrename") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
@@ -9724,12 +9723,12 @@ client.on("messageCreate", async (message) => {
   if (command === "vcinfo") {
     const vc = message.mentions.channels.first() || message.member.voice.channel;
     if (!vc) return err(message, "No voice channel found.");
-    return message.reply({ embeds: [{ color: PINK, title: `🔊 ${vc.name}`, fields: [{ name: "Members", value: `${vc.members.size}`, inline: true }, { name: "User Limit", value: `${vc.userLimit || "∞"}`, inline: true }, { name: "Bitrate", value: `${vc.bitrate / 1000}kbps`, inline: true }, { name: "ID", value: vc.id }] }] });
+    return message.reply({ embeds: [{ color: PINK, title: `${vc.name}`, fields: [{ name: "Members", value: `${vc.members.size}`, inline: true }, { name: "User Limit", value: `${vc.userLimit || "∞"}`, inline: true }, { name: "Bitrate", value: `${vc.bitrate / 1000}kbps`, inline: true }, { name: "ID", value: vc.id }] }] });
   }
   if (command === "afklist") {
     const list = [...afkUsers.entries()].filter(([k]) => k.startsWith(message.guild.id));
     if (list.length === 0) return message.reply("No AFK users.");
-    return message.reply({ embeds: [{ color: PINK, title: "💤 AFK Users", description: list.map(([k, v]) => `<@${k.split("-")[1]}> — ${v}`).join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "AFK Users", description: list.map(([k, v]) => `<@${k.split("-")[1]}> — ${v}`).join("\n") }] });
   }
   if (command === "removeafk") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
@@ -9785,7 +9784,7 @@ client.on("messageCreate", async (message) => {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const text = msgs.reverse().map(m => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.username}: ${m.content}`).join("\n");
-    await message.author.send(`<:RUSH_comment:1491884212297531572> Chat log from #${message.channel.name} sent!`).catch(() => err(message, "Could not DM you."));
+    await message.author.send(`Chat log from #${message.channel.name} sent!`).catch(() => err(message, "Could not DM you."));
     return ok(message, "Chat log sent to your DMs.");
   }
   if (command === "nsfwcheck") {
@@ -9810,7 +9809,7 @@ client.on("messageCreate", async (message) => {
     const logs = await message.guild.fetchAuditLogs({ limit: 5 }).catch(() => null);
     if (!logs) return err(message, "Could not fetch audit logs.");
     const lines = [...logs.entries.values()].map(e => `**${e.action}** by ${e.executor?.username || "Unknown"} — ${e.reason || "No reason"}`);
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_task:1521415237813665813> Recent Audit Log", description: lines.join("\n") }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Recent Audit Log", description: lines.join("\n") }] });
   }
   if (command === "clearreactions") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
@@ -9822,7 +9821,7 @@ client.on("messageCreate", async (message) => {
   }
   if (command === "serverfeatures") {
     const features = message.guild.features;
-    return message.reply({ embeds: [{ color: PINK, title: `<a:014White_Spark2:1491251181840891996> ${message.guild.name} Features`, description: features.length > 0 ? features.join(", ") : "No special features" }] });
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Features`, description: features.length > 0 ? features.join(", ") : "No special features" }] });
   }
   if (command === "boostgoal") {
     const current = message.guild.premiumSubscriptionCount;
@@ -9957,10 +9956,10 @@ client.on("messageCreate", async (message) => {
     const an = getAntiNuke(message.guild.id);
     const ar = getAntiRaid(message.guild.id);
     const fl = getFilter(message.guild.id);
-    return message.reply({ embeds: [{ color: PINK, title: "<:RUSH_gear:1521415230184489061> Mod Config", fields: [
-      { name: "AntiNuke", value: an.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
-      { name: "AntiRaid", value: ar.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
-      { name: "AutoMod", value: fl.enabled ? "<:019TXTWhite_Yes:1521327983279996999> On" : "<:steal:1521327958634135655> Off", inline: true },
+    return message.reply({ embeds: [{ color: PINK, title: "Mod Config", fields: [
+      { name: "AntiNuke", value: an.enabled ? "On" : "Off", inline: true },
+      { name: "AntiRaid", value: ar.enabled ? "On" : "Off", inline: true },
+      { name: "AutoMod", value: fl.enabled ? "On" : "Off", inline: true },
       { name: "AN Punishment", value: an.punishment, inline: true },
       { name: "AR Action", value: ar.action, inline: true },
       { name: "AR Threshold", value: `${ar.joinThreshold} joins`, inline: true }
@@ -9968,14 +9967,14 @@ client.on("messageCreate", async (message) => {
   }
   if (command === "botperms") {
     const perms = message.guild.members.me?.permissions.toArray() || [];
-    return message.reply({ embeds: [{ color: PINK, title: "🤖 My Permissions", description: perms.length > 0 ? perms.join(", ") : "None" }] });
+    return message.reply({ embeds: [{ color: PINK, title: "My Permissions", description: perms.length > 0 ? perms.join(", ") : "None" }] });
   }
   if (command === "cleanup") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
     const msgs = await message.channel.messages.fetch({ limit: 100 });
     const botMsgs = msgs.filter(m => m.author.id === client.user.id);
     await message.channel.bulkDelete(botMsgs, true).catch(() => null);
-    const m = await message.channel.send({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> deleted **${botMsgs.size}** bot messages` }] });
+    const m = await message.channel.send({ embeds: [{ color: PINK, description: `deleted **${botMsgs.size}** bot messages` }] });
     setTimeout(() => m.delete().catch(() => {}), 3000);
   }
 });
@@ -10011,7 +10010,7 @@ client.on("messageCreate", async (message) => {
     const tz = userTimezones.get(target.id);
     if (!tz) return info(message, `**${target.username}** hasn't set a timezone — use \`,settz <timezone>\` to set one`);
     const now = new Date().toLocaleString("en-US", { timeZone: tz, weekday: "long", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
-    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, description: `🕐 **${now}**`, footer: { text: `Timezone: ${tz}` } }] });
+    return message.reply({ embeds: [{ color: PINK, author: { name: target.username, icon_url: target.displayAvatarURL() }, description: `**${now}**`, footer: { text: `Timezone: ${tz}` } }] });
   }
 
   // ,tzlist -- list all timezones set in this server
@@ -10028,7 +10027,7 @@ client.on("messageCreate", async (message) => {
     if (list.length === 0) return info(message, "no members have set a timezone — use `,settz <timezone>`");
     list.sort((a, b) => a.tz.localeCompare(b.tz));
     const desc = list.map(l => `**${l.name}** — ${l.tz} (${l.now})`).join("\n");
-    return message.reply({ embeds: [{ color: PINK, title: "🌍 Server Timezones", description: desc, footer: { text: message.guild.name }, timestamp: new Date() }] });
+    return message.reply({ embeds: [{ color: PINK, title: "Server Timezones", description: desc, footer: { text: message.guild.name }, timestamp: new Date() }] });
   }
 });
 
@@ -10056,20 +10055,20 @@ client.on("messageCreate", async (message) => {
     const ready = s.cat1 && s.cat2;
     return {
       color: PINK,
-      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      title: "Channel Separator",
       description: [
         "Distribute **all server channels** evenly across **2 or 3 categories**.",
         "Each category supports up to 50 channels — overflow categories are created automatically.",
         "",
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${s.cat1 ? `\`${s.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${s.cat2 ? `\`${s.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${s.cat3 ? `\`${s.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        `**Category 1** — ${s.cat1 ? `\`${s.cat1}\`` : "not set"}`,
+        `**Category 2** — ${s.cat2 ? `\`${s.cat2}\`` : "not set"}`,
+        `**Category 3** — ${s.cat3 ? `\`${s.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
         "",
         ready
-          ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
-          : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+          ? "Ready — press **Run** to start"
+          : "Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `✨ sensational • white edition • ${message.guild.name}` },
+      footer: { text: `sensational • white edition • ${message.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -10077,10 +10076,10 @@ client.on("messageCreate", async (message) => {
   function buildSepRow(userId) {
     return [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -10102,7 +10101,7 @@ client.on("interactionCreate", async (interaction) => {
 
   const [action, userId] = id.split(":");
   if (interaction.user.id !== userId) {
-    return interaction.reply({ content: "<:steal:1521327958634135655> This panel belongs to someone else.", flags: 64 });
+    return interaction.reply({ content: "This panel belongs to someone else.", flags: 64 });
   }
 
   const s = separateSessions.get(userId);
@@ -10112,20 +10111,20 @@ client.on("interactionCreate", async (interaction) => {
     const ready = sess.cat1 && sess.cat2;
     return {
       color: PINK,
-      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      title: "Channel Separator",
       description: [
         "Distribute **all server channels** evenly across **2 or 3 categories**.",
         "Each category supports up to 50 channels — overflow categories are created automatically.",
         "",
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        `**Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "not set"}`,
+        `**Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "not set"}`,
+        `**Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
         "",
         ready
-          ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
-          : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+          ? "Ready — press **Run** to start"
+          : "Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
+      footer: { text: `sensational • white edition • ${interaction.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -10133,10 +10132,10 @@ client.on("interactionCreate", async (interaction) => {
   function buildSepRow(uid) {
     return [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -10144,7 +10143,7 @@ client.on("interactionCreate", async (interaction) => {
   // Cancel
   if (action === "sep_cancel") {
     separateSessions.delete(userId);
-    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Channel separation cancelled." }], components: [] });
+    return interaction.update({ embeds: [{ color: PINK, description: "Channel separation cancelled." }], components: [] });
   }
 
   // Open modal to set category names
@@ -10153,15 +10152,15 @@ client.on("interactionCreate", async (interaction) => {
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("sep_cat1").setLabel("Category 1 name (required)").setStyle(TextInputStyle.Short)
-          .setRequired(true).setPlaceholder("e.g. 🔥 Premium Channels").setValue(s?.cat1 || "")
+          .setRequired(true).setPlaceholder("e.g. Premium Channels").setValue(s?.cat1 || "")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("sep_cat2").setLabel("Category 2 name (required)").setStyle(TextInputStyle.Short)
-          .setRequired(true).setPlaceholder("e.g. 💎 Exclusive Content").setValue(s?.cat2 || "")
+          .setRequired(true).setPlaceholder("e.g. Exclusive Content").setValue(s?.cat2 || "")
       ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("sep_cat3").setLabel("Category 3 name (optional — leave blank for 2)").setStyle(TextInputStyle.Short)
-          .setRequired(false).setPlaceholder("e.g. 🌟 Special Access").setValue(s?.cat3 || "")
+          .setRequired(false).setPlaceholder("e.g. Special Access").setValue(s?.cat3 || "")
       ),
     );
     return interaction.showModal(modal);
@@ -10182,32 +10181,32 @@ client.on("interactionCreate", async (interaction) => {
       return `**${name}** → ~${count} channels${overflow}`;
     });
     return interaction.editReply({
-      content: `<:RUSH_task:1521415237813665813> **Preview** — **${allChans.size}** total channels split into **${numCats}** groups:\n\n${lines.join("\n")}`,
+      content: `**Preview** — **${allChans.size}** total channels split into **${numCats}** groups:\n\n${lines.join("\n")}`,
     });
   }
 
   // Run separation
   if (action === "sep_run") {
     if (!s?.cat1 || !s?.cat2) {
-      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set category names first using **✏ Set Category Names**.", flags: 64 });
+      return interaction.reply({ content: "Set category names first using **Set Category Names**.", flags: 64 });
     }
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: "<:steal:1521327958634135655> Administrator permission required.", flags: 64 });
+      return interaction.reply({ content: "Administrator permission required.", flags: 64 });
     }
 
     // Lock panel
     await interaction.update({
-      embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> **Running channel separation — please wait...**" }],
+      embeds: [{ color: PINK, description: "**Running channel separation — please wait...**" }],
       components: [],
     });
     separateSessions.delete(userId);
 
     const statusMsg = await interaction.channel.send({
-      embeds: [{ color: PINK, description: "<:019TXTWhite_Yes:1521327983279996999> Fetching channels..." }],
+      embeds: [{ color: PINK, description: "Fetching channels..." }],
     }).catch(() => null);
 
     const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `${text}` }] }).catch(() => {});
     };
 
     try {
@@ -10274,7 +10273,7 @@ client.on("interactionCreate", async (interaction) => {
       await statusMsg?.edit({
         embeds: [{
           color: PINK,
-          title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separation Complete",
+          title: "Channel Separation Complete",
           description: `**${guild.name}** — **${allChans.length}** channels distributed across **${numCats}** categories`,
           fields,
           footer: { text: "sensational • white edition" },
@@ -10284,7 +10283,7 @@ client.on("interactionCreate", async (interaction) => {
 
     } catch (e) {
       log(`[separate] error: ${e.message}`, "error");
-      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: \`${e.message}\`` }] }).catch(() => {});
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `Error: \`${e.message}\`` }] }).catch(() => {});
     }
   }
 });
@@ -10295,14 +10294,14 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.customId.startsWith("sep_modal:")) return;
 
   const userId = interaction.customId.split(":")[1];
-  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+  if (interaction.user.id !== userId) return interaction.reply({ content: "Not your session.", flags: 64 });
 
   const cat1 = interaction.fields.getTextInputValue("sep_cat1").trim();
   const cat2 = interaction.fields.getTextInputValue("sep_cat2").trim();
   const cat3Raw = interaction.fields.getTextInputValue("sep_cat3").trim();
   const cat3 = cat3Raw || null;
 
-  if (!cat1 || !cat2) return interaction.reply({ content: "<:steal:1521327958634135655> Category 1 and Category 2 are required.", flags: 64 });
+  if (!cat1 || !cat2) return interaction.reply({ content: "Category 1 and Category 2 are required.", flags: 64 });
 
   const s = separateSessions.get(userId) || { cat1: null, cat2: null, cat3: null, msgId: null, channelId: interaction.channelId };
   s.cat1 = cat1;
@@ -10314,18 +10313,18 @@ client.on("interactionCreate", async (interaction) => {
     const ready = sess.cat1 && sess.cat2;
     return {
       color: PINK,
-      title: "<:019TXTWhite_Yes:1521327983279996999> Channel Separator",
+      title: "Channel Separator",
       description: [
         "Distribute **all server channels** evenly across **2 or 3 categories**.",
         "Each category supports up to 50 channels — overflow categories are created automatically.",
         "",
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "<:RUSH_warning:1521415214799654985> not set"}`,
-        `<:019TXTWhite_Yes:1521327983279996999> **Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
+        `**Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "not set"}`,
+        `**Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "not set"}`,
+        `**Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
         "",
-        ready ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start" : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+        ready ? "Ready — press **Run** to start" : "Set at least **Category 1** and **Category 2** to continue",
       ].join("\n"),
-      footer: { text: `✨ sensational • white edition • ${interaction.guild.name}` },
+      footer: { text: `sensational • white edition • ${interaction.guild.name}` },
       timestamp: new Date(),
     };
   }
@@ -10333,10 +10332,10 @@ client.on("interactionCreate", async (interaction) => {
   function buildSepRow(uid) {
     return [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
       ),
     ];
   }
@@ -10348,7 +10347,7 @@ client.on("interactionCreate", async (interaction) => {
     if (msg) await msg.edit({ embeds: [buildSepEmbed(s)], components: buildSepRow(userId) }).catch(() => {});
   } catch (_) {}
 
-  return interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Category names saved:\n<:019TXTWhite_Yes:1521327983279996999> **${cat1}** | **${cat2}**${cat3 ? ` | **${cat3}**` : ""}`, flags: 64 });
+  return interaction.reply({ content: `Category names saved:\n**${cat1}** | **${cat2}**${cat3 ? ` | **${cat3}**` : ""}`, flags: 64 });
 });
 
 // ===== ,sortcategory COMMAND — N-CATEGORY SORTER WITH IMMUNE CATEGORIES =====
@@ -10370,7 +10369,7 @@ function scBuildEmbed(guild, s) {
   const filled = s.names.filter(Boolean);
   const ready = filled.length >= 2;
   const nameLines = s.names.map((n, i) =>
-    `<:019TXTWhite_Yes:1521327983279996999> **Category ${i + 1}**${i < 2 ? "" : " *(optional)*"} — ${n ? `\`${n}\`` : (i < 2 ? "<:RUSH_warning:1521415214799654985> not set" : "*unused*")}`
+    `**Category ${i + 1}**${i < 2 ? "" : " *(optional)*"} — ${n ? `\`${n}\`` : (i < 2 ? "not set" : "*unused*")}`
   ).join("\n");
 
   const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
@@ -10378,21 +10377,21 @@ function scBuildEmbed(guild, s) {
 
   return {
     color: PINK,
-    title: "<:019TXTWhite_Yes:1521327983279996999> Category Sorter",
+    title: "Category Sorter",
     description: [
       "Distribute **all server channels** evenly across **2 to 5 categories**.",
-      "Channels sitting in an <:RUSH_warning:1521415214799654985> **immune** category are skipped entirely and never moved.",
+      "Channels sitting in an **immune** category are skipped entirely and never moved.",
       "Each target category supports up to 50 channels — overflow categories are created automatically.",
       "",
       nameLines,
       "",
-      `<:RUSH_folder:1521415227495940096> **Immune categories** — ${immuneLine}`,
+      `**Immune categories** — ${immuneLine}`,
       "",
       ready
-        ? "<:019TXTWhite_Yes:1521327983279996999> Ready — press **<:RUSH_rocket:1521415262384160778> Run** to start"
-        : "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** to continue",
+        ? "Ready — press **Run** to start"
+        : "Set at least **Category 1** and **Category 2** to continue",
     ].join("\n"),
-    footer: { text: `✨ sensational • white edition • ${guild.name}` },
+    footer: { text: `sensational • white edition • ${guild.name}` },
     timestamp: new Date(),
   };
 }
@@ -10400,13 +10399,13 @@ function scBuildEmbed(guild, s) {
 function scBuildRows(uid) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`sortcat_setnames:${uid}`).setLabel("✏ Set Category Names").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`sortcat_immune:${uid}`).setLabel("Set Immune Categories").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`sortcat_setnames:${uid}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`sortcat_immune:${uid}`).setLabel("Set Immune Categories").setStyle(ButtonStyle.Primary),
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`sortcat_preview:${uid}`).setLabel("Preview").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`sortcat_run:${uid}`).setLabel("Run").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`sortcat_cancel:${uid}`).setLabel("Cancel").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`sortcat_preview:${uid}`).setLabel("Preview").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`sortcat_run:${uid}`).setLabel("Run").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`sortcat_cancel:${uid}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -10437,11 +10436,11 @@ client.on("interactionCreate", async (interaction) => {
 
   const [action, userId] = id.split(":");
   if (interaction.user.id !== userId) {
-    return interaction.reply({ content: "<:steal:1521327958634135655> This panel belongs to someone else.", flags: 64 });
+    return interaction.reply({ content: "This panel belongs to someone else.", flags: 64 });
   }
 
   const s = sortcatSessions.get(userId);
-  if (!s) return interaction.reply({ content: "<:steal:1521327958634135655> This panel has expired — run `,sortcategory` again.", flags: 64 });
+  if (!s) return interaction.reply({ content: "This panel has expired — run `,sortcategory` again.", flags: 64 });
 
   async function refreshPanel() {
     try {
@@ -10454,7 +10453,7 @@ client.on("interactionCreate", async (interaction) => {
   // Cancel
   if (action === "sortcat_cancel") {
     sortcatSessions.delete(userId);
-    return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Category sort cancelled." }], components: [] });
+    return interaction.update({ embeds: [{ color: PINK, description: "Category sort cancelled." }], components: [] });
   }
 
   // Open modal to set category names (up to 5 — the Discord modal max)
@@ -10471,7 +10470,7 @@ client.on("interactionCreate", async (interaction) => {
       ...s.names.map((n, i) =>
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId(`sortcat_name${i + 1}`).setLabel(labels[i]).setStyle(TextInputStyle.Short)
-            .setRequired(i < 2).setPlaceholder(i === 0 ? "e.g. 💬 General" : i === 1 ? "e.g. 🎮 Gaming" : "leave blank to skip").setValue(n || "")
+            .setRequired(i < 2).setPlaceholder(i === 0 ? "e.g. General" : i === 1 ? "e.g. Gaming" : "leave blank to skip").setValue(n || "")
         )
       )
     );
@@ -10486,7 +10485,7 @@ client.on("interactionCreate", async (interaction) => {
       .slice(0, 25); // Discord select menu hard cap
 
     if (!cats.length) {
-      return interaction.reply({ content: "<:steal:1521327958634135655> This server has no categories to mark as immune.", flags: 64 });
+      return interaction.reply({ content: "This server has no categories to mark as immune.", flags: 64 });
     }
 
     const menu = new StringSelectMenuBuilder()
@@ -10501,7 +10500,7 @@ client.on("interactionCreate", async (interaction) => {
       ));
 
     return interaction.reply({
-      content: "<:RUSH_folder:1521415227495940096> Select every category that should stay **untouched** — nothing selected means nothing is immune.",
+      content: "Select every category that should stay **untouched** — nothing selected means nothing is immune.",
       components: [new ActionRowBuilder().addComponents(menu)],
       flags: 64,
     });
@@ -10515,7 +10514,7 @@ client.on("interactionCreate", async (interaction) => {
 
     const names = s.names.filter(Boolean);
     const numCats = names.length;
-    if (numCats < 2) return interaction.editReply({ content: "<:RUSH_warning:1521415214799654985> Set at least 2 category names first." });
+    if (numCats < 2) return interaction.editReply({ content: "Set at least 2 category names first." });
 
     const allChans = guild.channels.cache.filter(c => c && c.type !== 4 && !s.immune.has(c.parentId));
     const base = Math.floor(allChans.size / numCats);
@@ -10528,10 +10527,10 @@ client.on("interactionCreate", async (interaction) => {
     });
 
     const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
-    const immuneNote = immuneList.length ? `\n\n<:RUSH_folder:1521415227495940096> Skipped (immune): ${immuneList.map(c => `\`${c.name}\``).join(", ")}` : "";
+    const immuneNote = immuneList.length ? `\n\nSkipped (immune): ${immuneList.map(c => `\`${c.name}\``).join(", ")}` : "";
 
     return interaction.editReply({
-      content: `<:RUSH_task:1521415237813665813> **Preview** — **${allChans.size}** sortable channels split into **${numCats}** groups:\n\n${lines.join("\n")}${immuneNote}`,
+      content: `**Preview** — **${allChans.size}** sortable channels split into **${numCats}** groups:\n\n${lines.join("\n")}${immuneNote}`,
     });
   }
 
@@ -10539,27 +10538,27 @@ client.on("interactionCreate", async (interaction) => {
   if (action === "sortcat_run") {
     const names = s.names.filter(Boolean);
     if (names.length < 2) {
-      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set at least **Category 1** and **Category 2** first using **✏ Set Category Names**.", flags: 64 });
+      return interaction.reply({ content: "Set at least **Category 1** and **Category 2** first using **Set Category Names**.", flags: 64 });
     }
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: "<:steal:1521327958634135655> Administrator permission required.", flags: 64 });
+      return interaction.reply({ content: "Administrator permission required.", flags: 64 });
     }
     if (!interaction.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      return interaction.reply({ content: "<:steal:1521327958634135655> I'm missing the **Manage Channels** permission in this server — I need it to create categories and move channels into them. Grant it to my role and run `,sortcategory` again.", flags: 64 });
+      return interaction.reply({ content: "I'm missing the **Manage Channels** permission in this server — I need it to create categories and move channels into them. Grant it to my role and run `,sortcategory` again.", flags: 64 });
     }
 
     await interaction.update({
-      embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> **Running category sort — please wait...**" }],
+      embeds: [{ color: PINK, description: "**Running category sort — please wait...**" }],
       components: [],
     });
     sortcatSessions.delete(userId);
 
     const statusMsg = await interaction.channel.send({
-      embeds: [{ color: PINK, description: "<:019TXTWhite_Yes:1521327983279996999> Fetching channels..." }],
+      embeds: [{ color: PINK, description: "Fetching channels..." }],
     }).catch(() => null);
 
     const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `${text}` }] }).catch(() => {});
     };
 
     try {
@@ -10639,10 +10638,10 @@ client.on("interactionCreate", async (interaction) => {
       const totalMoved = trackers.reduce((sum, t) => sum + t.count, 0);
       const fields = trackers.map((t, i) => ({ name: names[i], value: `${t.count} channels`, inline: true }));
       const immuneList = [...s.immune].map(id => guild.channels.cache.get(id)).filter(Boolean);
-      if (immuneList.length) fields.push({ name: "🛡 Immune (untouched)", value: immuneList.map(c => c.name).join(", "), inline: false });
+      if (immuneList.length) fields.push({ name: "Immune (untouched)", value: immuneList.map(c => c.name).join(", "), inline: false });
       if (failCount > 0) {
         fields.push({
-          name: "<:RUSH_warning:1521415214799654985> Failed to move",
+          name: "Failed to move",
           value: `**${failCount}** channel(s) — most likely a permissions issue.\nFirst error: \`${firstError}\``,
           inline: false,
         });
@@ -10652,8 +10651,8 @@ client.on("interactionCreate", async (interaction) => {
         embeds: [{
           color: PINK,
           title: failCount > 0
-            ? (totalMoved === 0 ? "<:steal:1521327958634135655> Category Sort Failed" : "<:RUSH_warning:1521415214799654985> Category Sort Finished With Errors")
-            : "<:019TXTWhite_Yes:1521327983279996999> Category Sort Complete",
+            ? (totalMoved === 0 ? "Category Sort Failed" : "Category Sort Finished With Errors")
+            : "Category Sort Complete",
           description: `**${guild.name}** — **${totalMoved}** of **${allChans.length}** channels moved across **${numCats}** categories`,
           fields,
           footer: { text: "sensational • white edition" },
@@ -10663,7 +10662,7 @@ client.on("interactionCreate", async (interaction) => {
 
     } catch (e) {
       log(`[sortcategory] error: ${e.message}`, "error");
-      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Error: \`${e.message}\`` }] }).catch(() => {});
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `Error: \`${e.message}\`` }] }).catch(() => {});
     }
   }
 });
@@ -10674,10 +10673,10 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.customId.startsWith("sortcat_immune_select:")) return;
 
   const userId = interaction.customId.split(":")[1];
-  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+  if (interaction.user.id !== userId) return interaction.reply({ content: "Not your session.", flags: 64 });
 
   const s = sortcatSessions.get(userId);
-  if (!s) return interaction.update({ content: "<:steal:1521327958634135655> This panel has expired — run `,sortcategory` again.", components: [] });
+  if (!s) return interaction.update({ content: "This panel has expired — run `,sortcategory` again.", components: [] });
 
   s.immune = new Set(interaction.values);
 
@@ -10690,8 +10689,8 @@ client.on("interactionCreate", async (interaction) => {
   const immuneList = [...s.immune].map(id => interaction.guild.channels.cache.get(id)).filter(Boolean);
   return interaction.update({
     content: immuneList.length
-      ? `<:019TXTWhite_Yes:1521327983279996999> Immune categories set: ${immuneList.map(c => `\`${c.name}\``).join(", ")}`
-      : "<:019TXTWhite_Yes:1521327983279996999> No immune categories — every category will be sorted.",
+      ? `Immune categories set: ${immuneList.map(c => `\`${c.name}\``).join(", ")}`
+      : "No immune categories — every category will be sorted.",
     components: [],
   });
 });
@@ -10702,12 +10701,12 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.customId.startsWith("sortcat_modal:")) return;
 
   const userId = interaction.customId.split(":")[1];
-  if (interaction.user.id !== userId) return interaction.reply({ content: "<:steal:1521327958634135655> Not your session.", flags: 64 });
+  if (interaction.user.id !== userId) return interaction.reply({ content: "Not your session.", flags: 64 });
 
   const s = sortcatSessions.get(userId) || scNewSession(interaction.channelId);
 
   const raw = [1, 2, 3, 4, 5].map(n => interaction.fields.getTextInputValue(`sortcat_name${n}`).trim());
-  if (!raw[0] || !raw[1]) return interaction.reply({ content: "<:steal:1521327958634135655> Category 1 and Category 2 are required.", flags: 64 });
+  if (!raw[0] || !raw[1]) return interaction.reply({ content: "Category 1 and Category 2 are required.", flags: 64 });
 
   s.names = raw.map(v => v || null);
   sortcatSessions.set(userId, s);
@@ -10719,7 +10718,7 @@ client.on("interactionCreate", async (interaction) => {
   } catch (_) {}
 
   const filled = s.names.filter(Boolean);
-  return interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Category names saved:\n${filled.map(n => `**${n}**`).join(" | ")}`, flags: 64 });
+  return interaction.reply({ content: `Category names saved:\n${filled.map(n => `**${n}**`).join(" | ")}`, flags: 64 });
 });
 
 // -- CONFIG (only OWNER_ID can modify) --------------
@@ -10953,11 +10952,11 @@ client.on("messageCreate", async (message) => {
   const embed = {
     color: PINK,
     author: { name: message.author.username, icon_url: message.author.displayAvatarURL() },
-    title: "<:RUSH_warning:1521415214799654985> Minor Detected",
+    title: "Minor Detected",
     description: `**Message:**\n\`\`\`${message.content.substring(0, 800)}\`\`\``,
     fields: [
       { name: "Reason", value: result.reason, inline: false },
-      { name: "Confidence", value: result.confidence === 'high' ? '<:steal:1521327958634135655> High' : '🟡 Medium', inline: true },
+      { name: "Confidence", value: result.confidence === 'high' ? 'High' : 'Medium', inline: true },
       { name: "User ID", value: `\`${message.author.id}\``, inline: true },
       { name: "Channel", value: `<#${message.channel.id}>`, inline: true },
     ],
@@ -11054,7 +11053,7 @@ client.on("interactionCreate", async (interaction) => {
   if (!id.startsWith("poj_")) return;
 
   if (!interaction.member.permissions.has(PermissionFlagsBits.ManageGuild))
-    return interaction.reply({ content: "<:steal:1521327958634135655> Missing permissions.", flags: 64 });
+    return interaction.reply({ content: "Missing permissions.", flags: 64 });
 
   const [action, guildId] = id.split(":");
   if (guildId !== interaction.guild.id) return;
@@ -11105,7 +11104,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // Remove channel — show select if channels exist
   if (action === "poj_remove") {
-    if (!cfg.channels.length) return interaction.reply({ content: "<:steal:1521327958634135655> No channels configured.", flags: 64 });
+    if (!cfg.channels.length) return interaction.reply({ content: "No channels configured.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const options = cfg.channels.map(chId => {
       const ch = interaction.guild.channels.cache.get(chId);
@@ -11131,10 +11130,10 @@ client.on("interactionCreate", async (interaction) => {
   // Accept raw ID or <#ID> mention
   const chId    = input.replace(/[<#>]/g, "");
   const ch      = interaction.guild.channels.cache.get(chId);
-  if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${chId}\` not found in this server.`, flags: 64 });
+  if (!ch) return interaction.reply({ content: `Channel \`${chId}\` not found in this server.`, flags: 64 });
 
   const cfg = pingOnJoinConfig.get(guildId) ?? { enabled: false, channels: [] };
-  if (cfg.channels.includes(chId)) return interaction.reply({ content: `<:steal:1521327958634135655> <#${chId}> is already added.`, flags: 64 });
+  if (cfg.channels.includes(chId)) return interaction.reply({ content: `<#${chId}> is already added.`, flags: 64 });
   cfg.channels.push(chId);
   pingOnJoinConfig.set(guildId, cfg);
   saveAllConfigs();
@@ -11161,14 +11160,14 @@ client.on("interactionCreate", async (interaction) => {
   const guildId = interaction.customId.split(":")[1];
   const chId    = interaction.values[0];
   const cfg     = pingOnJoinConfig.get(guildId);
-  if (!cfg) return interaction.reply({ content: "<:steal:1521327958634135655> Config not found.", flags: 64 });
+  if (!cfg) return interaction.reply({ content: "Config not found.", flags: 64 });
   cfg.channels   = cfg.channels.filter(id => id !== chId);
   pingOnJoinConfig.set(guildId, cfg);
   saveAllConfigs();
 
   const ch = interaction.guild.channels.cache.get(chId);
   return interaction.update({
-    content: `<:019TXTWhite_Yes:1521327983279996999> Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
+    content: `Removed <#${chId}>${ch ? ` (#${ch.name})` : ""} from ping-on-join channels.`,
     components: [],
   });
 });
@@ -11207,7 +11206,7 @@ client.on("messageCreate", async (message) => {
     const reqAttach = [...cfg.requireAttach].map(id => `<#${id}>`).join(", ") || "none";
     const logCh = cfg.logChannelId ? `<#${cfg.logChannelId}>` : "not set";
     const modRole = cfg.modRoleId ? `<@&${cfg.modRoleId}>` : "not set";
-    return message.reply({ embeds: [{ color: PINK, title: "<:18plus:1521415320538054748> Anti-Minors Config", fields: [
+    return message.reply({ embeds: [{ color: PINK, title: "Anti-Minors Config", fields: [
       { name: "Monitored Channels", value: monitored, inline: false },
       { name: "Require Attachment", value: reqAttach, inline: false },
       { name: "Log Channel", value: logCh, inline: true },
@@ -11329,17 +11328,17 @@ function buildPanelEmbed(s) {
 
   // ── Operation metadata ────────────────────────────────────────────────────
   const opLabels = {
-    cloneperks:         { e: "<:RUSH_globe:1521415284496273489>", n: "Full Server Clone",    hint: "Copies roles, categories, channels + videos from one server to another." },
-    cloneperks_channel: { e: "<:RUSH_comment:1491884212297531572>", n: "Single Channel Clone", hint: "Copies all media from one specific channel to another." },
-    clonecategoryperks: { e: "<:RUSH_folder:1521415227495940096>", n: "Category + Videos",    hint: "Clones a whole category and distributes its videos." },
-    setuppaidperks:     { e: "<:RUSH_maintenance:1521415300254404648>", n: "Paid Perks Setup",     hint: "Full premium setup — clone everything + distribute videos into exclusive channels." },
-    hidepaidperks:      { e: "🙈", n: "Hide Channels",        hint: "Removes @everyone ViewChannel permission on a random set of channels." },
-    sortchannels:       { e: "🔀", n: "Sort Channels",        hint: "Distributes all channels into 2–3 named categories evenly." },
+    cloneperks:         { e: "", n: "Full Server Clone",    hint: "Copies roles, categories, channels + videos from one server to another." },
+    cloneperks_channel: { e: "", n: "Single Channel Clone", hint: "Copies all media from one specific channel to another." },
+    clonecategoryperks: { e: "", n: "Category + Videos",    hint: "Clones a whole category and distributes its videos." },
+    setuppaidperks:     { e: "", n: "Paid Perks Setup",     hint: "Full premium setup — clone everything + distribute videos into exclusive channels." },
+    hidepaidperks:      { e: "", n: "Hide Channels",        hint: "Removes @everyone ViewChannel permission on a random set of channels." },
+    sortchannels:       { e: "", n: "Sort Channels",        hint: "Distributes all channels into 2–3 named categories evenly." },
   };
-  const op = opLabels[s.operation] ?? { e: "<:RUSH_gear:1521415230184489061>", n: s.operation, hint: "Custom operation." };
+  const op = opLabels[s.operation] ?? { e: "", n: s.operation, hint: "Custom operation." };
 
   // ── Toggle row ────────────────────────────────────────────────────────────
-  const t = (v, l) => v ? `<:019TXTWhite_Yes:1521327983279996999> ${l}` : `<:steal:1521327958634135655> ${l}`;
+  const t = (v, l) => v ? `${l}` : `${l}`;
   const toggleLine = [
     t(s.cloneRoles,       "Roles"),
     t(s.cloneCategories,  "Cats"),
@@ -11351,40 +11350,40 @@ function buildPanelEmbed(s) {
 
   // ── Source / Target ───────────────────────────────────────────────────────
   const srcLine = srcOk
-    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.sourceId}\`` + (s.selectedSrcName ? `  ·  **${s.selectedSrcName}**` : "")
-    : "<:RUSH_warning:1521415214799654985> *Not set — press <:RUSH_folder:1521415227495940096> Source below*";
+    ? `\`${s.sourceId}\`` + (s.selectedSrcName ? `  ·  **${s.selectedSrcName}**` : "")
+    : "*Not set — press Source below*";
   const tgtLine = dstOk
-    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.targetId}\`` + (s.selectedTgtName ? `  ·  **${s.selectedTgtName}**` : "")
-    : "<:RUSH_warning:1521415214799654985> *Not set — press <:RUSH_folder:1521415227495940096> Target below*";
+    ? `\`${s.targetId}\`` + (s.selectedTgtName ? `  ·  **${s.selectedTgtName}**` : "")
+    : "*Not set — press Target below*";
 
   // ── Extra param ───────────────────────────────────────────────────────────
   const extraNeeded = ["clonecategoryperks", "sortchannels"].includes(s.operation);
   const extraLine   = s.extraParam
-    ? `<:019TXTWhite_Yes:1521327983279996999> \`${s.extraParam}\``
+    ? `\`${s.extraParam}\``
     : extraNeeded
-      ? "<:RUSH_warning:1521415214799654985> *Required for this operation — press ✏ Extra*"
-      : "*(optional — press ✏ Extra)*";
+      ? "*Required for this operation — press Extra*"
+      : "*(optional — press Extra)*";
 
   // ── Status callout ────────────────────────────────────────────────────────
   const statusLine = ready
-    ? "> <:019TXTWhite_Yes:1521327983279996999> **All set!** Press **<:RUSH_rocket:1521415262384160778> Launch** to run."
-    : "> <:RUSH_warning:1521415214799654985> **Not ready** — configure Source and Target, then press **<:RUSH_rocket:1521415262384160778> Launch**.";
+    ? "> **All set!** Press **Launch** to run."
+    : "> **Not ready** — configure Source and Target, then press **Launch**.";
 
   return {
     color: PINK,
-    title: "<:019TXTWhite_Yes:1521327983279996999>  Setup Panel  ·  owner only",
+    title: " Setup Panel  ·  owner only",
     description: [
-      "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **<:RUSH_rocket:1521415262384160778> Launch**.",
+      "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **Launch**.",
       "",
       statusLine,
     ].join("\n"),
     fields: [
       { name: `${op.e}  Operation`,  value: `**${op.n}**\n*${op.hint}*`, inline: false },
-      { name: "<:RUSH_comment:1491884212297531572>  Source",          value: srcLine,                       inline: true  },
-      { name: "<:RUSH_comment:1491884212297531572>  Target",          value: tgtLine,                       inline: true  },
-      { name: "<:RUSH_gear:1521415230184489061>  Clone options",   value: toggleLine,                    inline: false },
-      { name: "<:movieslotbluedns:1414214240218120295>  Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
-      { name: "✏️  Extra param",     value: extraLine,                     inline: false },
+      { name: " Source",          value: srcLine,                       inline: true  },
+      { name: " Target",          value: tgtLine,                       inline: true  },
+      { name: " Clone options",   value: toggleLine,                    inline: false },
+      { name: " Video rename",    value: `\`${p1}\`  →  \`${p2}\`  *(preview)*`, inline: false },
+      { name: " Extra param",     value: extraLine,                     inline: false },
     ],
     footer: { text: "sensational  ·  setup panel  ·  all changes apply instantly" },
     timestamp: new Date(),
@@ -11394,14 +11393,14 @@ function buildPanelEmbed(s) {
 // -- Custom emoji used on buttons/placeholders — MUST go through .setEmoji(),
 //    never concatenated into .setLabel()/.setPlaceholder() text, or Discord
 //    renders the raw "<:name:id>" string instead of the icon. -----------------
-const E_YES    = "<:019TXTWhite_Yes:1521327983279996999>";
-const E_NO     = "<:steal:1521327958634135655>";
-const E_TRASH  = "<:RUSH_trash_can:1521415241190215721>";
-const E_TASK   = "<:RUSH_task:1521415237813665813>";
-const E_ROCKET = "<:RUSH_rocket:1521415262384160778>";
-const E_FOLDER = "<:RUSH_folder:1521415227495940096>";
-const E_GLOBE  = "<:RUSH_globe:1521415284496273489>";
-const E_VIDEO  = "🎬";
+const E_YES    = "";
+const E_NO     = "";
+const E_TRASH  = "";
+const E_TASK   = "";
+const E_ROCKET = "";
+const E_FOLDER = "";
+const E_GLOBE  = "";
+const E_VIDEO  = "";
 
 // Small helper so every button gets its emoji through the right field.
 function btn(customId, label, style, emoji) {
@@ -11418,19 +11417,19 @@ function buildPanelComponents(s) {
   const row1 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_op")
-      .setPlaceholder("⚙️  Step 1 — Choose an operation...")
+      .setPlaceholder(" Step 1 — Choose an operation...")
       .addOptions([
-        { label: "Full Server Clone",   value: "cloneperks",         emoji: "<:RUSH_globe:1521415284496273489>",
+        { label: "Full Server Clone",   value: "cloneperks",         
           description: "Copies roles, categories, channels + all videos",    default: s.operation === "cloneperks"         },
-        { label: "Single Channel Clone", value: "cloneperks_channel", emoji: "<:RUSH_comment:1491884212297531572>",
+        { label: "Single Channel Clone", value: "cloneperks_channel", 
           description: "Copies media from one channel into another",         default: s.operation === "cloneperks_channel" },
-        { label: "Category + Videos",   value: "clonecategoryperks", emoji: "<:RUSH_folder:1521415227495940096>",
+        { label: "Category + Videos",   value: "clonecategoryperks", 
           description: "Clones a category and distributes its videos",       default: s.operation === "clonecategoryperks" },
-        { label: "Paid Perks Setup",     value: "setuppaidperks",     emoji: "<:RUSH_maintenance:1521415300254404648>",
+        { label: "Paid Perks Setup",     value: "setuppaidperks",     
           description: "Premium setup — clone everything + exclusive chans", default: s.operation === "setuppaidperks"     },
-        { label: "Hide Channels",        value: "hidepaidperks",      emoji: "🙈",
+        { label: "Hide Channels",        value: "hidepaidperks",      
           description: "Removes @everyone view access from random channels", default: s.operation === "hidepaidperks"      },
-        { label: "Sort Channels",        value: "sortchannels",       emoji: "🔀",
+        { label: "Sort Channels",        value: "sortchannels",       
           description: "Distributes channels into 2–3 categories evenly",    default: s.operation === "sortchannels"       },
       ])
   );
@@ -11448,15 +11447,15 @@ function buildPanelComponents(s) {
   const row3 = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("sp_vid_mode")
-      .setPlaceholder("🎬  Step 2 — Choose how to name the videos...")
+      .setPlaceholder(" Step 2 — Choose how to name the videos...")
       .addOptions([
-        { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   emoji: "🔤",
+        { label: "Prefix + Number  (e.g. CLIP01.mp4)", value: "prefix",   
           description: "Pattern followed by an incrementing number",  default: s.videoRenameMode === "prefix"   },
-        { label: "Numbers only  (e.g. 01.mp4)",         value: "numbered", emoji: "🔢",
+        { label: "Numbers only  (e.g. 01.mp4)",         value: "numbered", 
           description: "Clean sequential numbering, no prefix",       default: s.videoRenameMode === "numbered" },
-        { label: "Fixed name  (e.g. CLIP.mp4 every)",   value: "replace",  emoji: "<:RUSH_task:1521415237813665813>",
+        { label: "Fixed name  (e.g. CLIP.mp4 every)",   value: "replace",  
           description: "Every file gets the exact same name",         default: s.videoRenameMode === "replace"  },
-        { label: "Number + Suffix  (e.g. 01_CLIP.mp4)", value: "suffix",   emoji: "🔚",
+        { label: "Number + Suffix  (e.g. 01_CLIP.mp4)", value: "suffix",   
           description: "Number first, then your pattern",             default: s.videoRenameMode === "suffix"   },
       ])
   );
@@ -11477,7 +11476,7 @@ function buildPanelComponents(s) {
   );
   browseButtons.push(
     btn("sp_browse_tgt", bc.tgtLabel,    ButtonStyle.Primary,   E_GLOBE),
-    btn("sp_extra",      "Extra param",  ButtonStyle.Secondary, "✏️"),
+    btn("sp_extra",      "Extra param",  ButtonStyle.Secondary, ""),
     btn("sp_clr_sel",    "Clear",        ButtonStyle.Secondary, E_TRASH),
   );
   const row4 = new ActionRowBuilder().addComponents(...browseButtons);
@@ -11502,7 +11501,7 @@ async function safeRenderUpdate(interaction, s) {
     return await interaction.update({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) });
   } catch (e) {
     log(`[clone panel] render failed: ${e.message}`, "error");
-    return interaction.reply({ content: `<:steal:1521327958634135655> Failed to refresh panel: \`${e.message}\``, flags: 64 }).catch(() => {});
+    return interaction.reply({ content: `Failed to refresh panel: \`${e.message}\``, flags: 64 }).catch(() => {});
   }
 }
 
@@ -11523,14 +11522,14 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Select: operation --
   if (interaction.isStringSelectMenu() && id === "sp_op") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired. Type `,clone` again.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired. Type `,clone` again.", flags: 64 });
     s.operation = interaction.values[0];
     return safeRenderUpdate(interaction, s);
   }
 
   // -- Select: video rename mode --
   if (interaction.isStringSelectMenu() && id === "sp_vid_mode") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.videoRenameMode = interaction.values[0];
     return safeRenderUpdate(interaction, s);
   }
@@ -11544,17 +11543,17 @@ client.on("interactionCreate", async (interaction) => {
     sp_t_msgs:  "cloneMessages",
   };
   if (interaction.isButton() && toggleMap[id]) {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s[toggleMap[id]] = !s[toggleMap[id]];
     return safeRenderUpdate(interaction, s);
   }
 
   // -- Button: browse source server + channels --
   if (interaction.isButton() && id === "sp_browse_src") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const guilds = [...client.guilds.cache.values()].slice(0, 25);
-    if (guilds.length === 0) return interaction.reply({ content: "<:steal:1521327958634135655> No servers found in the bot cache.", flags: 64 });
+    if (guilds.length === 0) return interaction.reply({ content: "No servers found in the bot cache.", flags: 64 });
     const options = guilds.map(g => ({
       label: g.name.slice(0, 100),
       value: g.id,
@@ -11564,7 +11563,7 @@ client.on("interactionCreate", async (interaction) => {
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_guild_pick")
-        .setPlaceholder("<:RUSH_globe:1521415284496273489> Select SOURCE server...")
+        .setPlaceholder("Select SOURCE server...")
         .addOptions(options)
     );
     return interaction.reply({ content: "**Step 1/2 — Source** — Choose the source server:", components: [selRow], flags: 64 });
@@ -11572,7 +11571,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Select: source guild picked → fetch channels → show channel picker --
   if (interaction.isStringSelectMenu() && id === "sp_src_guild_pick") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const guildId = interaction.values[0];
     s.sourceId = guildId;
@@ -11591,7 +11590,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
       rawChannels = await res.json();
     } catch (e) {
-      return interaction.update({ content: `<:steal:1521327958634135655> Failed to load channels: \`${e.message}\``, components: [] });
+      return interaction.update({ content: `Failed to load channels: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
     // Store rawChannels in session so the search modal can filter them
@@ -11600,20 +11599,20 @@ client.on("interactionCreate", async (interaction) => {
     // Show a button so the user can open the search modal (modals require a button/slash interaction)
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("All Channels").setEmoji("<:awhitestar:1521415243954393159>").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_src_search").setLabel("Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_src_all").setLabel("All Channels").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress 🔍 to search or <:awhitestar:1521415243954393159> to clone all:`,
+      content: `**Source server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories found\nPress to search or to clone all:`,
       components: [searchBtn],
     });
   }
 
   // -- Button: open source search modal --
   if (interaction.isButton() && id === "sp_btn_src_search") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`🔍 Search — ${(s._srcGuildName ?? "source").slice(0, 33)}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_src_search").setTitle(`Search — ${(s._srcGuildName ?? "source").slice(0, 33)}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("src_search_query")
@@ -11626,7 +11625,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: select all channels (no filter) --
   if (interaction.isButton() && id === "sp_btn_src_all") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.selectedSrcIds  = [];
     s.selectedSrcName = "";
     try {
@@ -11635,14 +11634,14 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `<:019TXTWhite_Yes:1521327983279996999> **Source set:** all channels — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      content: `**Source set:** all channels — go back to the panel and press`,
       components: [],
     });
   }
 
   // -- Modal submit: source channel search --
   if (interaction.isModalSubmit() && id === "sp_modal_src_search") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const query = interaction.fields.getTextInputValue("src_search_query").trim().toLowerCase();
     const rawChannels = s._srcRawChannels ?? [];
@@ -11658,15 +11657,15 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const options = [
-      { label: "<:awhitestar:1521415243954393159> All Channels (no filter)", value: "__all__", description: "Clone the entire server without filters" },
-      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `<:RUSH_folder:1521415227495940096> ${c.name}`.slice(0, 100), value: c.id, description: `Category · ${c.id}` })),
-      ...chans.slice(0, 12).map(c => ({ label: `<:RUSH_comment:1491884212297531572> ${c.name}`.slice(0, 100), value: c.id, description: `Channel · ${c.id}` })),
+      { label: "All Channels (no filter)", value: "__all__", description: "Clone the entire server without filters" },
+      ...cats.slice(0, isCatOp ? 24 : 12).map(c  => ({ label: `${c.name}`.slice(0, 100), value: c.id, description: `Category · ${c.id}` })),
+      ...chans.slice(0, 12).map(c => ({ label: `${c.name}`.slice(0, 100), value: c.id, description: `Channel · ${c.id}` })),
     ].slice(0, 25);
 
     if (options.length === 1) {
       // Only "__all__" means no match — let user search again
       return interaction.reply({
-        content: `<:steal:1521327958634135655> No results for **"${query}"** in **${guildName}**. Click <:RUSH_folder:1521415227495940096> Source Category again to search.`,
+        content: `No results for **"${query}"** in **${guildName}**. Click Source Category again to search.`,
         flags: 64,
       });
     }
@@ -11674,7 +11673,7 @@ client.on("interactionCreate", async (interaction) => {
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_src_ch_pick")
-        .setPlaceholder("<:RUSH_folder:1521415227495940096> Choose source channel/category...")
+        .setPlaceholder("Choose source channel/category...")
         .addOptions(options)
     );
     const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
@@ -11687,7 +11686,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Select: source channel/category picked --
   if (interaction.isStringSelectMenu() && id === "sp_src_ch_pick") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const val = interaction.values[0];
     if (val === "__all__") {
       s.selectedSrcIds  = [];
@@ -11705,17 +11704,17 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `<:019TXTWhite_Yes:1521327983279996999> **Source set:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "all channels"} — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      content: `**Source set:** ${s.selectedSrcName ? `\`${s.selectedSrcName}\`` : "all channels"} — go back to the panel and press`,
       components: [],
     });
   }
 
   // -- Button: browse target server + category --
   if (interaction.isButton() && id === "sp_browse_tgt") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const guilds = [...client.guilds.cache.values()].slice(0, 25);
-    if (guilds.length === 0) return interaction.reply({ content: "<:steal:1521327958634135655> No servers found in the bot cache.", flags: 64 });
+    if (guilds.length === 0) return interaction.reply({ content: "No servers found in the bot cache.", flags: 64 });
     const options = guilds.map(g => ({
       label: g.name.slice(0, 100),
       value: g.id,
@@ -11725,7 +11724,7 @@ client.on("interactionCreate", async (interaction) => {
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_tgt_guild_pick")
-        .setPlaceholder("<:RUSH_globe:1521415284496273489> Select TARGET server...")
+        .setPlaceholder("Select TARGET server...")
         .addOptions(options)
     );
     return interaction.reply({ content: "**Step 1/2 — Target** — Choose the target server:", components: [selRow], flags: 64 });
@@ -11733,7 +11732,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Select: target guild picked → fetch categoriess → show category picker --
   if (interaction.isStringSelectMenu() && id === "sp_tgt_guild_pick") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const guildId = interaction.values[0];
     s.targetId = guildId;
@@ -11752,7 +11751,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!res.ok) throw new Error(`HTTP ${res.status} — bot non è nel server?`);
       rawChannels = await res.json();
     } catch (e) {
-      return interaction.update({ content: `<:steal:1521327958634135655> Failed to load channels: \`${e.message}\``, components: [] });
+      return interaction.update({ content: `Failed to load channels: \`${e.message}\``, components: [] });
     }
     const guildName = client.guilds.cache.get(guildId)?.name ?? guildId;
     // Store raw channels in session for the search modal
@@ -11760,20 +11759,20 @@ client.on("interactionCreate", async (interaction) => {
     s._tgtGuildName   = guildName;
     const { ButtonBuilder, ButtonStyle } = require("discord.js");
     const searchBtn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("🔍 Search Category").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("Root (no category)").setEmoji("<:RUSH_pin:1521415247183872080>").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_search").setLabel("Search Category").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("sp_btn_tgt_root").setLabel("Root (no category)").setStyle(ButtonStyle.Secondary),
     );
     return interaction.update({
-      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress 🔍 to search or <:RUSH_pin:1521415247183872080> for Root:`,
+      content: `**Target server:** **${guildName}** — ${rawChannels.filter(c => c.type === 4).length} categories available\nPress to search or for Root:`,
       components: [searchBtn],
     });
   }
 
   // -- Button: open target search modal --
   if (interaction.isButton() && id === "sp_btn_tgt_search") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`🔍 Search — ${(s._tgtGuildName ?? "target").slice(0, 33)}`);
+    const modal = new ModalBuilder().setCustomId("sp_modal_tgt_search").setTitle(`Search — ${(s._tgtGuildName ?? "target").slice(0, 33)}`);
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("tgt_search_query")
@@ -11786,7 +11785,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: target root (no category) --
   if (interaction.isButton() && id === "sp_btn_tgt_root") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.selectedTgtCatId = "";
     s.selectedTgtName  = "";
     try {
@@ -11794,12 +11793,12 @@ client.on("interactionCreate", async (interaction) => {
       const panelMsg = panelCh ? await panelCh.messages.fetch(s.msgId).catch(() => null) : null;
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.update({ content: `<:019TXTWhite_Yes:1521327983279996999> **Target set:** Root (no category) — go back to the panel and press <:RUSH_rocket:1521415262384160778>`, components: [] });
+    return interaction.update({ content: `**Target set:** Root (no category) — go back to the panel and press`, components: [] });
   }
 
   // -- Modal submit: target category search --
   if (interaction.isModalSubmit() && id === "sp_modal_tgt_search") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { StringSelectMenuBuilder } = require("discord.js");
     const query = interaction.fields.getTextInputValue("tgt_search_query").trim().toLowerCase();
     const rawChannels = s._tgtRawChannels ?? [];
@@ -11807,16 +11806,16 @@ client.on("interactionCreate", async (interaction) => {
     let cats = rawChannels.filter(c => c.type === 4).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
     if (query) cats = cats.filter(c => c.name.toLowerCase().includes(query));
     const options = [
-      { label: "<:RUSH_pin:1521415247183872080> Root — no category", value: "__root__", description: "Places cloned channels without a category" },
-      ...cats.slice(0, 24).map(c => ({ label: `<:RUSH_folder:1521415227495940096> ${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
+      { label: "Root — no category", value: "__root__", description: "Places cloned channels without a category" },
+      ...cats.slice(0, 24).map(c => ({ label: `${c.name}`.slice(0, 100), value: c.id, description: `ID: ${c.id}` })),
     ].slice(0, 25);
     if (options.length === 1 && query) {
-      return interaction.reply({ content: `<:steal:1521327958634135655> No categories found for **"${query}"** in **${guildName}**. Click 🎯 Target Category again to search.`, flags: 64 });
+      return interaction.reply({ content: `No categories found for **"${query}"** in **${guildName}**. Click Target Category again to search.`, flags: 64 });
     }
     const selRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("sp_tgt_cat_pick")
-        .setPlaceholder("<:RUSH_folder:1521415227495940096> Choose target category...")
+        .setPlaceholder("Choose target category...")
         .addOptions(options)
     );
     const hint = query ? `Results for **"${query}"** (${options.length - 1} found)` : `First ${options.length - 1} categories`;
@@ -11825,7 +11824,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Select: target category picked --
   if (interaction.isStringSelectMenu() && id === "sp_tgt_cat_pick") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const val = interaction.values[0];
     if (val === "__root__") {
       s.selectedTgtCatId = "";
@@ -11842,14 +11841,14 @@ client.on("interactionCreate", async (interaction) => {
       if (panelMsg) await panelMsg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
     return interaction.update({
-      content: `<:019TXTWhite_Yes:1521327983279996999> **Target set:** ${s.selectedTgtName ? `category \`${s.selectedTgtName}\`` : "root server"} — go back to the panel and press <:RUSH_rocket:1521415262384160778>`,
+      content: `**Target set:** ${s.selectedTgtName ? `category \`${s.selectedTgtName}\`` : "root server"} — go back to the panel and press`,
       components: [],
     });
   }
 
   // -- Button: clear all selection --
   if (interaction.isButton() && id === "sp_clr_sel") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.selectedSrcIds   = [];
     s.selectedSrcName  = "";
     s.selectedTgtCatId = "";
@@ -11859,7 +11858,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: open IDs modal --
   if (interaction.isButton() && id === "sp_ids") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_ids")
@@ -11886,11 +11885,11 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Button: open video options modal --
   if (interaction.isButton() && id === "sp_video") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_video")
-      .setTitle("🎬 Video & Rename Options")
+      .setTitle("Video & Rename Options")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("vid_pattern").setLabel("Pattern / Base filename")
@@ -11918,7 +11917,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Modal submit: IDs & params --
   if (interaction.isModalSubmit() && id === "sp_modal_ids") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.sourceId   = interaction.fields.getTextInputValue("src_id").trim();
     s.targetId   = interaction.fields.getTextInputValue("dst_id").trim();
     const rawExcl = interaction.fields.getTextInputValue("excl_name").trim();
@@ -11929,12 +11928,12 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> IDs and parameters updated!", flags: 64 });
+    return interaction.reply({ content: "IDs and parameters updated!", flags: 64 });
   }
 
   // -- Modal submit: video options --
   if (interaction.isModalSubmit() && id === "sp_modal_video") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.videoPattern      = interaction.fields.getTextInputValue("vid_pattern").trim() || "SENSATIONAL";
     s.videoCounterStart = parseInt(interaction.fields.getTextInputValue("vid_counter")) || 1;
     s.videoPadZeros     = Math.min(4, Math.max(1, parseInt(interaction.fields.getTextInputValue("vid_pad")) || 2));
@@ -11946,7 +11945,7 @@ client.on("interactionCreate", async (interaction) => {
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Video options updated!", flags: 64 });
+    return interaction.reply({ content: "Video options updated!", flags: 64 });
   }
 
   // -- Button: open extra param modal --
@@ -11955,7 +11954,7 @@ client.on("interactionCreate", async (interaction) => {
   //  (clonecategoryperks), how many channels to hide (hidepaidperks), or
   //  pipe-separated category names (sortchannels) — see executeSetupOperation.)
   if (interaction.isButton() && id === "sp_extra") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
     const hints = {
       clonecategoryperks: { label: "Source category name to clone",     placeholder: "e.g. exclusive, vip, premium..." },
@@ -11965,7 +11964,7 @@ client.on("interactionCreate", async (interaction) => {
     const hint  = hints[s.operation] ?? { label: "Extra parameter (used by some operations)", placeholder: "optional" };
     const modal = new ModalBuilder()
       .setCustomId("sp_modal_extra")
-      .setTitle("✏️ Extra Parameter")
+      .setTitle("Extra Parameter")
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId("extra_value").setLabel(hint.label.slice(0, 45))
@@ -11978,50 +11977,50 @@ client.on("interactionCreate", async (interaction) => {
 
   // -- Modal submit: extra param --
   if (interaction.isModalSubmit() && id === "sp_modal_extra") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired.", flags: 64 });
     s.extraParam = interaction.fields.getTextInputValue("extra_value").trim();
     try {
       const ch  = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
       const msg = ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
       if (msg) await msg.edit({ embeds: [buildPanelEmbed(s)], components: buildPanelComponents(s) }).catch(() => {});
     } catch (_) {}
-    return interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Extra parameter updated!", flags: 64 });
+    return interaction.reply({ content: "Extra parameter updated!", flags: 64 });
   }
 
   // -- Button: cancel --
   if (interaction.isButton() && id === "sp_cancel") {
     setupSessions.delete(interaction.user.id);
     return interaction.update({
-      embeds:     [{ color: PINK, description: "<:steal:1521327958634135655> Config Panel cancelled." }],
+      embeds:     [{ color: PINK, description: "Config Panel cancelled." }],
       components: [],
     });
   }
 
   // -- Button: launch --
   if (interaction.isButton() && id === "sp_launch") {
-    if (!s) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired. Use `,clone` again.", flags: 64 });
+    if (!s) return interaction.reply({ content: "Session expired. Use `,clone` again.", flags: 64 });
     if (!s.sourceId || !s.targetId) {
-      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Set **Source ID** and **Target ID** first using the <:RUSH_task:1521415237813665813> Set IDs button.", flags: 64 });
+      return interaction.reply({ content: "Set **Source ID** and **Target ID** first using the Set IDs button.", flags: 64 });
     }
     // Lock panel -- disable all components
     const lockedEmbed = buildPanelEmbed(s);
-    lockedEmbed.description += "\n\n<a:Loading:1521415253982969898> **Operation started — running...**";
+    lockedEmbed.description += "\n\n**Operation started — running...**";
     await interaction.update({ embeds: [lockedEmbed], components: [] }).catch(() => {});
 
     const sessionCopy = { ...s };
     setupSessions.delete(interaction.user.id);
 
     const statusCh  = interaction.channel;
-    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "🌸 Initializing..." }] }).catch(() => null);
+    let statusMsg   = await statusCh.send({ embeds: [{ color: PINK, description: "Initializing..." }] }).catch(() => null);
     const updateStatus = async (text) => {
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> ${text}` }] }).catch(() => {});
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `${text}` }] }).catch(() => {});
     };
 
     try {
       await executeSetupOperation(sessionCopy, statusMsg, updateStatus);
     } catch (e) {
       log(`[setup panel] fatal: ${e.message}`, "error");
-      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `<:steal:1521327958634135655> Operation failed: \`${e.message}\`` }] }).catch(() => {});
+      if (statusMsg) await statusMsg.edit({ embeds: [{ color: PINK, description: `Operation failed: \`${e.message}\`` }] }).catch(() => {});
     }
   }
 
@@ -12029,7 +12028,7 @@ client.on("interactionCreate", async (interaction) => {
     log(`[clone interaction] unhandled error id=${interaction.customId}: ${e.message}\n${e.stack}`, "error");
     try {
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `<:steal:1521327958634135655> Error: \`${e.message}\``, flags: 64 });
+        await interaction.reply({ content: `Error: \`${e.message}\``, flags: 64 });
       }
     } catch (_) {}
   }
@@ -12563,10 +12562,10 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus('[1/3] Cloning roles...');
     const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] <:019TXTWhite_Yes:1521327983279996999> Roles (${roleMap.size}). Cloning categories...`);
+    await updateStatus(`[2/3] Roles (${roleMap.size}). Cloning categories...`);
     const categoryMap = await cloneCategoriesHelper(filteredChannels, targetGuild, roleMap);
 
-    await updateStatus(`[3/3] <:019TXTWhite_Yes:1521327983279996999> Categories (${categoryMap.size}). Cloning channels...`);
+    await updateStatus(`[3/3] Categories (${categoryMap.size}). Cloning channels...`);
     // NOTE: selectedTgtCatId is NOT applied for full server clone — it would flatten all categories
     // into one, losing the structure. Use cloneperks_channel or clonecategoryperks for targeted placement.
     const { channelMap, channelCount } = await cloneChannelsHelper(filteredChannels, targetGuild, roleMap, categoryMap);
@@ -12588,7 +12587,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Clone Complete',
+        color: PINK, title: 'Clone Complete',
         description: `**${s.sourceId}** → **${targetGuild.name}**`,
         fields: [
           { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
@@ -12608,7 +12607,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
   if (s.operation === 'cloneperks_channel') {
     // Resolve source channel ID
     const srcChId = (s.selectedSrcIds && s.selectedSrcIds.length > 0) ? s.selectedSrcIds[0] : s.sourceId;
-    if (!srcChId || srcChId.length < 5) throw new Error('Source channel not set — use <:RUSH_folder:1521415227495940096> Source Channel to select one');
+    if (!srcChId || srcChId.length < 5) throw new Error('Source channel not set — use Source Channel to select one');
 
     // Verify source channel exists via REST
     let srcChMeta;
@@ -12621,7 +12620,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     // Resolve destination channel
     let dstCh;
-    if (!s.targetId || s.targetId.length < 5) throw new Error('Target not set — use <:RUSH_folder:1521415227495940096> Target Server to select one');
+    if (!s.targetId || s.targetId.length < 5) throw new Error('Target not set — use Target Server to select one');
     // Try as direct channel ID first
     const maybeChannel = client.channels.cache.get(s.targetId)
       ?? await client.channels.fetch(s.targetId).catch(() => null);
@@ -12643,7 +12642,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const refs = await scanChannelMedia(srcChId);
 
     if (refs.length === 0) {
-      await statusMsg?.edit({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> No media found in **#${srcChName}**.` }] }).catch(() => {});
+      await statusMsg?.edit({ embeds: [{ color: PINK, description: `No media found in **#${srcChName}**.` }] }).catch(() => {});
       return;
     }
 
@@ -12685,14 +12684,14 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
       if ((i + 1) % 5 === 0 || i === refs.length - 1) {
         const pct = Math.round(((i + 1) / refs.length) * 100);
-        await updateStatus(`Uploading... <:019TXTWhite_Yes:1521327983279996999> **${uploaded}** sent  👤 **${viaAccount}** via account  <:RUSH_link:1521415290687066212> **${linked}** linked  <:steal:1521327958634135655> **${failed}** failed  (${pct}%)`);
+        await updateStatus(`Uploading... **${uploaded}** sent  **${viaAccount}** via account  **${linked}** linked  **${failed}** failed  (${pct}%)`);
       }
       await new Promise(r => setTimeout(r, 700));
     }
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Channel Clone Complete',
+        color: PINK, title: 'Channel Clone Complete',
         fields: [
           { name: 'Source',      value: `#${srcChName} (\`${srcChId}\`)`,   inline: true },
           { name: 'Target',      value: `#${dstCh.name} (\`${dstCh.id}\`)`, inline: true },
@@ -12729,12 +12728,12 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     let srcCat;
     if (s.selectedSrcIds && s.selectedSrcIds.length > 0) {
       srcCat = rawChannels.find(c => c.type === 4 && c.id === s.selectedSrcIds[0]);
-      if (!srcCat) throw new Error(`Category ID \`${s.selectedSrcIds[0]}\` not found — use <:RUSH_folder:1521415227495940096> Source Category to select one`);
+      if (!srcCat) throw new Error(`Category ID \`${s.selectedSrcIds[0]}\` not found — use Source Category to select one`);
     } else if (s.extraParam) {
       srcCat = rawChannels.find(c => c.type === 4 && c.name.toLowerCase() === s.extraParam.toLowerCase());
       if (!srcCat) throw new Error(`Category "${s.extraParam}" not found in source server`);
     } else {
-      throw new Error('No category selected — use <:RUSH_folder:1521415227495940096> Source Category to select one');
+      throw new Error('No category selected — use Source Category to select one');
     }
 
     const catChans = rawChannels
@@ -12783,11 +12782,11 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
         // Scan source channel for videos via REST (bot must be in source guild)
         if ([0, 5].includes(ch.type) && newCh) {
-          await updateStatus(`🔍 Scanning **#${ch.name}** for videos...`);
+          await updateStatus(`Scanning **#${ch.name}** for videos...`);
           const refs = await scanChannelVideos(ch.id);
 
           if (refs.length > 0) {
-            await updateStatus(`<:RUSH_comment:1491884212297531572> Uploading **${refs.length}** videos → **#${newCh.name}**...`);
+            await updateStatus(`Uploading **${refs.length}** videos → **#${newCh.name}**...`);
             const { uploaded, linked: linkedCount, viaAccount } = await uploadRefs(refs, newCh, globalVidIndex, 2);
             globalVidIndex    += refs.length;
             sentPerChannel.set(newCh.name, { uploaded, linked: linkedCount, viaAccount });
@@ -12803,7 +12802,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Category Clone Complete',
+        color: PINK, title: 'Category Clone Complete',
         description: `**${srcCat.name}** → **${targetGuild.name}**`,
         fields: [
           { name: 'Channels cloned', value: `${clonedCount}`,      inline: true },
@@ -12835,7 +12834,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     await updateStatus('[1/3] Cloning roles...');
     const roleMap = await cloneRolesHelper(rawRoles, targetGuild);
 
-    await updateStatus(`[2/3] <:019TXTWhite_Yes:1521327983279996999> Roles (${roleMap.size}). Cloning categories + channels...`);
+    await updateStatus(`[2/3] Roles (${roleMap.size}). Cloning categories + channels...`);
     const categoryMap = await cloneCategoriesHelper(rawChannels, targetGuild, roleMap);
     const { channelCount } = await cloneChannelsHelper(rawChannels, targetGuild, roleMap, categoryMap);
 
@@ -12843,7 +12842,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const allVideoRefs = [];
     const textChans = rawChannels.filter(c => [0, 5].includes(c.type));
     for (const ch of textChans) {
-      await updateStatus(`🔍 Scanning **#${ch.name}** (${allVideoRefs.length} found so far)...`);
+      await updateStatus(`Scanning **#${ch.name}** (${allVideoRefs.length} found so far)...`);
       const refs = await scanChannelVideos(ch.id);
       allVideoRefs.push(...refs);
     }
@@ -12908,13 +12907,13 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
       }
       await new Promise(r => setTimeout(r, 900));
       if ((i / 2 + 1) % 10 === 0) {
-        await updateStatus(`Distributing... <:019TXTWhite_Yes:1521327983279996999> **${sent1 + sent2}** uploaded  👤 **${via1 + via2}** via account  <:RUSH_link:1521415290687066212> **${linked1 + linked2}** linked`);
+        await updateStatus(`Distributing... **${sent1 + sent2}** uploaded  **${via1 + via2}** via account  **${linked1 + linked2}** linked`);
       }
     }
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '<:019TXTWhite_Yes:1521327983279996999> Paid Perks Setup Complete',
+        color: PINK, title: 'Paid Perks Setup Complete',
         description: `**${targetGuild.name}** ready as a premium server.`,
         fields: [
           { name: 'Roles',         value: `${roleMap.size}`,     inline: true },
@@ -12960,7 +12959,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
     const preview = nameList.slice(0, 15).join(', ') + (hidden > 15 ? ` + ${hidden - 15} more` : '');
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '🙈 Hidden Channels',
+        color: PINK, title: 'Hidden Channels',
         description: `Hidden **${hidden}** channels in **${targetGuild.name}**\n\`\`\`${preview || 'none'}\`\`\``,
         timestamp: new Date(),
       }],
@@ -13038,7 +13037,7 @@ async function executeSetupOperation(s, statusMsg, updateStatus) {
 
     await statusMsg?.edit({
       embeds: [{
-        color: PINK, title: '🔀 Channel Sort Complete',
+        color: PINK, title: 'Channel Sort Complete',
         description: `**${guild.name}** — ${allChans.length} channels distributed across **${numCats}** categories`,
         fields,
         timestamp: new Date(),
@@ -13136,8 +13135,8 @@ function buildScraperEmbed(guildId) {
   const cfg = getScraperCfg(guildId);
   const { schedule } = cfg;
 
-  const statusStr  = cfg.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Running**" : "⭕ **Off**";
-  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : "*(not set — press 🎯 Target)*";
+  const statusStr  = cfg.enabled ? "**Running**" : "**Off**";
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : "*(not set — press Target)*";
   const schedStr   = `**${schedule.count}** video${schedule.count !== 1 ? "s" : ""} every **${msToHuman(schedule.intervalMs)}**` +
                      (schedule.randomize ? " *(±50% random jitter)*" : "");
   const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : "*(never run)*";
@@ -13157,7 +13156,7 @@ function buildScraperEmbed(guildId) {
 
   let sourcesStr;
   if (cfg.sources.length === 0) {
-    sourcesStr = "*(none — add at least one with ➕ Add Source)*";
+    sourcesStr = "*(none — add at least one with Add Source)*";
   } else {
     sourcesStr = cfg.sources.slice(0, 20).map((s, i) => {
       // <#id> only resolves inside the same guild — use label/id directly instead
@@ -13174,31 +13173,31 @@ function buildScraperEmbed(guildId) {
     : "*(none yet this session)*";
 
   const readyHint = !cfg.targetChannelId
-    ? "> <:RUSH_warning:1521415214799654985> **Set a target channel** before starting."
+    ? "> **Set a target channel** before starting."
     : cfg.sources.length === 0
-      ? "> <:RUSH_warning:1521415214799654985> **Add at least one source channel** before starting."
+      ? "> **Add at least one source channel** before starting."
       : cfg.enabled
-        ? `> <:019TXTWhite_Yes:1521327983279996999> Scraper is **active** — next run: see schedule above.`
-        : "> <:019TXTWhite_Yes:1521327983279996999> Ready! Press **▶ Start** to enable the scraper.";
+        ? `> Scraper is **active** — next run: see schedule above.`
+        : "> Ready! Press **Start** to enable the scraper.";
 
   return {
     color: PINK,
-    title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Config Panel",
+    title: " Video Scraper  ·  Config Panel",
     description: [
       "Automatically pulls videos from source channels and reposts them to your target channel.",
       "",
       readyHint,
     ].join("\n"),
     fields: [
-      { name: "<:RUSH_list:1521415268000337961>  Status",           value: statusStr,                                        inline: true  },
-      { name: "<:RUSH_clock:1521415225058791454>  Schedule",          value: schedStr,                                          inline: true  },
-      { name: "🕑  Last run",          value: lastStr,                                           inline: true  },
-      { name: "<:RUSH_poll:1521415317614628976>  This window",        value: hourlyStr,                                         inline: true  },
-      { name: "⏭️  Next run",          value: nextStr,                                           inline: true  },
-      { name: "<:RUSH_comment:1491884212297531572>  Last posted",       value: lastPostedStr,                                      inline: true  },
-      { name: "<:RUSH_comment:1491884212297531572>  Target channel",   value: targetStr,                                          inline: false },
-      { name: "<:RUSH_comment:1491884212297531572>  Source channels",  value: sourcesStr,                                         inline: false },
-      { name: "✏️  Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
+      { name: " Status",           value: statusStr,                                        inline: true  },
+      { name: " Schedule",          value: schedStr,                                          inline: true  },
+      { name: " Last run",          value: lastStr,                                           inline: true  },
+      { name: " This window",        value: hourlyStr,                                         inline: true  },
+      { name: " Next run",          value: nextStr,                                           inline: true  },
+      { name: " Last posted",       value: lastPostedStr,                                      inline: true  },
+      { name: " Target channel",   value: targetStr,                                          inline: false },
+      { name: " Source channels",  value: sourcesStr,                                         inline: false },
+      { name: " Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
     ],
     footer: { text: "sensational  ·  video scraper  ·  Administrator only" },
     timestamp: new Date(),
@@ -13213,42 +13212,42 @@ function buildScraperRows(guildId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`sc_toggle:${guildId}`)
-        .setLabel(cfg.enabled ? "⏹ Stop Scraper" : "▶ Start Scraper")
+        .setLabel(cfg.enabled ? "Stop Scraper" : "Start Scraper")
         .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`sc_run_now:${guildId}`)
-        .setLabel("Run Now").setEmoji("<:RUSH_thunder:1521415273943400580>")
+        .setLabel("Run Now")
         .setStyle(ButtonStyle.Secondary),
     ),
     // Row 2 — source management
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`sc_add_src:${guildId}`)
-        .setLabel("➕ Add Source")
+        .setLabel("Add Source")
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`sc_del_src:${guildId}`)
-        .setLabel("➖ Remove Source")
+        .setLabel("Remove Source")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(cfg.sources.length === 0),
       new ButtonBuilder()
         .setCustomId(`sc_target:${guildId}`)
-        .setLabel("🎯 Set Target")
+        .setLabel("Set Target")
         .setStyle(ButtonStyle.Primary),
     ),
     // Row 3 — fine-tune
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`sc_schedule:${guildId}`)
-        .setLabel("Schedule").setEmoji("<:RUSH_clock:1521415225058791454>")
+        .setLabel("Schedule")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`sc_rename:${guildId}`)
-        .setLabel("✏ Rename Prefix")
+        .setLabel("Rename Prefix")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`sc_reset:${guildId}`)
-        .setLabel("Reset All").setEmoji("<:RUSH_trash_can:1521415241190215721>")
+        .setLabel("Reset All")
         .setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -13262,7 +13261,7 @@ client.on("messageCreate", async (message) => {
   if (args[0].toLowerCase() !== "config") return;
 
   if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return message.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> You need **Administrator** to open the config panel." }] });
+    return message.reply({ embeds: [{ color: PINK, description: "You need **Administrator** to open the config panel." }] });
   }
 
   // Clean up any old session for this user+guild before opening a new panel
@@ -13361,7 +13360,7 @@ client.on("interactionCreate", async (interaction) => {
       const removed = cfg2.sources.splice(idx, 1)[0];
       saveScraperCfg();
       await interaction.update({
-        content: `<:019TXTWhite_Yes:1521327983279996999> Removed **${removed.label || removed.channelId}**`,
+        content: `Removed **${removed.label || removed.channelId}**`,
         components: [],
       });
       // Refresh the original panel via reverse-lookup
@@ -13373,7 +13372,7 @@ client.on("interactionCreate", async (interaction) => {
         }).catch(() => {});
       }
     } else {
-      await interaction.update({ content: "<:steal:1521327958634135655> Invalid selection.", components: [] });
+      await interaction.update({ content: "Invalid selection.", components: [] });
     }
     return;
   }
@@ -13383,7 +13382,7 @@ client.on("interactionCreate", async (interaction) => {
   // Session expired (panel is old)
   if (!sess) {
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
-      return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Session expired — run `,config` again.", flags: 64 }).catch(() => {});
+      return interaction.reply({ content: "Session expired — run `,config` again.", flags: 64 }).catch(() => {});
     }
     if (interaction.isModalSubmit()) {
       // Modal submissions carry the guildId in the custom ID — process anyway
@@ -13392,7 +13391,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // Ownership check (only the person who opened the panel)
   if (sess && interaction.user.id !== sess.authorId) {
-    return interaction.reply({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> This panel was opened by someone else." }], flags: 64 });
+    return interaction.reply({ embeds: [{ color: PINK, description: "This panel was opened by someone else." }], flags: 64 });
   }
 
   const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
@@ -13419,7 +13418,7 @@ client.on("interactionCreate", async (interaction) => {
   if (cid === `sc_run_now:${guildId}`) {
     await interaction.deferUpdate();
     await interaction.message.edit({
-      embeds:     [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999>  Video Scraper  ·  Running…", description: "<:RUSH_thunder:1521415273943400580> Running the scraper now, please wait…" }],
+      embeds:     [{ color: PINK, title: " Video Scraper  ·  Running…", description: "Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
     let result;
@@ -13429,13 +13428,13 @@ client.on("interactionCreate", async (interaction) => {
     let resultNote = "";
     if (result) {
       if (result.error) {
-        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **Run failed:** ${result.error}`;
+        resultNote = `\n\n**Run failed:** ${result.error}`;
       } else if (result.posted === 0 && result.skippedSources > 0) {
-        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **0 videos posted** — ${result.skippedSources} source channel(s) were inaccessible. Make sure the bot is in each source server and has View Channel permission.`;
+        resultNote = `\n\n**0 videos posted** — ${result.skippedSources} source channel(s) were inaccessible. Make sure the bot is in each source server and has View Channel permission.`;
       } else if (result.posted === 0) {
-        resultNote = `\n\n<:RUSH_warning:1521415214799654985> **0 videos posted** — no new video attachments found in source channels (or they've all been posted already).`;
+        resultNote = `\n\n**0 videos posted** — no new video attachments found in source channels (or they've all been posted already).`;
       } else {
-        resultNote = `\n\n<:019TXTWhite_Yes:1521327983279996999> **Posted ${result.posted}/${result.needed} video(s)**${result.skippedSources ? ` · <:RUSH_warning:1521415214799654985> ${result.skippedSources} source(s) skipped (inaccessible)` : ""}`;
+        resultNote = `\n\n**Posted ${result.posted}/${result.needed} video(s)**${result.skippedSources ? ` · ${result.skippedSources} source(s) skipped (inaccessible)` : ""}`;
       }
     }
     const baseEmbed = buildScraperEmbed(guildId);
@@ -13589,12 +13588,12 @@ client.on("interactionCreate", async (interaction) => {
     const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
     const label     = interaction.fields.getTextInputValue("label").trim();
     const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${channelId}\` not found — make sure the bot has access to it.`, flags: 64 });
-    if (cfg.sources.some(s => s.channelId === channelId)) return interaction.reply({ content: `<:steal:1521327958634135655> <#${channelId}> is already in your sources list.`, flags: 64 });
-    if (cfg.sources.length >= 25) return interaction.reply({ content: "<:steal:1521327958634135655> Maximum **25** source channels allowed.", flags: 64 });
+    if (!ch) return interaction.reply({ content: `Channel \`${channelId}\` not found — make sure the bot has access to it.`, flags: 64 });
+    if (cfg.sources.some(s => s.channelId === channelId)) return interaction.reply({ content: `<#${channelId}> is already in your sources list.`, flags: 64 });
+    if (cfg.sources.length >= 25) return interaction.reply({ content: "Maximum **25** source channels allowed.", flags: 64 });
     cfg.sources.push({ channelId, label: label || ch.name || "" });
     saveScraperCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Added <#${channelId}>${label ? ` as **${label}**` : ""} to sources.`, flags: 64 });
+    await interaction.reply({ content: `Added <#${channelId}>${label ? ` as **${label}**` : ""} to sources.`, flags: 64 });
     return refreshScraperPanel(interaction, guildId);
   }
 
@@ -13602,10 +13601,10 @@ client.on("interactionCreate", async (interaction) => {
   if (cid === `sc_modal_target:${guildId}`) {
     const channelId = interaction.fields.getTextInputValue("channel_id").trim().replace(/[^0-9]/g, "");
     const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Channel \`${channelId}\` not found.`, flags: 64 });
+    if (!ch) return interaction.reply({ content: `Channel \`${channelId}\` not found.`, flags: 64 });
     cfg.targetChannelId = channelId;
     saveScraperCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Target set to <#${channelId}>.`, flags: 64 });
+    await interaction.reply({ content: `Target set to <#${channelId}>.`, flags: 64 });
     return refreshScraperPanel(interaction, guildId);
   }
 
@@ -13615,12 +13614,12 @@ client.on("interactionCreate", async (interaction) => {
     const intStr  = interaction.fields.getTextInputValue("interval").trim();
     const randStr = interaction.fields.getTextInputValue("randomize").trim().toLowerCase();
     const ms      = parseDuration(intStr);
-    if (isNaN(count) || count < 1 || count > 50) return interaction.reply({ content: "<:steal:1521327958634135655> Count must be **1–50**.", flags: 64 });
-    if (!ms || ms < 60_000)                       return interaction.reply({ content: "<:steal:1521327958634135655> Interval must be at least **1 minute** (e.g. `1m`, `30m`, `1h`).", flags: 64 });
+    if (isNaN(count) || count < 1 || count > 50) return interaction.reply({ content: "Count must be **1–50**.", flags: 64 });
+    if (!ms || ms < 60_000)                       return interaction.reply({ content: "Interval must be at least **1 minute** (e.g. `1m`, `30m`, `1h`).", flags: 64 });
     cfg.schedule = { count, intervalMs: ms, randomize: !["no","false","n","0"].includes(randStr) };
     saveScraperCfg();
     if (cfg.enabled) rescheduleScraperTimer(guildId);
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Schedule updated: **${count}** videos every **${msToHuman(ms)}**${cfg.schedule.randomize ? " (randomized ±50%)" : ""}.`, flags: 64 });
+    await interaction.reply({ content: `Schedule updated: **${count}** videos every **${msToHuman(ms)}**${cfg.schedule.randomize ? " (randomized ±50%)" : ""}.`, flags: 64 });
     return refreshScraperPanel(interaction, guildId);
   }
 
@@ -13628,7 +13627,7 @@ client.on("interactionCreate", async (interaction) => {
   if (cid === `sc_modal_rename:${guildId}`) {
     cfg.renamePrefix = interaction.fields.getTextInputValue("prefix").trim();
     saveScraperCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Videos will now be renamed to: \`${cfg.renamePrefix}\``, flags: 64 });
+    await interaction.reply({ content: `Videos will now be renamed to: \`${cfg.renamePrefix}\``, flags: 64 });
     return refreshScraperPanel(interaction, guildId);
   }
 });
@@ -14340,14 +14339,14 @@ function rescheduleTwitterTimer(guildId) {
 function buildTwitterEmbed(guildId) {
   const cfg = getTwitterCfg(guildId);
 
-  const statusStr  = cfg.enabled ? '<:019TXTWhite_Yes:1521327983279996999> **Attivo**' : '⭕ **Spento**';
-  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : '*(non impostato — premi 🎯)*';
+  const statusStr  = cfg.enabled ? '**Attivo**' : '**Spento**';
+  const targetStr  = cfg.targetChannelId ? `<#${cfg.targetChannelId}>` : '*(non impostato — premi)*';
   const intervalStr = `ogni **${msToHuman(cfg.pollIntervalMs)}**`;
   const lastStr    = cfg.lastRunAt ? `<t:${Math.floor(cfg.lastRunAt / 1000)}:R>` : '*(mai eseguito)*';
 
   let accountsStr;
   if (cfg.accounts.length === 0) {
-    accountsStr = '*(nessuno — aggiungine uno con ➕)*';
+    accountsStr = '*(nessuno — aggiungine uno con)*';
   } else {
     accountsStr = cfg.accounts.map((a, i) =>
       `\`${String(i + 1).padStart(2, '0')}.\` **@${a.username}**${a.label ? `  ·  ${a.label}` : ''}`
@@ -14355,43 +14354,43 @@ function buildTwitterEmbed(guildId) {
   }
 
   const filtersStr = [
-    cfg.mediaOnly       ? '📷 Solo media'  : '<:RUSH_task:1521415237813665813> Testo + media',
-    cfg.includeRetweets ? '🔁 RT inclusi'  : '🚫 RT esclusi',
-    cfg.includeReplies  ? '<:RUSH_comment:1491884212297531572> Risposte incluse' : '🚫 Risposte escluse',
+    cfg.mediaOnly       ? 'Solo media'  : 'Testo + media',
+    cfg.includeRetweets ? 'RT inclusi'  : 'RT esclusi',
+    cfg.includeReplies  ? 'Risposte incluse' : 'Risposte escluse',
   ].join('  ·  ');
 
   const lastResultStr = (() => {
     const r = cfg.lastRunResult;
     if (!r) return '*(nessun dato)*';
-    if (r.errors && r.posted === 0) return `<:RUSH_warning:1521415214799654985> ${r.errors} errore/i`;
-    return `<:019TXTWhite_Yes:1521327983279996999> ${r.posted} tweet postati${r.errors ? ` · <:RUSH_warning:1521415214799654985> ${r.errors} errori` : ''}`;
+    if (r.errors && r.posted === 0) return `${r.errors} errore/i`;
+    return `${r.posted} tweet postati${r.errors ? ` · ${r.errors} errori` : ''}`;
   })();
 
   const readyHint = !cfg.targetChannelId
-    ? '> <:RUSH_warning:1521415214799654985> **Imposta prima un canale target.**'
+    ? '> **Imposta prima un canale target.**'
     : cfg.accounts.length === 0
-      ? '> <:RUSH_warning:1521415214799654985> **Aggiungi almeno un account Twitter.**'
+      ? '> **Aggiungi almeno un account Twitter.**'
       : cfg.enabled
-        ? `> <:019TXTWhite_Yes:1521327983279996999> Polling attivo — prossima scansione: ${intervalStr}.`
-        : '> <:019TXTWhite_Yes:1521327983279996999> Pronto! Premi **▶ Avvia** per iniziare.';
+        ? `> Polling attivo — prossima scansione: ${intervalStr}.`
+        : '> Pronto! Premi **Avvia** per iniziare.';
 
   return {
     color:  0x1D9BF0,
-    title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Pannello Config',
+    title: ' Twitter/X Repost  ·  Pannello Config',
     description: [
       'Monitora account Twitter/X via **RSSHub** e riposta automaticamente i tweet nel tuo canale.',
       '',
       readyHint,
     ].join('\n'),
     fields: [
-      { name: '<:RUSH_list:1521415268000337961>  Stato',              value: statusStr,      inline: true  },
-      { name: '<:RUSH_clock:1521415225058791454>  Intervallo polling', value: intervalStr,    inline: true  },
-      { name: '🕑  Ultima esecuzione',  value: lastStr,        inline: true  },
-      { name: '<:RUSH_comment:1491884212297531572>  Canale target',      value: targetStr,      inline: false },
-      { name: '🐦  Account monitorati', value: accountsStr,    inline: false },
-      { name: '🔍  Filtri attivi',      value: filtersStr,     inline: false },
-      { name: '<:RUSH_task:1521415237813665813>  Ultimo risultato',   value: lastResultStr,  inline: false },
-      { name: '<:RUSH_globe:1521415284496273489>  RSSHub base URL',    value: `\`${cfg.rsshubBase}\``, inline: false },
+      { name: ' Stato',              value: statusStr,      inline: true  },
+      { name: ' Intervallo polling', value: intervalStr,    inline: true  },
+      { name: ' Ultima esecuzione',  value: lastStr,        inline: true  },
+      { name: ' Canale target',      value: targetStr,      inline: false },
+      { name: ' Account monitorati', value: accountsStr,    inline: false },
+      { name: ' Filtri attivi',      value: filtersStr,     inline: false },
+      { name: ' Ultimo risultato',   value: lastResultStr,  inline: false },
+      { name: ' RSSHub base URL',    value: `\`${cfg.rsshubBase}\``, inline: false },
     ],
     footer:    { text: 'sensational  ·  twitter repost  ·  solo Administrator' },
     timestamp: new Date(),
@@ -14405,44 +14404,44 @@ function buildTwitterRows(guildId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`tw_toggle:${guildId}`)
-        .setLabel(cfg.enabled ? '⏹ Ferma' : '▶ Avvia')
+        .setLabel(cfg.enabled ? 'Ferma' : 'Avvia')
         .setStyle(cfg.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`tw_run_now:${guildId}`)
-        .setLabel('<:RUSH_thunder:1521415273943400580> Controlla Ora')
+        .setLabel('Controlla Ora')
         .setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`tw_add_acc:${guildId}`)
-        .setLabel('➕ Aggiungi Account')
+        .setLabel('Aggiungi Account')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`tw_del_acc:${guildId}`)
-        .setLabel('➖ Rimuovi Account')
+        .setLabel('Rimuovi Account')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(cfg.accounts.length === 0),
       new ButtonBuilder()
         .setCustomId(`tw_target:${guildId}`)
-        .setLabel('🎯 Canale Target')
+        .setLabel('Canale Target')
         .setStyle(ButtonStyle.Primary),
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`tw_interval:${guildId}`)
-        .setLabel('<:RUSH_clock:1521415225058791454> Intervallo')
+        .setLabel('Intervallo')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`tw_filters:${guildId}`)
-        .setLabel('🔍 Filtri')
+        .setLabel('Filtri')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`tw_rsshub:${guildId}`)
-        .setLabel('<:RUSH_globe:1521415284496273489> RSSHub URL')
+        .setLabel('RSSHub URL')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`tw_reset:${guildId}`)
-        .setLabel('<:RUSH_trash_can:1521415241190215721> Reset')
+        .setLabel('Reset')
         .setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -14466,7 +14465,7 @@ client.on('messageCreate', async (message) => {
   if (args[0].toLowerCase() !== 'twitter') return;
 
   if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return message.reply({ embeds: [{ color: PINK, description: '<:steal:1521327958634135655> Serve il permesso **Administrator** per aprire il pannello Twitter.' }] });
+    return message.reply({ embeds: [{ color: PINK, description: 'Serve il permesso **Administrator** per aprire il pannello Twitter.' }] });
   }
 
   const sent = await message.reply({
@@ -14498,7 +14497,7 @@ client.on('interactionCreate', async (interaction) => {
       const removed = cfg2.accounts.splice(idx, 1)[0];
       saveTwitterCfg();
       await interaction.update({
-        content:    `<:019TXTWhite_Yes:1521327983279996999> Rimosso **@${removed.username}**`,
+        content:    `Rimosso **@${removed.username}**`,
         components: [],
       });
       const panelMsg = twitterUserPanel.get(`${interaction.user.id}:${gId}`);
@@ -14509,7 +14508,7 @@ client.on('interactionCreate', async (interaction) => {
         }).catch(() => {});
       }
     } else {
-      await interaction.update({ content: '<:steal:1521327958634135655> Selezione non valida.', components: [] });
+      await interaction.update({ content: 'Selezione non valida.', components: [] });
     }
     return;
   }
@@ -14518,13 +14517,13 @@ client.on('interactionCreate', async (interaction) => {
 
   if (!sess) {
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
-      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Sessione scaduta — esegui `,twitter` di nuovo.', flags: 64 }).catch(() => {});
+      return interaction.reply({ content: 'Sessione scaduta — esegui `,twitter` di nuovo.', flags: 64 }).catch(() => {});
     }
     if (!interaction.isModalSubmit()) return;
   }
 
   if (sess && interaction.user.id !== sess.authorId) {
-    return interaction.reply({ embeds: [{ color: PINK, description: '<:steal:1521327958634135655> Questo pannello è stato aperto da qualcun altro.' }], flags: 64 });
+    return interaction.reply({ embeds: [{ color: PINK, description: 'Questo pannello è stato aperto da qualcun altro.' }], flags: 64 });
   }
 
   const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
@@ -14534,7 +14533,7 @@ client.on('interactionCreate', async (interaction) => {
   // ── TOGGLE ────────────────────────────────────────────────────────────────
   if (cid === `tw_toggle:${guildId}`) {
     if (!cfg.enabled && (!cfg.targetChannelId || cfg.accounts.length === 0)) {
-      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Imposta prima un canale target e almeno un account.', flags: 64 });
+      return interaction.reply({ content: 'Imposta prima un canale target e almeno un account.', flags: 64 });
     }
     cfg.enabled = !cfg.enabled;
     saveTwitterCfg();
@@ -14551,19 +14550,19 @@ client.on('interactionCreate', async (interaction) => {
   // ── RUN NOW ───────────────────────────────────────────────────────────────
   if (cid === `tw_run_now:${guildId}`) {
     if (!cfg.targetChannelId || cfg.accounts.length === 0) {
-      return interaction.reply({ content: '<:RUSH_warning:1521415214799654985> Imposta un canale target e almeno un account prima.', flags: 64 });
+      return interaction.reply({ content: 'Imposta un canale target e almeno un account prima.', flags: 64 });
     }
     await interaction.deferUpdate();
     await interaction.message.edit({
-      embeds:     [{ color: 0x1D9BF0, title: '<:019TXTWhite_Yes:1521327983279996999>  Twitter/X Repost  ·  Controllo in corso…', description: '<:RUSH_thunder:1521415273943400580> Sto controllando i feed RSS, attendere…' }],
+      embeds:     [{ color: 0x1D9BF0, title: ' Twitter/X Repost  ·  Controllo in corso…', description: 'Sto controllando i feed RSS, attendere…' }],
       components: [],
     }).catch(() => {});
     const result = await runTwitterPoller(guildId);
     const note = (() => {
-      if (!result) return '\n\n<:RUSH_warning:1521415214799654985> Poller già in esecuzione, riprova tra un momento.';
-      if (result.errors > 0 && result.posted === 0) return `\n\n<:RUSH_warning:1521415214799654985> **${result.errors} errore/i** — controlla che gli account esistano e che RSSHub sia raggiungibile.`;
-      if (result.posted === 0) return '\n\n<:019TXTWhite_Yes:1521327983279996999> Nessun nuovo tweet trovato.';
-      return `\n\n<:019TXTWhite_Yes:1521327983279996999> Postati **${result.posted}** tweet${result.errors ? ` · <:RUSH_warning:1521415214799654985> ${result.errors} errori` : ''}.`;
+      if (!result) return '\n\nPoller già in esecuzione, riprova tra un momento.';
+      if (result.errors > 0 && result.posted === 0) return `\n\n**${result.errors} errore/i** — controlla che gli account esistano e che RSSHub sia raggiungibile.`;
+      if (result.posted === 0) return '\n\nNessun nuovo tweet trovato.';
+      return `\n\nPostati **${result.posted}** tweet${result.errors ? ` · ${result.errors} errori` : ''}.`;
     })();
     const baseEmbed = buildTwitterEmbed(guildId);
     baseEmbed.description = (baseEmbed.description ?? '') + note;
@@ -14575,7 +14574,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // ── ADD ACCOUNT ───────────────────────────────────────────────────────────
   if (cid === `tw_add_acc:${guildId}`) {
-    if (cfg.accounts.length >= 20) return interaction.reply({ content: '<:steal:1521327958634135655> Massimo **20** account monitorabili.', flags: 64 });
+    if (cfg.accounts.length >= 20) return interaction.reply({ content: 'Massimo **20** account monitorabili.', flags: 64 });
     const modal = new ModalBuilder()
       .setCustomId(`tw_modal_add_acc:${guildId}`)
       .setTitle('Aggiungi Account Twitter/X');
@@ -14734,14 +14733,14 @@ client.on('interactionCreate', async (interaction) => {
     const username = interaction.fields.getTextInputValue('username').trim().replace(/^@/, '').toLowerCase();
     const label    = interaction.fields.getTextInputValue('label').trim();
     if (!username || !/^\w{1,50}$/.test(username)) {
-      return interaction.reply({ content: '<:steal:1521327958634135655> Username non valido. Usa solo lettere, numeri e underscore.', flags: 64 });
+      return interaction.reply({ content: 'Username non valido. Usa solo lettere, numeri e underscore.', flags: 64 });
     }
     if (cfg.accounts.some(a => a.username === username)) {
-      return interaction.reply({ content: `<:steal:1521327958634135655> **@${username}** è già monitorato.`, flags: 64 });
+      return interaction.reply({ content: `**@${username}** è già monitorato.`, flags: 64 });
     }
     cfg.accounts.push({ username, label: label || '' });
     saveTwitterCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Aggiunto **@${username}**${label ? ` (${label})` : ''}.\n> Il cursore verrà impostato al tweet più recente alla prossima esecuzione — non ci sarà flood storico.`, flags: 64 });
+    await interaction.reply({ content: `Aggiunto **@${username}**${label ? ` (${label})` : ''}.\n> Il cursore verrà impostato al tweet più recente alla prossima esecuzione — non ci sarà flood storico.`, flags: 64 });
     return refreshTwitterPanel(interaction);
   }
 
@@ -14749,10 +14748,10 @@ client.on('interactionCreate', async (interaction) => {
   if (cid === `tw_modal_target:${guildId}`) {
     const channelId = interaction.fields.getTextInputValue('channel_id').trim().replace(/\D/g, '');
     const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return interaction.reply({ content: `<:steal:1521327958634135655> Canale \`${channelId}\` non trovato.`, flags: 64 });
+    if (!ch) return interaction.reply({ content: `Canale \`${channelId}\` non trovato.`, flags: 64 });
     cfg.targetChannelId = channelId;
     saveTwitterCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Canale target impostato su <#${channelId}>.`, flags: 64 });
+    await interaction.reply({ content: `Canale target impostato su <#${channelId}>.`, flags: 64 });
     return refreshTwitterPanel(interaction);
   }
 
@@ -14760,15 +14759,15 @@ client.on('interactionCreate', async (interaction) => {
   if (cid === `tw_modal_interval:${guildId}`) {
     const ms = parseDuration(interaction.fields.getTextInputValue('interval').trim());
     if (!ms || ms < 60_000) {
-      return interaction.reply({ content: '<:steal:1521327958634135655> Intervallo minimo: **1 minuto** (es. `1m`, `15m`, `1h`).', flags: 64 });
+      return interaction.reply({ content: 'Intervallo minimo: **1 minuto** (es. `1m`, `15m`, `1h`).', flags: 64 });
     }
     if (ms > 24 * 3_600_000) {
-      return interaction.reply({ content: '<:steal:1521327958634135655> Intervallo massimo: **24h**.', flags: 64 });
+      return interaction.reply({ content: 'Intervallo massimo: **24h**.', flags: 64 });
     }
     cfg.pollIntervalMs = ms;
     saveTwitterCfg();
     if (cfg.enabled) rescheduleTwitterTimer(guildId);
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Intervallo aggiornato: controllo ogni **${msToHuman(ms)}**.`, flags: 64 });
+    await interaction.reply({ content: `Intervallo aggiornato: controllo ogni **${msToHuman(ms)}**.`, flags: 64 });
     return refreshTwitterPanel(interaction);
   }
 
@@ -14779,7 +14778,7 @@ client.on('interactionCreate', async (interaction) => {
     cfg.includeRetweets = YES.includes(interaction.fields.getTextInputValue('include_rt').trim().toLowerCase());
     cfg.includeReplies  = YES.includes(interaction.fields.getTextInputValue('include_replies').trim().toLowerCase());
     saveTwitterCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> Filtri aggiornati.`, flags: 64 });
+    await interaction.reply({ content: `Filtri aggiornati.`, flags: 64 });
     return refreshTwitterPanel(interaction);
   }
 
@@ -14787,11 +14786,11 @@ client.on('interactionCreate', async (interaction) => {
   if (cid === `tw_modal_rsshub:${guildId}`) {
     const url = interaction.fields.getTextInputValue('rsshub_url').trim().replace(/\/$/, '');
     if (!url.startsWith('http')) {
-      return interaction.reply({ content: '<:steal:1521327958634135655> URL non valido. Deve iniziare con `http://` o `https://`.', flags: 64 });
+      return interaction.reply({ content: 'URL non valido. Deve iniziare con `http://` o `https://`.', flags: 64 });
     }
     cfg.rsshubBase = url;
     saveTwitterCfg();
-    await interaction.reply({ content: `<:019TXTWhite_Yes:1521327983279996999> RSSHub URL impostato su \`${url}\`.`, flags: 64 });
+    await interaction.reply({ content: `RSSHub URL impostato su \`${url}\`.`, flags: 64 });
     return refreshTwitterPanel(interaction);
   }
 });
@@ -14911,28 +14910,28 @@ async function _ketoFetch(url) {
 }
 
 const _KETO_META = {
-  tiktok:    { icon:"<:musicnote:1521415310941618208>", color:0x010101, name:"TikTok"    },
-  twitter:   { icon:"🐦", color:0x1DA1F2, name:"Twitter/X" },
-  instagram: { icon:"📸", color:0xC13584, name:"Instagram"  },
+  tiktok:    { icon:"", color:0x010101, name:"TikTok"    },
+  twitter:   { icon:"", color:0x1DA1F2, name:"Twitter/X" },
+  instagram: { icon:"", color:0xC13584, name:"Instagram"  },
 };
 
 // Risky permissions that can be monitored via ,riskypermission
 const RISKY_PERM_OPTIONS = [
-  { name:"Administrator",       flag:PermissionFlagsBits.Administrator,            emoji:"<:b_crownDNS:1521415303714705533>" },
-  { name:"Manage Server",       flag:PermissionFlagsBits.ManageGuild,              emoji:"<:RUSH_gear:1521415230184489061>" },
-  { name:"Manage Roles",        flag:PermissionFlagsBits.ManageRoles,              emoji:"🎭" },
-  { name:"Manage Channels",     flag:PermissionFlagsBits.ManageChannels,           emoji:"<:RUSH_folder:1521415227495940096>" },
-  { name:"Kick Members",        flag:PermissionFlagsBits.KickMembers,              emoji:"👢" },
-  { name:"Ban Members",         flag:PermissionFlagsBits.BanMembers,               emoji:"🔨" },
-  { name:"Manage Messages",     flag:PermissionFlagsBits.ManageMessages,           emoji:"<:RUSH_comment:1491884212297531572>" },
-  { name:"Manage Webhooks",     flag:PermissionFlagsBits.ManageWebhooks,           emoji:"<:RUSH_link:1521415290687066212>" },
-  { name:"Manage Emojis",       flag:PermissionFlagsBits.ManageEmojisAndStickers,  emoji:"😀" },
-  { name:"Mention Everyone",    flag:PermissionFlagsBits.MentionEveryone,          emoji:"📢" },
-  { name:"View Audit Log",      flag:PermissionFlagsBits.ViewAuditLog,             emoji:"<:RUSH_task:1521415237813665813>" },
-  { name:"Moderate Members",    flag:PermissionFlagsBits.ModerateMembers,          emoji:"<:RUSH_caution:1521415278355808297>" },
-  { name:"Manage Nicknames",    flag:PermissionFlagsBits.ManageNicknames,          emoji:"✏️" },
-  { name:"Move Members",        flag:PermissionFlagsBits.MoveMembers,              emoji:"🚶" },
-  { name:"Manage Threads",      flag:PermissionFlagsBits.ManageThreads,            emoji:"🧵" },
+  { name:"Administrator",       flag:PermissionFlagsBits.Administrator},
+  { name:"Manage Server",       flag:PermissionFlagsBits.ManageGuild},
+  { name:"Manage Roles",        flag:PermissionFlagsBits.ManageRoles},
+  { name:"Manage Channels",     flag:PermissionFlagsBits.ManageChannels},
+  { name:"Kick Members",        flag:PermissionFlagsBits.KickMembers},
+  { name:"Ban Members",         flag:PermissionFlagsBits.BanMembers},
+  { name:"Manage Messages",     flag:PermissionFlagsBits.ManageMessages},
+  { name:"Manage Webhooks",     flag:PermissionFlagsBits.ManageWebhooks},
+  { name:"Manage Emojis",       flag:PermissionFlagsBits.ManageEmojisAndStickers},
+  { name:"Mention Everyone",    flag:PermissionFlagsBits.MentionEveryone},
+  { name:"View Audit Log",      flag:PermissionFlagsBits.ViewAuditLog},
+  { name:"Moderate Members",    flag:PermissionFlagsBits.ModerateMembers},
+  { name:"Manage Nicknames",    flag:PermissionFlagsBits.ManageNicknames},
+  { name:"Move Members",        flag:PermissionFlagsBits.MoveMembers},
+  { name:"Manage Threads",      flag:PermissionFlagsBits.ManageThreads},
 ];
 
 client.on("messageCreate", async (message) => {
@@ -14945,12 +14944,12 @@ client.on("messageCreate", async (message) => {
   const link  = links[0];
   const data  = await _ketoFetch(link);
   if (!data) return;
-  const meta  = _KETO_META[data.platform] ?? { icon:"<:RUSH_link:1521415290687066212>", color:PINK, name:"Social" };
+  const meta  = _KETO_META[data.platform] ?? { icon:"", color:PINK, name:"Social" };
 
   const statParts = [];
-  if (data.likes    != null) statParts.push(`<:RUSH_heart:1521415287344468029> ${_fmtNum(data.likes)}`);
-  if (data.comments != null) statParts.push(`<:RUSH_comment:1491884212297531572> ${_fmtNum(data.comments)}`);
-  if (data.shares   != null) statParts.push(`↗️ ${_fmtNum(data.shares)}`);
+  if (data.likes    != null) statParts.push(`${_fmtNum(data.likes)}`);
+  if (data.comments != null) statParts.push(`${_fmtNum(data.comments)}`);
+  if (data.shares   != null) statParts.push(`${_fmtNum(data.shares)}`);
 
   const authorLine = data.handle ? `${data.author} (@${data.handle})` : data.author;
   const embed = {
@@ -14965,7 +14964,7 @@ client.on("messageCreate", async (message) => {
     timestamp: message.createdAt.toISOString(),
   };
 
-  // Cache info for the ℹ️ button (expires in 30 min)
+  // Cache info for thebutton (expires in 30 min)
   const infoId = `keto_info:${message.id}`;
   if (!client._ketoInfoCache) client._ketoInfoCache = new Map();
   client._ketoInfoCache.set(infoId, { data, link });
@@ -14973,7 +14972,7 @@ client.on("messageCreate", async (message) => {
 
   const btns = [
     new ButtonBuilder().setLabel(`@${data.handle || data.author}`).setStyle(ButtonStyle.Link).setURL(data.authorUrl),
-    new ButtonBuilder().setCustomId(infoId).setLabel("ℹ️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(infoId).setLabel("Info").setStyle(ButtonStyle.Secondary),
   ];
   const row = new ActionRowBuilder().addComponents(...btns);
 
@@ -15052,9 +15051,9 @@ client.on("messageCreate", async (message) => {
     // status
     return message.reply({ embeds:[{
       color: PINK,
-      title: "📱  Keto — Social Auto-Embed",
+      title: " Keto — Social Auto-Embed",
       description: [
-        `**Status:** ${kc.enabled?"<:019TXTWhite_Yes:1521327983279996999> Enabled":"<:steal:1521327958634135655> Disabled"}`,
+        `**Status:** ${kc.enabled?"Enabled":"Disabled"}`,
         `**Delete original:** ${kc.deleteOriginal?"Yes":"No"}`,
         `**Channels:** ${kc.channelIds ? [...kc.channelIds].map(id=>`<#${id}>`).join(", ") : "All channels"}`,
         "",
@@ -15164,8 +15163,8 @@ client.on("messageCreate", async (message) => {
       catch { failed.push(name); }
     }
     let txt = "";
-    if (added.length) txt += `<:019TXTWhite_Yes:1521327983279996999> Added ${added.length} emoji(s): ${added.join(" ")}\n`;
-    if (failed.length) txt += `<:steal:1521327958634135655> Failed (duplicate/limit): ${failed.map(n=>`\`:${n}:\``).join(", ")}`;
+    if (added.length) txt += `Added ${added.length} emoji(s): ${added.join(" ")}\n`;
+    if (failed.length) txt += `Failed (duplicate/limit): ${failed.map(n=>`\`:${n}:\``).join(", ")}`;
     return message.reply({content:txt.trim()}).catch(()=>{});
   }
 
@@ -15223,30 +15222,30 @@ client.on("messageCreate", async (message) => {
   // ██  FUN — Anime Action GIFs  (hug · kiss · slap · pat · etc.)
   // ═══════════════════════════════════════════════════════════════════════════
   const FUN_ACTIONS = {
-    hug:       { verb:"hugs",         emoji:"🤗", url:"https://nekos.best/api/v2/hug"       },
-    kiss:      { verb:"kisses",       emoji:"💋", url:"https://nekos.best/api/v2/kiss"      },
-    slap:      { verb:"slaps",        emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/slap"      },
-    pat:       { verb:"pats",         emoji:"🐾", url:"https://nekos.best/api/v2/pat"       },
-    cuddle:    { verb:"cuddles",      emoji:"🥰", url:"https://nekos.best/api/v2/cuddle"    },
-    poke:      { verb:"pokes",        emoji:"👉", url:"https://nekos.best/api/v2/poke"      },
-    bite:      { verb:"bites",        emoji:"😬", url:"https://nekos.best/api/v2/bite"      },
-    highfive:  { verb:"high fives",   emoji:"🙌", url:"https://nekos.best/api/v2/highfive"  },
-    wave:      { verb:"waves at",     emoji:"<a:009Cinnamoroll_Wave:1265534373873320047>", url:"https://nekos.best/api/v2/wave"      },
-    punch:     { verb:"punches",      emoji:"👊", url:"https://nekos.best/api/v2/punch"     },
-    dance:     { verb:"dances with",  emoji:"💃", url:"https://nekos.best/api/v2/dance"     },
-    feed:      { verb:"feeds",        emoji:"🍙", url:"https://nekos.best/api/v2/feed"      },
-    tickle:    { verb:"tickles",      emoji:"😂", url:"https://nekos.best/api/v2/tickle"    },
-    smile:     { verb:"smiles at",    emoji:"😊", url:"https://nekos.best/api/v2/smile"     },
-    cry:       { verb:"cries with",   emoji:"😢", url:"https://nekos.best/api/v2/cry"       },
-    blush:     { verb:"blushes at",   emoji:"😳", url:"https://nekos.best/api/v2/blush"     },
-    wink:      { verb:"winks at",     emoji:"😉", url:"https://nekos.best/api/v2/wink"      },
-    bored:     { verb:"is bored with",emoji:"😑", url:"https://nekos.best/api/v2/bored"     },
-    throw:     { verb:"throws at",    emoji:"🎯", url:"https://nekos.best/api/v2/throw"     },
+    hug:       { verb:"hugs",          url:"https://nekos.best/api/v2/hug"       },
+    kiss:      { verb:"kisses",        url:"https://nekos.best/api/v2/kiss"      },
+    slap:      { verb:"slaps",         url:"https://nekos.best/api/v2/slap"      },
+    pat:       { verb:"pats",          url:"https://nekos.best/api/v2/pat"       },
+    cuddle:    { verb:"cuddles",       url:"https://nekos.best/api/v2/cuddle"    },
+    poke:      { verb:"pokes",         url:"https://nekos.best/api/v2/poke"      },
+    bite:      { verb:"bites",         url:"https://nekos.best/api/v2/bite"      },
+    highfive:  { verb:"high fives",    url:"https://nekos.best/api/v2/highfive"  },
+    wave:      { verb:"waves at",      url:"https://nekos.best/api/v2/wave"      },
+    punch:     { verb:"punches",       url:"https://nekos.best/api/v2/punch"     },
+    dance:     { verb:"dances with",   url:"https://nekos.best/api/v2/dance"     },
+    feed:      { verb:"feeds",         url:"https://nekos.best/api/v2/feed"      },
+    tickle:    { verb:"tickles",       url:"https://nekos.best/api/v2/tickle"    },
+    smile:     { verb:"smiles at",     url:"https://nekos.best/api/v2/smile"     },
+    cry:       { verb:"cries with",    url:"https://nekos.best/api/v2/cry"       },
+    blush:     { verb:"blushes at",    url:"https://nekos.best/api/v2/blush"     },
+    wink:      { verb:"winks at",      url:"https://nekos.best/api/v2/wink"      },
+    bored:     { verb:"is bored with", url:"https://nekos.best/api/v2/bored"     },
+    throw:     { verb:"throws at",     url:"https://nekos.best/api/v2/throw"     },
   };
   // NSFW
   const FUN_NSFW = {
-    fuck: { verb:"fucks", emoji:"🍑", url:"https://nekos.best/api/v2/fuck" },
-    sex:  { verb:"sexes", emoji:"🔥", url:"https://nekos.best/api/v2/fuck" },
+    fuck: { verb:"fucks",  url:"https://nekos.best/api/v2/fuck" },
+    sex:  { verb:"sexes",  url:"https://nekos.best/api/v2/fuck" },
   };
 
   const allFunActions = { ...FUN_ACTIONS, ...FUN_NSFW };
@@ -15393,7 +15392,7 @@ client.on("messageCreate", async (message) => {
       return ok(message,`Risky role action set to **${action}**.`);
     }
     if (sub === "list") {
-      return message.reply({embeds:[{color:PINK,title:"<:RUSH_warning:1521415214799654985> Risky Roles",description:
+      return message.reply({embeds:[{color:PINK,title:"Risky Roles",description:
         cfg.riskyRoles.roles.length ? cfg.riskyRoles.roles.map(id=>`<@&${id}>`).join("\n"):"*(none set)*",
         footer:{text:`Action on assignment: ${cfg.riskyRoles.action}`}
       }]}).catch(()=>{});
@@ -15409,11 +15408,11 @@ client.on("messageCreate", async (message) => {
     cfg.riskyPerms = cfg.riskyPerms || [];
     const monitored = cfg.riskyPerms;
     const monitoredLines = monitored.length
-      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`**${p.name}**`).join("\n")
       : "*None — no permissions monitored.*";
     const embed = {
       color: PINK,
-      title: "<:RUSH_warning:1521415214799654985>  Risky Permission Monitor",
+      title: " Risky Permission Monitor",
       description: [
         "Select which permissions to flag as **risky**.",
         "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
@@ -15429,8 +15428,8 @@ client.on("messageCreate", async (message) => {
       .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
       .addOptions(RISKY_PERM_OPTIONS.map(p =>
         new StringSelectMenuOptionBuilder()
-          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
-          .setDescription(monitored.includes(p.name) ? "<:019TXTWhite_Yes:1521327983279996999> Monitored" : "Not monitored")
+          .setLabel(p.name).setValue(p.name)
+          .setDescription(monitored.includes(p.name) ? "Monitored" : "Not monitored")
           .setDefault(monitored.includes(p.name))
       ));
     return message.reply({ embeds:[embed], components:[new ActionRowBuilder().addComponents(menu)] });
@@ -15451,28 +15450,28 @@ client.on("messageCreate", async (message) => {
     // ── AntiNuke ────────────────────────────────────────────────────────────
     const anWL = an.whitelist instanceof Set ? [...an.whitelist] : [];
     const anField = [
-      an.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled**" : "<:steal:1521327958634135655> Disabled",
+      an.enabled ? "**Enabled**" : "Disabled",
       `Punishment: \`${an.punishment||"ban"}\`  ·  Threshold: \`${an.threshold||3}\` actions`,
       anWL.length ? `Whitelist: ${anWL.slice(0,5).map(id=>`<@${id}>`).join(", ")}${anWL.length>5?` +${anWL.length-5} more`:""}` : "Whitelist: *empty*",
     ].join("\n");
 
     // ── AntiRaid ────────────────────────────────────────────────────────────
     const arField = [
-      ar.enabled ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled**" : "<:steal:1521327958634135655> Disabled",
+      ar.enabled ? "**Enabled**" : "Disabled",
       `Action: \`${ar.action||"kick"}\`  ·  Threshold: \`${ar.joinThreshold||10}\` joins / \`${Math.round((ar.joinWindow||10000)/1000)}s\``,
     ].join("\n");
 
     // ── Risky Permissions ───────────────────────────────────────────────────
     const riskyPerms = Array.isArray(cfg.riskyPerms) ? cfg.riskyPerms : [];
     const riskyPermsField = riskyPerms.length
-      ? RISKY_PERM_OPTIONS.filter(p=>riskyPerms.includes(p.name)).map(p=>`${p.emoji} \`${p.name}\``).join("  ")
-      : "<:steal:1521327958634135655> *None monitored — use `,riskypermission` to set up*";
+      ? RISKY_PERM_OPTIONS.filter(p=>riskyPerms.includes(p.name)).map(p=>`\`${p.name}\``).join("  ")
+      : "*None monitored — use `,riskypermission` to set up*";
 
     // ── Risky Roles ─────────────────────────────────────────────────────────
     const rr = cfg.riskyRoles;
     const rrRoles = Array.isArray(rr?.roles) ? rr.roles : [];
     const riskyRolesField = [
-      rrRoles.length ? rrRoles.map(id=>`<@&${id}>`).join(", ") : "<:steal:1521327958634135655> *None set — use `,risky-roles add @role`*",
+      rrRoles.length ? rrRoles.map(id=>`<@&${id}>`).join(", ") : "*None set — use `,risky-roles add @role`*",
       rrRoles.length ? `Action on assignment: \`${rr.action||"strip"}\`` : "",
     ].filter(Boolean).join("\n");
 
@@ -15484,7 +15483,7 @@ client.on("messageCreate", async (message) => {
       ? limitEntries.map(([a,{count,seconds}]) =>
           `\`${a}\`  ${count}×/${seconds}s${ap[a]? ` → **${ap[a]}**`:""}`
         ).join("\n")
-      : "<:steal:1521327958634135655> *None set — use `,setlimit <action> <count> [seconds]`*";
+      : "*None set — use `,setlimit <action> <count> [seconds]`*";
 
     // ── Security Whitelist ──────────────────────────────────────────────────
     const wl       = cfg.securityWhitelist || {};
@@ -15492,9 +15491,9 @@ client.on("messageCreate", async (message) => {
     const wlRoles  = Array.isArray(wl.roles)    ? wl.roles    : [];
     const wlChs    = Array.isArray(wl.channels) ? wl.channels : [];
     const wlParts  = [
-      wlUsers.length  ? `👤 Users: ${wlUsers.slice(0,4).map(id=>`<@${id}>`).join(", ")}${wlUsers.length>4?` +${wlUsers.length-4} more`:""}` : null,
-      wlRoles.length  ? `🎭 Roles: ${wlRoles.slice(0,4).map(id=>`<@&${id}>`).join(", ")}${wlRoles.length>4?` +${wlRoles.length-4} more`:""}` : null,
-      wlChs.length    ? `📢 Channels: ${wlChs.slice(0,4).map(id=>`<#${id}>`).join(", ")}${wlChs.length>4?` +${wlChs.length-4} more`:""}` : null,
+      wlUsers.length  ? `Users: ${wlUsers.slice(0,4).map(id=>`<@${id}>`).join(", ")}${wlUsers.length>4?` +${wlUsers.length-4} more`:""}` : null,
+      wlRoles.length  ? `Roles: ${wlRoles.slice(0,4).map(id=>`<@&${id}>`).join(", ")}${wlRoles.length>4?` +${wlRoles.length-4} more`:""}` : null,
+      wlChs.length    ? `Channels: ${wlChs.slice(0,4).map(id=>`<#${id}>`).join(", ")}${wlChs.length>4?` +${wlChs.length-4} more`:""}` : null,
     ].filter(Boolean);
     const wlField = wlParts.length ? wlParts.join("\n") : "*No whitelisted entries*";
 
@@ -15502,29 +15501,29 @@ client.on("messageCreate", async (message) => {
     const modOn      = isModerationEnabled(gid);
     const customBl   = getModerationCustom(gid);
     const modField   = [
-      modOn ? "<:019TXTWhite_Yes:1521327983279996999> **Enabled** (mod commands usable by staff)" : "<:steal:1521327958634135655> **Disabled** (mod commands silently blocked for non-admins)",
+      modOn ? "**Enabled** (mod commands usable by staff)" : "**Disabled** (mod commands silently blocked for non-admins)",
       customBl.size ? `Always-blocked: ${[...customBl].map(c=>`\`${c}\``).join(", ")}` : "",
     ].filter(Boolean).join("\n");
 
     // ── VanityLock ──────────────────────────────────────────────────────────
     const vl    = vanityLock.get(gid);
-    const vlStr = vl?.enabled ? `<:019TXTWhite_Yes:1521327983279996999> **Enabled** — watching \`/${vl.vanity}\`` : "<:steal:1521327958634135655> Disabled";
+    const vlStr = vl?.enabled ? `**Enabled** — watching \`/${vl.vanity}\`` : "Disabled";
 
     const fields = [
-      { name:"<:RUSH_caution:1521415278355808297>  AntiNuke",                    value: anField,       inline: true  },
-      { name:"🌊  AntiRaid",                    value: arField,       inline: true  },
+      { name:" AntiNuke",                    value: anField,       inline: true  },
+      { name:" AntiRaid",                    value: arField,       inline: true  },
       { name:"\u200b",                          value: "\u200b",      inline: false },
-      { name:"<:RUSH_warning:1521415214799654985>  Risky Permissions Monitor",  value: riskyPermsField, inline: false },
-      { name:"🔺  Risky Roles",                value: riskyRolesField, inline: false },
-      { name:"<:RUSH_list:1521415268000337961>  Action Limits & Punishments", value: limitsField,   inline: false },
-      { name:"<:019TXTWhite_Yes:1521327983279996999>  Security Whitelist",          value: wlField,       inline: false },
-      { name:"<:RUSH_unlock:1521415218037526641>  Moderation Toggle",           value: modField,      inline: true  },
-      { name:"🎀  Vanity Lock",                 value: vlStr,         inline: true  },
+      { name:" Risky Permissions Monitor",  value: riskyPermsField, inline: false },
+      { name:" Risky Roles",                value: riskyRolesField, inline: false },
+      { name:" Action Limits & Punishments", value: limitsField,   inline: false },
+      { name:" Security Whitelist",          value: wlField,       inline: false },
+      { name:" Moderation Toggle",           value: modField,      inline: true  },
+      { name:" Vanity Lock",                 value: vlStr,         inline: true  },
     ];
 
     return message.reply({ embeds:[{
       color:       PINK,
-      title:       `🔐  Security Overview — ${message.guild.name}`,
+      title:       ` Security Overview — ${message.guild.name}`,
       description: "All protection systems at a glance. Green = active, Red = off or unconfigured.",
       fields,
       footer:      { text: ",antinuke · ,antiraid · ,risky-roles · ,riskypermission · ,whitelist · ,setlimit · ,setpunishment" },
@@ -15546,7 +15545,7 @@ client.on("messageCreate", async (message) => {
       if (!cfg.ticketPanels.length)
         return err(message,"No ticket panels configured. Run `,ticketpanel setup` to create one.");
       return message.reply({ embeds:[{
-        color: PINK, title:"<:RUSH_ticket:1521415234802417754>  Ticket Panels",
+        color: PINK, title:" Ticket Panels",
         description: cfg.ticketPanels.map((p,i)=>`**[${i+1}]** ${p.name} — Category: <#${p.categoryId||"not set"}>`).join("\n"),
         footer:{text:"Use ,ticketpanel manage <#> to edit a panel"}
       }]}).catch(()=>{});
@@ -15557,7 +15556,7 @@ client.on("messageCreate", async (message) => {
         name: "Support",
         description: "Click the button below to open a ticket.\nOur team will get back to you as soon as possible.",
         buttonLabel: "Open a Ticket",
-        buttonEmoji: "<:RUSH_ticket:1521415234802417754>",
+        buttonEmoji: "",
         buttonColor: "Success",
         categories: [],      // [{name, emoji}] — if set, one button per category
         supportRoles: [],
@@ -15567,12 +15566,12 @@ client.on("messageCreate", async (message) => {
       };
 
       const step1Row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("tp_setname").setLabel("✏️ Set Panel Name").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_setname").setLabel("Set Panel Name").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("tp_skip1").setLabel("Skip").setStyle(ButtonStyle.Secondary),
       );
       const msg1 = await message.reply({ embeds:[{
         color: PINK,
-        title: "<:RUSH_ticket:1521415234802417754> Panel Setup — Step 1/6: Panel name & button",
+        title: "Panel Setup — Step 1/6: Panel name & button",
         description: "Click **Set Panel Name** to set the name shown in the panel embed title and on the open-ticket button.",
         fields: [
           {name:"Panel title",   value:`\`${panelData.name}\``,        inline:true},
@@ -15597,24 +15596,24 @@ client.on("messageCreate", async (message) => {
           new StringSelectMenuBuilder().setCustomId(`tpm_action:${idx}:${message.guild.id}`)
             .setPlaceholder("Select an action")
             .addOptions([
-              new StringSelectMenuOptionBuilder().setLabel("Send panel to a channel").setValue("send").setEmoji("<:RUSH_comment:1491884212297531572>"),
-              new StringSelectMenuOptionBuilder().setLabel("Panel title & button label").setValue("name").setEmoji("✏️"),
-              new StringSelectMenuOptionBuilder().setLabel("Panel description").setValue("description").setEmoji("<:RUSH_task:1521415237813665813>"),
-              new StringSelectMenuOptionBuilder().setLabel("Button emoji & color").setValue("style").setEmoji("🎨"),
-              new StringSelectMenuOptionBuilder().setLabel("Ticket categories").setValue("categories").setEmoji("<:RUSH_folder:1521415227495940096>"),
-              new StringSelectMenuOptionBuilder().setLabel("Support team roles").setValue("roles").setEmoji("👥"),
-              new StringSelectMenuOptionBuilder().setLabel("Transcript Channel").setValue("transcript").setEmoji("<:RUSH_task:1521415237813665813>"),
-              new StringSelectMenuOptionBuilder().setLabel("Ticket Category channel").setValue("category").setEmoji("<:RUSH_folder:1521415227495940096>"),
-              new StringSelectMenuOptionBuilder().setLabel("Delete this panel").setValue("delete").setEmoji("<:RUSH_trash_can:1521415241190215721>"),
+              new StringSelectMenuOptionBuilder().setLabel("Send panel to a channel").setValue("send"),
+              new StringSelectMenuOptionBuilder().setLabel("Panel title & button label").setValue("name"),
+              new StringSelectMenuOptionBuilder().setLabel("Panel description").setValue("description"),
+              new StringSelectMenuOptionBuilder().setLabel("Button emoji & color").setValue("style"),
+              new StringSelectMenuOptionBuilder().setLabel("Ticket categories").setValue("categories"),
+              new StringSelectMenuOptionBuilder().setLabel("Support team roles").setValue("roles"),
+              new StringSelectMenuOptionBuilder().setLabel("Transcript Channel").setValue("transcript"),
+              new StringSelectMenuOptionBuilder().setLabel("Ticket Category channel").setValue("category"),
+              new StringSelectMenuOptionBuilder().setLabel("Delete this panel").setValue("delete"),
             ])
         )
       ];
       return message.reply({ embeds:[{
-        color: PINK, title:"<:RUSH_ticket:1521415234802417754>  Panel Editor",
+        color: PINK, title:" Panel Editor",
         description:[
           `**Title:** ${panel.name}`,
           `**Description:** ${(panel.description||"").slice(0,80)}${(panel.description||"").length>80?"…":""}`,
-          `**Button:** ${panel.buttonEmoji||"<:RUSH_ticket:1521415234802417754>"} ${panel.buttonLabel||panel.name} (${panel.buttonColor||"Success"})`,
+          `**Button:** ${panel.buttonEmoji||""} ${panel.buttonLabel||panel.name} (${panel.buttonColor||"Success"})`,
           `**Categories:** ${panel.categories?.map(c=>`${c.emoji||""}${c.name}`).join(", ")||"none (single button)"}`,
           `**Support Roles:** ${panel.supportRoles?.map(r=>`<@&${r}>`).join(", ")||"none"}`,
           `**Ticket Category:** ${panel.categoryId?`<#${panel.categoryId}>`:"not set"}`,
@@ -15642,57 +15641,57 @@ const _TP_BSTYLE = { Primary:ButtonStyle.Primary, Success:ButtonStyle.Success, D
 function _wizardStepContent(step, wiz) {
   const { panelData } = wiz;
   if (step === 2) return {
-    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 2/6: Panel description",
+    embeds:[{color:PINK, title:"Panel Setup — Step 2/6: Panel description",
       description:"Click **Set Description** to write the text shown inside the panel embed.\nSupports **bold**, *italic*, Discord emojis, and mentions.",
       fields:[{name:"Current", value:(panelData.description||"*(none)*").slice(0,300), inline:false}],
       footer:{text:"Click Skip to keep the default."}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setdesc").setLabel("Set Description").setEmoji("<:RUSH_task:1521415237813665813>").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setdesc").setLabel("Set Description").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip2").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 3) return {
-    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 3/6: Button colour",
-      description:"Pick a **colour** for the open-ticket button.\n\nCurrent emoji: `"+(panelData.buttonEmoji||"<:RUSH_ticket:1521415234802417754>")+"` · Colour: **"+(panelData.buttonColor||"Success")+"**",
+    embeds:[{color:PINK, title:"Panel Setup — Step 3/6: Button colour",
+      description:"Pick a **colour** for the open-ticket button.\n\nCurrent emoji: `"+(panelData.buttonEmoji||"")+"` · Colour: **"+(panelData.buttonColor||"Success")+"**",
       footer:{text:"Clicking a colour saves it and moves to the next step."}}],
     components:[
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("tp_color_Primary").setLabel("🔵 Blue").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("tp_color_Success").setLabel("Green").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("tp_color_Danger").setLabel("Red").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("tp_color_Secondary").setLabel("⚫ Grey").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tp_color_Primary").setLabel("Blue").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("tp_color_Success").setLabel("Green").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("tp_color_Danger").setLabel("Red").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("tp_color_Secondary").setLabel("Grey").setStyle(ButtonStyle.Secondary),
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("tp_setemoji").setLabel("✏️ Set custom emoji").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("tp_setemoji").setLabel("Set custom emoji").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("tp_skip3").setLabel("Skip / Keep current").setStyle(ButtonStyle.Secondary),
       ),
     ],
   };
   if (step === 4) return {
-    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 4/6: Ticket categories",
+    embeds:[{color:PINK, title:"Panel Setup — Step 4/6: Ticket categories",
       description:'Add **categories** so users choose a topic when opening a ticket.\nEach category becomes a separate button on the panel.\n\nLeave blank for a single open-ticket button.',
       fields:[{name:"Current", value:panelData.categories?.length ? panelData.categories.map(c=>`${c.emoji||""}  **${c.name}**`).join("\n") : "*(single button)*", inline:false}],
-      footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"'}}],
+      footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "Partners, Reports, Other"'}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setcats").setLabel("Set Categories").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setcats").setLabel("Set Categories").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip4").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 5) return {
-    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 5/6: Support roles",
+    embeds:[{color:PINK, title:"Panel Setup — Step 5/6: Support roles",
       description:"Enter the role IDs that can see and manage tickets.\nLeave blank to allow anyone with Manage Channels.",
       fields:[{name:"Current", value:panelData.supportRoles?.length ? panelData.supportRoles.map(r=>`<@&${r}>`).join(", ") : "*(none)*", inline:false}],
       footer:{text:"Enter role IDs separated by commas."}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setroles").setLabel("👥 Set Roles").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setroles").setLabel("Set Roles").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip5").setLabel("Skip").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("tp_save_finish").setLabel("Finish").setStyle(ButtonStyle.Success),
     )],
   };
   if (step === 6) return {
-    embeds:[{color:PINK, title:"<:RUSH_ticket:1521415234802417754> Panel Setup — Step 6/6: Category & transcript channels",
+    embeds:[{color:PINK, title:"Panel Setup — Step 6/6: Category & transcript channels",
       description:"Set the **Discord category** where ticket channels are created, and a **transcript channel** for closed ticket logs.",
       fields:[
         {name:"Ticket category", value:panelData.categoryId?`<#${panelData.categoryId}>`:"*(not set)*", inline:true},
@@ -15700,7 +15699,7 @@ function _wizardStepContent(step, wiz) {
       ],
       footer:{text:"Click Set Channels or Skip to finish."}}],
     components:[new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("tp_setchannels").setLabel("Set Channels").setEmoji("<:RUSH_folder:1521415227495940096>").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("tp_setchannels").setLabel("Set Channels").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip6").setLabel("Skip / Finish").setStyle(ButtonStyle.Secondary),
     )],
   };
@@ -15710,7 +15709,7 @@ function _wizardStepContent(step, wiz) {
 function _wizardDoneContent(wiz) {
   const cfg = guildCfg(wiz.guildId);
   const n   = (cfg.ticketPanels||[]).length;
-  return { embeds:[{color:PINK, title:"<:019TXTWhite_Yes:1521327983279996999>  Panel Created!",
+  return { embeds:[{color:PINK, title:" Panel Created!",
     description:`**${wiz.panelData.name}** saved as panel **#${n}**.\n\nRun \`,ticketpanel manage ${n}\` → **Send panel to a channel** to deploy it.`}], components:[] };
 }
 function _tpWizardSave(wiz) {
@@ -15721,7 +15720,7 @@ function _tpWizardSave(wiz) {
   client._tpWizards?.delete(`tp_wizard:${wiz.authorId}:${wiz.guildId}`);
 }
 // Safely resolve an emoji string to what Discord.js ButtonBuilder.setEmoji() accepts.
-// Handles: Unicode ("<:RUSH_ticket:1521415234802417754>"), custom ("<:name:id>"), animated ("<a:name:id>")
+// Handles: Unicode (""), custom ("<:name:id>"), animated ("<a:name:id>")
 function _resolveEmoji(raw) {
   if (!raw) return null;
   const s = raw.trim();
@@ -15783,18 +15782,18 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.guild) return;
   const id = interaction.customId || "";
 
-  // ── ℹ️ Keto info button ───────────────────────────────────────────────────
+  // ──Keto info button ───────────────────────────────────────────────────
   if (id.startsWith("keto_info:") && interaction.isButton()) {
     const cached = client._ketoInfoCache?.get(id);
-    if (!cached) return interaction.reply({content:"ℹ️ Info expired.",flags:64}).catch(()=>{});
+    if (!cached) return interaction.reply({content:"Info expired.",flags:64}).catch(()=>{});
     const { data, link } = cached;
     const lines = [
       `**Author:** ${data.author}${data.handle?`  (@${data.handle})`:""}`,
       data.title    ? `**Caption:** ${data.title.slice(0,300)}`       : null,
-      data.likes   != null ? `<:RUSH_heart:1521415287344468029> **${_fmtNum(data.likes)}** likes`   : null,
-      data.comments!= null ? `<:RUSH_comment:1491884212297531572> **${_fmtNum(data.comments)}** comments` : null,
-      data.shares  != null ? `↗️ **${_fmtNum(data.shares)}** shares`  : null,
-      data.plays   != null ? `▶️ **${_fmtNum(data.plays)}** views`    : null,
+      data.likes   != null ? `**${_fmtNum(data.likes)}** likes`   : null,
+      data.comments!= null ? `**${_fmtNum(data.comments)}** comments` : null,
+      data.shares  != null ? `**${_fmtNum(data.shares)}** shares`  : null,
+      data.plays   != null ? `**${_fmtNum(data.plays)}** views`    : null,
       `\n[Open in TikTok](${link})`,
     ].filter(Boolean).join("\n");
     return interaction.reply({embeds:[{color:PINK, title:data.author, description:lines}], flags:64}).catch(()=>{});
@@ -15805,7 +15804,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!client._tpWizards) client._tpWizards = new Map();
     const wizKey = `tp_wizard:${interaction.user.id}:${interaction.guild.id}`;
     const wiz    = client._tpWizards.get(wizKey);
-    if (!wiz) return interaction.reply({content:"<:RUSH_warning:1521415214799654985> Session expired — run `,ticketpanel setup` again.",flags:64}).catch(()=>{});
+    if (!wiz) return interaction.reply({content:"Session expired — run `,ticketpanel setup` again.",flags:64}).catch(()=>{});
     if (interaction.user.id !== wiz.authorId) return interaction.reply({content:"This wizard belongs to someone else.",flags:64}).catch(()=>{});
 
     // Modals
@@ -15834,7 +15833,7 @@ client.on("interactionCreate", async (interaction) => {
     if (id==="tp_setcats") {
       const modal = new ModalBuilder().setCustomId("tp_modal_cats").setTitle("Ticket Categories");
       modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("cats").setLabel('e.g. "🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"').setStyle(TextInputStyle.Paragraph).setValue(wiz.panelData.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||"").setRequired(false)
+        new TextInputBuilder().setCustomId("cats").setLabel('e.g. "Partners, Reports, Other"').setStyle(TextInputStyle.Paragraph).setValue(wiz.panelData.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||"").setRequired(false)
       ));
       return interaction.showModal(modal);
     }
@@ -15905,7 +15904,7 @@ client.on("interactionCreate", async (interaction) => {
 
     wiz.step += 1;
     // Acknowledge the modal FIRST so Discord doesn't show "interaction failed"
-    await interaction.reply({content:"<:019TXTWhite_Yes:1521327983279996999> Saved — check the setup message above.", flags:64}).catch(()=>{});
+    await interaction.reply({content:"Saved — check the setup message above.", flags:64}).catch(()=>{});
     const origMsg = await interaction.channel.messages.fetch(wiz.msgId).catch(()=>null);
     if (wiz.step <= 6) { if (origMsg) await origMsg.edit(_wizardStepContent(wiz.step,wiz)).catch(()=>{}); }
     else { _tpWizardSave(wiz); if (origMsg) await origMsg.edit(_wizardDoneContent(wiz)).catch(()=>{}); }
@@ -15925,7 +15924,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!panel)  return interaction.reply({content:"Panel not found.",flags:64});
     const action = interaction.values[0];
 
-    if (action==="delete") { cfg.ticketPanels.splice(idx,1); saveAllConfigs(); return interaction.update({embeds:[{color:PINK,description:"<:RUSH_trash_can:1521415241190215721> Panel deleted."}],components:[]}).catch(()=>{}); }
+    if (action==="delete") { cfg.ticketPanels.splice(idx,1); saveAllConfigs(); return interaction.update({embeds:[{color:PINK,description:"Panel deleted."}],components:[]}).catch(()=>{}); }
 
     const modalDefs = {
       name:        {cid:`tpm_modal_name:${idx}`,       title:"Panel title & button label",
@@ -15935,7 +15934,7 @@ client.on("interactionCreate", async (interaction) => {
       style:       {cid:`tpm_modal_style:${idx}`,       title:"Button emoji & colour",
                     fields:[{id:"emoji",label:"Emoji: unicode/<:name:id> blank=remove",style:"Short",val:panel.buttonEmoji||""},{id:"color",label:"Color: Primary/Success/Danger/Secondary",style:"Short",val:panel.buttonColor||"Success"}]},
       categories:  {cid:`tpm_modal_cats:${idx}`,        title:"Ticket categories",
-                    fields:[{id:"cats",label:'"🤝 Partners, <:RUSH_task:1521415237813665813> Reports, ❓ Other"',style:"Paragraph",val:panel.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||""}]},
+                    fields:[{id:"cats",label:'"Partners, Reports, Other"',style:"Paragraph",val:panel.categories?.map(c=>`${c.emoji||""} ${c.name}`.trim()).join(", ")||""}]},
       roles:       {cid:`tpm_modal_roles:${idx}`,       title:"Support team roles",
                     fields:[{id:"roles",label:"Role IDs comma-separated (blank = any staff)",style:"Short",val:panel.supportRoles?.join(",")||""}]},
       transcript:  {cid:`tpm_modal_transcript:${idx}`,  title:"Transcript channel",
@@ -15998,17 +15997,17 @@ client.on("interactionCreate", async (interaction) => {
     if (mtype==="send") {
       const channelId = gv("channelid");
       const ch = interaction.guild.channels.cache.get(channelId);
-      if (!ch) return interaction.reply({content:"<:steal:1521327958634135655> Channel not found — double-check the channel ID.",flags:64}).catch(()=>{});
+      if (!ch) return interaction.reply({content:"Channel not found — double-check the channel ID.",flags:64}).catch(()=>{});
       // Send the panel; catch errors properly to avoid a double-reply
       const sendResult = await ch.send(_buildPanelMessage(panel, interaction.guild.id, idx)).catch(e => e);
       if (sendResult instanceof Error)
-        return interaction.reply({content:`<:steal:1521327958634135655> Failed to send panel: ${sendResult.message}`,flags:64}).catch(()=>{});
+        return interaction.reply({content:`Failed to send panel: ${sendResult.message}`,flags:64}).catch(()=>{});
       panel.panelChannelId = channelId;
       saveAllConfigs();
-      return interaction.reply({content:`<:019TXTWhite_Yes:1521327983279996999> Panel **${panel.name}** sent to <#${channelId}>!`, flags:64}).catch(()=>{});
+      return interaction.reply({content:`Panel **${panel.name}** sent to <#${channelId}>!`, flags:64}).catch(()=>{});
     }
     saveAllConfigs();
-    return interaction.reply({content:"<:019TXTWhite_Yes:1521327983279996999> Panel updated.", flags:64}).catch(()=>{});
+    return interaction.reply({content:"Panel updated.", flags:64}).catch(()=>{});
   }
 
   // ── Ticket Create Button ──────────────────────────────────────────────────
@@ -16022,7 +16021,7 @@ client.on("interactionCreate", async (interaction) => {
     const cfg    = guildCfg(guildId);
     const panel  = cfg.ticketPanels?.[panelIdx];
     const existing = openTickets.get(`${guildId}-${interaction.user.id}`);
-    if (existing) return interaction.reply({content:`<:steal:1521327958634135655> You already have an open ticket: <#${existing}>`,flags:64});
+    if (existing) return interaction.reply({content:`You already have an open ticket: <#${existing}>`,flags:64});
 
     cfg.ticketCounter = (cfg.ticketCounter||0) + 1;
     const ticketNum = String(cfg.ticketCounter).padStart(4,"0");
@@ -16041,7 +16040,7 @@ client.on("interactionCreate", async (interaction) => {
       parent:panel?.categoryId||undefined,
       permissionOverwrites:perms,
     }).catch(()=>null);
-    if (!ch) return interaction.reply({content:"<:steal:1521327958634135655> Could not create ticket channel — check my permissions.",flags:64});
+    if (!ch) return interaction.reply({content:"Could not create ticket channel — check my permissions.",flags:64});
 
     openTickets.set(`${guildId}-${interaction.user.id}`, ch.id);
     ticketActivity.set(ch.id, { creatorId:interaction.user.id, guildId, lastActivity:Date.now(), closing:false, ticketNum, panelIdx, openedAt:Date.now(), creatorMsgSent:false });
@@ -16054,26 +16053,26 @@ client.on("interactionCreate", async (interaction) => {
         description:`Support will be with you shortly.\nTo close this ticket press the **Close** button below.`,
       }],
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_close:${ch.id}:${interaction.user.id}`).setLabel("Close").setEmoji("<:RUSH_unlock:1521415218037526641>").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`ticket_close:${ch.id}:${interaction.user.id}`).setLabel("Close").setStyle(ButtonStyle.Secondary)
       )],
     });
-    return interaction.reply({content:`<:019TXTWhite_Yes:1521327983279996999> Ticket opened: ${ch}`,flags:64});
+    return interaction.reply({content:`Ticket opened: ${ch}`,flags:64});
   }
 
   // ── Ticket Close → shows confirmation ────────────────────────────────────
   if (id.startsWith("ticket_close:") && interaction.isButton()) {
     const [,channelId,creatorId] = id.split(":");
     const activity = ticketActivity.get(channelId);
-    if (!activity) return interaction.reply({content:"<:RUSH_warning:1521415214799654985> This ticket is already closed.",flags:64});
+    if (!activity) return interaction.reply({content:"This ticket is already closed.",flags:64});
     const cfg2 = guildCfg(interaction.guild.id);
     const canClose = interaction.user.id===(creatorId||activity.creatorId)
       || interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
       || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
-    if (!canClose) return interaction.reply({content:"<:steal:1521327958634135655> No permission to close this ticket.",flags:64});
+    if (!canClose) return interaction.reply({content:"No permission to close this ticket.",flags:64});
     return interaction.reply({
       embeds:[{color:0xFF4444, description:"**Are you sure you would like to close this ticket?**"}],
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_confirm_close:${channelId}:${creatorId||activity.creatorId}`).setLabel("Close").setStyle(ButtonStyle.Danger).setEmoji("<:RUSH_unlock:1521415218037526641>"),
+        new ButtonBuilder().setCustomId(`ticket_confirm_close:${channelId}:${creatorId||activity.creatorId}`).setLabel("Close").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("ticket_cancel_close").setLabel("Cancel").setStyle(ButtonStyle.Secondary),
       )],
     });
@@ -16081,7 +16080,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Cancel close ─────────────────────────────────────────────────────────
   if (id==="ticket_cancel_close" && interaction.isButton()) {
-    return interaction.update({embeds:[{color:PINK,description:"❎ Close cancelled."}],components:[]}).catch(()=>{});
+    return interaction.update({embeds:[{color:PINK,description:"Close cancelled."}],components:[]}).catch(()=>{});
   }
 
   // ── Confirmed close ───────────────────────────────────────────────────────
@@ -16107,9 +16106,9 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.channel.send({
       embeds:[{color:0x2B2D31, description:"**Support team ticket controls**", footer:{text:`Ticket #${ticketNum} · Closed by ${interaction.user.username}`}, timestamp:new Date().toISOString()}],
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_transcript:${channelId}:${activity.panelIdx??0}`).setLabel("Transcript").setStyle(ButtonStyle.Secondary).setEmoji("📄"),
-        new ButtonBuilder().setCustomId(`ticket_reopen:${channelId}:${creatorId}:${ticketNum}`).setLabel("Open").setStyle(ButtonStyle.Success).setEmoji("<:RUSH_unlock:1521415218037526641>"),
-        new ButtonBuilder().setCustomId(`ticket_delete:${channelId}`).setLabel("Delete").setStyle(ButtonStyle.Danger).setEmoji("<:RUSH_trash_can:1521415241190215721>"),
+        new ButtonBuilder().setCustomId(`ticket_transcript:${channelId}:${activity.panelIdx??0}`).setLabel("Transcript").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`ticket_reopen:${channelId}:${creatorId}:${ticketNum}`).setLabel("Open").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`ticket_delete:${channelId}`).setLabel("Delete").setStyle(ButtonStyle.Danger),
       )],
     }).catch(()=>{});
 
@@ -16131,12 +16130,12 @@ client.on("interactionCreate", async (interaction) => {
     const cfg2 = guildCfg(interaction.guild.id);
     const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
       || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
-    if (!canAct) return interaction.reply({content:"<:steal:1521327958634135655> No permission.",flags:64});
+    if (!canAct) return interaction.reply({content:"No permission.",flags:64});
     await interaction.deferReply({flags:64});
     const buf = await _generateTranscript(interaction.channel).catch(()=>null);
-    if (!buf) return interaction.followUp({content:"<:steal:1521327958634135655> Failed to generate transcript.",flags:64});
+    if (!buf) return interaction.followUp({content:"Failed to generate transcript.",flags:64});
     const name = interaction.channel.name.replace("closed-","ticket-");
-    return interaction.followUp({content:"<:019TXTWhite_Yes:1521327983279996999> Transcript:", files:[{attachment:buf,name:`transcript-${name}.txt`}], flags:64});
+    return interaction.followUp({content:"Transcript:", files:[{attachment:buf,name:`transcript-${name}.txt`}], flags:64});
   }
 
   // ── Reopen button ─────────────────────────────────────────────────────────
@@ -16145,7 +16144,7 @@ client.on("interactionCreate", async (interaction) => {
     const cfg2 = guildCfg(interaction.guild.id);
     const canAct = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
       || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
-    if (!canAct) return interaction.reply({content:"<:steal:1521327958634135655> No permission.",flags:64});
+    if (!canAct) return interaction.reply({content:"No permission.",flags:64});
 
     // ── Acknowledge FIRST ──
     await interaction.update({embeds:[{color:PINK,description:`**Reopening ticket…**`}],components:[]}).catch(()=>{});
@@ -16160,7 +16159,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.channel.send({
       content:`<@${creatorId}> This ticket has been reopened by <@${interaction.user.id}>.`,
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_close:${channelId}:${creatorId}`).setLabel("Close").setEmoji("<:RUSH_unlock:1521415218037526641>").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId(`ticket_close:${channelId}:${creatorId}`).setLabel("Close").setStyle(ButtonStyle.Secondary)
       )],
     }).catch(()=>{});
   }
@@ -16176,7 +16175,7 @@ client.on("interactionCreate", async (interaction) => {
       : (cfg2.ticketPanels||[]).flatMap(p=>p.supportRoles||[]);
     const canDelete = interaction.member.permissions.has(PermissionFlagsBits.Administrator)
       || supportRoles.some(r=>interaction.member.roles.cache.has(r));
-    if (!canDelete) return interaction.reply({content:"<:steal:1521327958634135655> Only support staff can delete tickets.",flags:64});
+    if (!canDelete) return interaction.reply({content:"Only support staff can delete tickets.",flags:64});
     await interaction.update({embeds:[{color:0xFF4444,description:"Deleting..."}],components:[]}).catch(()=>{});
     setTimeout(()=>interaction.channel.delete().catch(()=>{}), 2000);
   }
@@ -16184,17 +16183,17 @@ client.on("interactionCreate", async (interaction) => {
   // ── ,riskypermission select menu ──────────────────────────────────────────
   if (id.startsWith("rp_set:") && interaction.isStringSelectMenu()) {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
-      return interaction.reply({content:"<:steal:1521327958634135655> Missing **Administrator** permission.",flags:64});
+      return interaction.reply({content:"Missing **Administrator** permission.",flags:64});
     const cfg = guildCfg(interaction.guild.id);
     cfg.riskyPerms = interaction.values; // replace entire list with selection
     saveSecurityNow(); // flush immediately — security config must survive restarts
     const monitored = cfg.riskyPerms;
     const monitoredLines = monitored.length
-      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`${p.emoji} **${p.name}**`).join("\n")
+      ? RISKY_PERM_OPTIONS.filter(p=>monitored.includes(p.name)).map(p=>`**${p.name}**`).join("\n")
       : "*None — no permissions monitored.*";
     const newEmbed = {
       color: PINK,
-      title: "<:RUSH_warning:1521415214799654985>  Risky Permission Monitor — Updated",
+      title: " Risky Permission Monitor — Updated",
       description: [
         "Select which permissions to flag as **risky**.",
         "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
@@ -16210,8 +16209,8 @@ client.on("interactionCreate", async (interaction) => {
       .setMinValues(0).setMaxValues(RISKY_PERM_OPTIONS.length)
       .addOptions(RISKY_PERM_OPTIONS.map(p =>
         new StringSelectMenuOptionBuilder()
-          .setLabel(p.name).setValue(p.name).setEmoji(p.emoji)
-          .setDescription(monitored.includes(p.name) ? "<:019TXTWhite_Yes:1521327983279996999> Monitored" : "Not monitored")
+          .setLabel(p.name).setValue(p.name)
+          .setDescription(monitored.includes(p.name) ? "Monitored" : "Not monitored")
           .setDefault(monitored.includes(p.name))
       ));
     return interaction.update({embeds:[newEmbed], components:[new ActionRowBuilder().addComponents(newMenu)]}).catch(()=>{});
@@ -16282,7 +16281,7 @@ client.on("roleUpdate", async (oldRole, newRole) => {
     );
     if (!newlyAdded.length) return;
 
-    const permNames = newlyAdded.map(p => `${p.emoji} **${p.name}**`).join(", ");
+    const permNames = newlyAdded.map(p => `**${p.name}**`).join(", ");
     log(`[RiskyPerms] Role "${newRole.name}" in ${newRole.guild.name} got blacklisted perm(s): ${permNames} — reverting`, "warn");
 
     // Build the new permission bitfield with the blacklisted permissions removed
@@ -16298,7 +16297,7 @@ client.on("roleUpdate", async (oldRole, newRole) => {
       const logCh = newRole.guild.channels.cache.get(logChId);
       if (logCh) await logCh.send({ embeds:[{
         color: 0xFF4444,
-        title: "<:RUSH_warning:1521415214799654985>  Risky Permission Blocked",
+        title: " Risky Permission Blocked",
         description: [
           `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
           `**Blocked permission(s):** ${permNames}`,
@@ -16326,7 +16325,7 @@ if (!global._helpExtraCategories) global._helpExtraCategories = {};
 Object.assign(global._helpExtraCategories, {
   emotes: {
     label: "Emotes & Stickers",
-    emoji: "<a:014White_Spark2:1491251181840891996>",
+    
     description: "Steal, rename, convert and find emojis/stickers",
     commands: [
       [",steal <:emoji:> [name]",         "Steal a custom emoji and add to this server"],
@@ -16343,7 +16342,7 @@ Object.assign(global._helpExtraCategories, {
   },
   social: {
     label: "Social (Keto)",
-    emoji: "📱",
+    
     description: "Auto-embed TikTok, Twitter/X, Instagram links",
     commands: [
       [",keto on/off",              "Enable/disable Keto auto-embed for social links"],
@@ -16356,33 +16355,33 @@ Object.assign(global._helpExtraCategories, {
   },
   funactions: {
     label: "Fun Actions",
-    emoji: "🎭",
+    
     description: "Anime GIF reactions — hug, kiss, slap and more",
     commands: [
-      [",hug [@user]",       "Hug someone 🤗"],
-      [",kiss [@user]",      "Kiss someone 💋"],
-      [",slap [@user]",      "Slap someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
-      [",pat [@user]",       "Pat someone 🐾"],
-      [",cuddle [@user]",    "Cuddle someone 🥰"],
-      [",poke [@user]",      "Poke someone 👉"],
-      [",bite [@user]",      "Bite someone 😬"],
-      [",punch [@user]",     "Punch someone 👊"],
-      [",highfive [@user]",  "High five someone 🙌"],
-      [",wave [@user]",      "Wave at someone <a:009Cinnamoroll_Wave:1265534373873320047>"],
-      [",dance [@user]",     "Dance with someone 💃"],
-      [",feed [@user]",      "Feed someone 🍙"],
-      [",tickle [@user]",    "Tickle someone 😂"],
-      [",smile [@user]",     "Smile at someone 😊"],
-      [",cry [@user]",       "Cry with someone 😢"],
-      [",blush [@user]",     "Blush at someone 😳"],
-      [",wink [@user]",      "Wink at someone 😉"],
-      [",throw [@user]",     "Throw something at someone 🎯"],
-      [",fuck [@user]",      "<:18plus:1521415320538054748> NSFW-only channels"],
+      [",hug [@user]",       "Hug someone"],
+      [",kiss [@user]",      "Kiss someone"],
+      [",slap [@user]",      "Slap someone"],
+      [",pat [@user]",       "Pat someone"],
+      [",cuddle [@user]",    "Cuddle someone"],
+      [",poke [@user]",      "Poke someone"],
+      [",bite [@user]",      "Bite someone"],
+      [",punch [@user]",     "Punch someone"],
+      [",highfive [@user]",  "High five someone"],
+      [",wave [@user]",      "Wave at someone"],
+      [",dance [@user]",     "Dance with someone"],
+      [",feed [@user]",      "Feed someone"],
+      [",tickle [@user]",    "Tickle someone"],
+      [",smile [@user]",     "Smile at someone"],
+      [",cry [@user]",       "Cry with someone"],
+      [",blush [@user]",     "Blush at someone"],
+      [",wink [@user]",      "Wink at someone"],
+      [",throw [@user]",     "Throw something at someone"],
+      [",fuck [@user]",      "NSFW-only channels"],
     ]
   },
   securityv2: {
     label: "Security V2",
-    emoji: "<:RUSH_caution:1521415278355808297>",
+    
     description: "Action limits, punishments & whitelists (Wick-style)",
     commands: [
       [",setlimit <action> <count> [seconds]",       "Set max actions before punishment fires (e.g. `,setlimit ban 3 10`)"],
@@ -16403,7 +16402,7 @@ Object.assign(global._helpExtraCategories, {
   },
   ticketsv2: {
     label: "Ticket System V2",
-    emoji: "<:RUSH_ticket:1521415234802417754>",
+    
     description: "Full panel-based ticket system with wizard setup",
     commands: [
       [",ticketpanel setup",           "Open 5-step wizard to create a new ticket panel"],
@@ -16423,8 +16422,8 @@ Object.assign(global._helpExtraCategories, {
 // To use your own server's custom emojis in bot messages:
 //
 //  1. Get the emoji's ID:  Right-click emoji → Copy ID   (e.g.  1234567890123456789)
-//  2. For a static emoji:  <:emoji_name:ID>   e.g.  <:crown:1234567890123456789>
-//  3. For an animated gif: <a:emoji_name:ID>  e.g.  <a:fire:1234567890123456789>
+//  2. For a static emoji:  <:emoji_name:ID>   e.g. 
+//  3. For an animated gif: <a:emoji_name:ID>  e.g. 
 //
 //  The bot must be in the server that owns the emoji, OR the bot must have
 //  Nitro (bots can use emojis from any server they're in).
@@ -16434,7 +16433,7 @@ Object.assign(global._helpExtraCategories, {
 //    embed.title = "<a:loading:9876543210> Processing...";
 //
 //  To add white/custom emojis to any bot response, just replace any
-//  existing emoji string (like "<:019TXTWhite_Yes:1521327983279996999>") with your <:name:id> string.
+//  existing emoji string (like "") with your <:name:id> string.
 // ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -16635,7 +16634,7 @@ async function _notifyCreateWebhookForTarget(guild, channel, reason) {
 function _notifyJobSummary(job) {
   const endStr = job.endAt ? `<t:${Math.floor(job.endAt / 1000)}:D>` : "no end date";
   return [
-    `**ID:** \`${job.id}\`  ·  ${job.active ? "<:019TXTWhite_Yes:1521327983279996999> Active" : "⏸️ Paused"}`,
+    `**ID:** \`${job.id}\`  ·  ${job.active ? "Active" : "Paused"}`,
     `**Time:** \`${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")}\` Italy time · daily`,
     `**Runs until:** ${endStr}${job.active ? ` · next <t:${_notifyNextRunTs(job)}:R>` : ""}`,
     `**Servers:** ${job.targets.length}`,
@@ -16649,7 +16648,7 @@ function _notifyHubEmbed() {
   const active = jobs.filter(j => j.active).length;
   return {
     color: PINK,
-    title: "📢  Notify System",
+    title: " Notify System",
     description: [
       "Broadcast a message on a daily schedule through webhooks placed across any servers the bot is in.",
       "",
@@ -16660,9 +16659,9 @@ function _notifyHubEmbed() {
 }
 function _notifyHubComponents() {
   return [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ntf_new").setLabel("New Notify").setEmoji("➕").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("ntf_list").setLabel("Active Notifies").setEmoji("<:RUSH_list:1521415268000337961>").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId("ntf_close").setLabel("Close").setEmoji("<:steal:1521327958634135655>").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("ntf_new").setLabel("New Notify").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("ntf_list").setLabel("Active Notifies").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("ntf_close").setLabel("Close").setStyle(ButtonStyle.Secondary),
   )];
 }
 
@@ -16671,7 +16670,7 @@ function _notifyStepGuilds(wiz) {
   const allGuilds = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name));
   if (!allGuilds.length) {
     return {
-      embeds: [{ color: PINK, title: "📢 Notify Setup", description: "The bot isn't in any servers." }],
+      embeds: [{ color: PINK, title: "Notify Setup", description: "The bot isn't in any servers." }],
       components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger))],
     };
   }
@@ -16688,9 +16687,9 @@ function _notifyStepGuilds(wiz) {
       .setMinValues(0).setMaxValues(options.length).addOptions(options)
   );
   const navRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ntf_guild_prev").setLabel("◀ Prev").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage <= 0),
-    new ButtonBuilder().setCustomId("ntf_guild_next").setLabel("Next ▶").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage >= totalPages - 1),
-    new ButtonBuilder().setCustomId("ntf_guilds_confirm").setLabel(`Confirm (${wiz.guildIds.length})`).setEmoji("<:019TXTWhite_Yes:1521327983279996999>").setStyle(ButtonStyle.Success).setDisabled(wiz.guildIds.length === 0),
+    new ButtonBuilder().setCustomId("ntf_guild_prev").setLabel("Prev").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage <= 0),
+    new ButtonBuilder().setCustomId("ntf_guild_next").setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(wiz.guildPage >= totalPages - 1),
+    new ButtonBuilder().setCustomId("ntf_guilds_confirm").setLabel(`Confirm (${wiz.guildIds.length})`).setStyle(ButtonStyle.Success).setDisabled(wiz.guildIds.length === 0),
     new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
   );
 
@@ -16700,7 +16699,7 @@ function _notifyStepGuilds(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: "📢 Notify Setup — Step 1/3: Select servers",
+      color: PINK, title: "Notify Setup — Step 1/3: Select servers",
       description: `Page **${wiz.guildPage + 1}/${totalPages}** — tick every server that should receive this notification. Selections carry over between pages.\n\n**Selected so far:** ${selectedNames}`,
       footer: { text: "Tick servers, use Prev/Next for more, then Confirm." },
     }],
@@ -16731,14 +16730,14 @@ async function _notifyStepChannel(wiz) {
     .slice(0, 25);
 
   const navRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ntf_channel_by_id").setLabel("Enter Channel ID").setEmoji("🔢").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("ntf_channel_by_id").setLabel("Enter Channel ID").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("ntf_channel_skip").setLabel("Skip this server").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
   );
 
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `📢 Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID, skip this server, or cancel setup.` }],
+      embeds: [{ color: PINK, title: `Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID, skip this server, or cancel setup.` }],
       components: [navRow],
     };
   }
@@ -16750,7 +16749,7 @@ async function _notifyStepChannel(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: `📢 Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
+      color: PINK, title: `Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
       description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
     }],
@@ -16769,7 +16768,7 @@ function _notifyStepReview(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: "📢 Notify Setup — Step 3/3: Review",
+      color: PINK, title: "Notify Setup — Step 3/3: Review",
       description: [
         `**Message:**\n> ${wiz.message.length > 300 ? wiz.message.slice(0, 300) + "…" : wiz.message}`,
         ``,
@@ -16781,7 +16780,7 @@ function _notifyStepReview(wiz) {
       footer: { text: "Pressing Activate creates one webhook per channel right now." },
     }],
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("ntf_activate").setLabel("Activate").setEmoji("<:RUSH_rocket:1521415262384160778>").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("ntf_activate").setLabel("Activate").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger),
     )],
   };
@@ -16810,13 +16809,13 @@ function _notifyEditHub(job) {
     ));
   }
   rows.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ntf_edit_add_server").setLabel("Add Server by ID").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("ntf_edit_add_server").setLabel("Add Server by ID").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary),
   ));
 
   return {
     embeds: [{
-      color: PINK, title: `📢 Editing Notify \`${job.id}\``,
+      color: PINK, title: `Editing Notify \`${job.id}\``,
       description: [
         `**Current targets (${job.targets.length}):**`,
         targetLines.join("\n") || "*none*",
@@ -16836,13 +16835,13 @@ async function _notifyEditChannelPicker(guild) {
     .slice(0, 25);
 
   const idRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("ntf_edit_channel_by_id").setLabel("Enter Channel ID").setEmoji("🔢").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("ntf_edit_channel_by_id").setLabel("Enter Channel ID").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("ntf_edit_close").setLabel("Close").setStyle(ButtonStyle.Secondary),
   );
 
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID instead.` }],
+      embeds: [{ color: PINK, title: `Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID instead.` }],
       components: [idRow],
     };
   }
@@ -16850,7 +16849,7 @@ async function _notifyEditChannelPicker(guild) {
   const options = channels.map(c => new StringSelectMenuOptionBuilder().setLabel(`#${c.name}`.slice(0, 100)).setValue(c.id));
   return {
     embeds: [{
-      color: PINK, title: `📢 Notify Edit — Channel for ${guild.name}`,
+      color: PINK, title: `Notify Edit — Channel for ${guild.name}`,
       description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
     }],
@@ -16902,7 +16901,7 @@ client.on("messageCreate", async (message) => {
       const jobs = [...notifyJobs.values()];
       if (!jobs.length) return err(message, "No notify jobs configured yet. Run `,notify` to create one.");
       return message.reply({ embeds: [{
-        color: PINK, title: "📢 Notify Jobs",
+        color: PINK, title: "Notify Jobs",
         description: jobs.map(_notifyJobSummary).join("\n\n"),
         footer: { text: ",notify stop/start/delete <id>" },
       }] }).catch(() => {});
@@ -16959,7 +16958,7 @@ client.on("messageCreate", async (message) => {
     if (!sent) return;
   } catch (e) {
     console.error(`[notify] CRASH: ${e.message}\n${e.stack}`);
-    message.reply({ content: `<:steal:1521327958634135655> Notify error: \`${e.message}\`` }).catch(() => {});
+    message.reply({ content: `Notify error: \`${e.message}\`` }).catch(() => {});
   }
 });
 
@@ -16976,7 +16975,7 @@ client.on("interactionCreate", async (interaction) => {
     // Hub buttons
     if (id === "ntf_close" && interaction.isButton()) {
       client._notifyWizards.delete(wizKey);
-      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Notify panel closed." }], components: [] }).catch(() => {});
+      return interaction.update({ embeds: [{ color: PINK, description: "Notify panel closed." }], components: [] }).catch(() => {});
     }
 
     if (id === "ntf_list" && interaction.isButton()) {
@@ -16987,7 +16986,7 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription((j.message || "").slice(0, 90) || "(no message)")
         .setValue(j.id));
       return interaction.reply({
-        embeds: [{ color: PINK, title: "📢 Notify Jobs", description: jobs.map(_notifyJobSummary).join("\n\n") }],
+        embeds: [{ color: PINK, title: "Notify Jobs", description: jobs.map(_notifyJobSummary).join("\n\n") }],
         components: [new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder().setCustomId("ntf_manage_pick").setPlaceholder("Manage a job...").addOptions(options)
         )],
@@ -16999,10 +16998,10 @@ client.on("interactionCreate", async (interaction) => {
       const job = notifyJobs.get(interaction.values[0]);
       if (!job) return interaction.update({ content: "That job no longer exists.", embeds: [], components: [] }).catch(() => {});
       return interaction.update({
-        embeds: [{ color: PINK, title: `📢 Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
+        embeds: [{ color: PINK, title: `Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setEmoji(job.active ? "⏸️" : "▶️").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setEmoji("<:RUSH_trash_can:1521415241190215721>").setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setStyle(ButtonStyle.Danger),
         )],
       }).catch(() => {});
     }
@@ -17019,10 +17018,10 @@ client.on("interactionCreate", async (interaction) => {
       }
       saveNotifyJobs();
       return interaction.update({
-        embeds: [{ color: PINK, title: `📢 Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
+        embeds: [{ color: PINK, title: `Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setEmoji(job.active ? "⏸️" : "▶️").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
-          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setEmoji("<:RUSH_trash_can:1521415241190215721>").setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setStyle(ButtonStyle.Danger),
         )],
       }).catch(() => {});
     }
@@ -17031,7 +17030,7 @@ client.on("interactionCreate", async (interaction) => {
       const jobId = id.split(":")[1];
       notifyJobs.delete(jobId);
       saveNotifyJobs();
-      return interaction.update({ embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> Notify \`${jobId}\` deleted.` }], components: [] }).catch(() => {});
+      return interaction.update({ embeds: [{ color: PINK, description: `Notify \`${jobId}\` deleted.` }], components: [] }).catch(() => {});
     }
 
     // ── Edit panel (,notify edit <id>) ────────────────────────────────────────
@@ -17039,7 +17038,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (id === "ntf_edit_close" && interaction.isButton()) {
       client._notifyEditWizards.delete(interaction.user.id);
-      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Edit panel closed." }], components: [] }).catch(() => {});
+      return interaction.update({ embeds: [{ color: PINK, description: "Edit panel closed." }], components: [] }).catch(() => {});
     }
 
     if (id === "ntf_edit_change_channel_pick" && interaction.isStringSelectMenu()) {
@@ -17071,12 +17070,12 @@ client.on("interactionCreate", async (interaction) => {
       if (!job) return interaction.reply({ content: "That notify job no longer exists.", flags: 64 }).catch(() => {});
 
       const guildId = interaction.fields.getTextInputValue("guildid").trim();
-      if (!isValidSnowflake(guildId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid server ID.", flags: 64 }).catch(() => {});
-      if (job.targets.some(t => t.guildId === guildId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That server is already part of this notify job — pick it from the list above to change its channel instead.", flags: 64 }).catch(() => {});
+      if (!isValidSnowflake(guildId)) return interaction.reply({ content: "That doesn't look like a valid server ID.", flags: 64 }).catch(() => {});
+      if (job.targets.some(t => t.guildId === guildId)) return interaction.reply({ content: "That server is already part of this notify job — pick it from the list above to change its channel instead.", flags: 64 }).catch(() => {});
 
       let guild = client.guilds.cache.get(guildId);
       if (!guild) guild = await client.guilds.fetch(guildId).catch(() => null);
-      if (!guild) return interaction.reply({ content: "<:steal:1521327958634135655> The bot isn't in a server with that ID (or the ID is invalid).", flags: 64 }).catch(() => {});
+      if (!guild) return interaction.reply({ content: "The bot isn't in a server with that ID (or the ID is invalid).", flags: 64 }).catch(() => {});
 
       ewiz.mode = "add";
       ewiz.pendingGuildId = guild.id;
@@ -17103,12 +17102,12 @@ client.on("interactionCreate", async (interaction) => {
       if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
 
       const channelId = interaction.fields.getTextInputValue("channelid").trim();
-      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
+      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
 
       const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
-      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `<:steal:1521327958634135655> That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
+      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
       if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
-        return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That channel isn't a text channel.", flags: 64 }).catch(() => {});
+        return interaction.reply({ content: "That channel isn't a text channel.", flags: 64 }).catch(() => {});
       }
 
       await interaction.deferReply({ flags: 64 }).catch(() => {});
@@ -17116,10 +17115,10 @@ client.on("interactionCreate", async (interaction) => {
         await _notifyApplyEditChannelChoice(job, ewiz, guild, channel, interaction.user.tag);
         client._notifyEditWizards.delete(interaction.user.id);
         return interaction.editReply({
-          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${guild.name}** → #${channel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
+          embeds: [{ color: PINK, description: `**${guild.name}** → #${channel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
         }).catch(() => {});
       } catch (e) {
-        return interaction.editReply({ content: `<:steal:1521327958634135655> Failed: ${e.message}` }).catch(() => {});
+        return interaction.editReply({ content: `Failed: ${e.message}` }).catch(() => {});
       }
     }
 
@@ -17142,11 +17141,11 @@ client.on("interactionCreate", async (interaction) => {
         client._notifyEditWizards.delete(interaction.user.id);
 
         return interaction.editReply({
-          embeds: [{ color: PINK, description: `<:019TXTWhite_Yes:1521327983279996999> **${guild.name}** → #${newChannel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
+          embeds: [{ color: PINK, description: `**${guild.name}** → #${newChannel.name} ${ewiz.mode === "add" ? "added to" : "updated in"} notify \`${job.id}\`.` }],
           components: [],
         }).catch(() => {});
       } catch (e) {
-        return interaction.editReply({ content: `<:steal:1521327958634135655> Failed: ${e.message}`, embeds: [], components: [] }).catch(() => {});
+        return interaction.editReply({ content: `Failed: ${e.message}`, embeds: [], components: [] }).catch(() => {});
       }
     }
 
@@ -17165,9 +17164,9 @@ client.on("interactionCreate", async (interaction) => {
       const msg  = interaction.fields.getTextInputValue("msg").trim();
       const time = parseNotifyTime(interaction.fields.getTextInputValue("time"));
       const dur  = parseNotifyDuration(interaction.fields.getTextInputValue("duration"));
-      if (!msg)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Message can't be empty.", flags: 64 }).catch(() => {});
-      if (!time) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid time — use 24h Italy time format like `14:30`.", flags: 64 }).catch(() => {});
-      if (!dur)  return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> Invalid duration — try `7d`, `2w`, `1mo`, a date `2026-12-31`, or `forever`.", flags: 64 }).catch(() => {});
+      if (!msg)  return interaction.reply({ content: "Message can't be empty.", flags: 64 }).catch(() => {});
+      if (!time) return interaction.reply({ content: "Invalid time — use 24h Italy time format like `14:30`.", flags: 64 }).catch(() => {});
+      if (!dur)  return interaction.reply({ content: "Invalid duration — try `7d`, `2w`, `1mo`, a date `2026-12-31`, or `forever`.", flags: 64 }).catch(() => {});
 
       client._notifyWizards.set(wizKey, {
         authorId: interaction.user.id,
@@ -17179,7 +17178,7 @@ client.on("interactionCreate", async (interaction) => {
         pendingGuilds: [], targets: {}, step: "guilds",
       });
 
-      await interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Saved — check the panel above.", flags: 64 }).catch(() => {});
+      await interaction.reply({ content: "Saved — check the panel above.", flags: 64 }).catch(() => {});
       const ch = await interaction.client.channels.fetch(interaction.message.channelId).catch(() => null);
       const msgObj = ch ? await ch.messages.fetch(interaction.message.id).catch(() => null) : null;
       if (msgObj) await msgObj.edit(_notifyStepGuilds(client._notifyWizards.get(wizKey))).catch(() => {});
@@ -17227,18 +17226,18 @@ client.on("interactionCreate", async (interaction) => {
       if (!guild) return interaction.reply({ content: "That server is no longer available.", flags: 64 }).catch(() => {});
 
       const channelId = interaction.fields.getTextInputValue("channelid").trim();
-      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
+      if (!isValidSnowflake(channelId)) return interaction.reply({ content: "That doesn't look like a valid channel ID.", flags: 64 }).catch(() => {});
 
       const channel = guild.channels.cache.get(channelId) ?? await guild.channels.fetch(channelId).catch(() => null);
-      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `<:steal:1521327958634135655> That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
+      if (!channel || channel.guildId !== guild.id) return interaction.reply({ content: `That channel doesn't exist in **${guild.name}**.`, flags: 64 }).catch(() => {});
       if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) {
-        return interaction.reply({ content: "<:RUSH_warning:1521415214799654985> That channel isn't a text channel.", flags: 64 }).catch(() => {});
+        return interaction.reply({ content: "That channel isn't a text channel.", flags: 64 }).catch(() => {});
       }
 
       wiz.targets[guildId] = channel.id;
       wiz.pendingGuilds.shift();
 
-      await interaction.reply({ content: "<:019TXTWhite_Yes:1521327983279996999> Channel set.", flags: 64 }).catch(() => {});
+      await interaction.reply({ content: "Channel set.", flags: 64 }).catch(() => {});
       const ch = await interaction.client.channels.fetch(interaction.message.channelId).catch(() => null);
       const msgObj = ch ? await ch.messages.fetch(interaction.message.id).catch(() => null) : null;
       if (msgObj) await msgObj.edit(await _notifyStepChannel(wiz)).catch(() => {});
@@ -17261,7 +17260,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (id === "ntf_cancel" && interaction.isButton()) {
       client._notifyWizards.delete(wizKey);
-      return interaction.update({ embeds: [{ color: PINK, description: "<:steal:1521327958634135655> Notify setup cancelled." }], components: [] }).catch(() => {});
+      return interaction.update({ embeds: [{ color: PINK, description: "Notify setup cancelled." }], components: [] }).catch(() => {});
     }
 
     if (id === "ntf_activate" && interaction.isButton()) {
@@ -17270,7 +17269,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!targetsEntries.length) return interaction.reply({ content: "No servers/channels configured.", flags: 64 }).catch(() => {});
 
       await interaction.deferUpdate().catch(() => {});
-      await interaction.editReply({ embeds: [{ color: PINK, description: "<a:Loading:1521415253982969898> Creating webhooks..." }], components: [] }).catch(() => {});
+      await interaction.editReply({ embeds: [{ color: PINK, description: "Creating webhooks..." }], components: [] }).catch(() => {});
 
       const targets  = [];
       const failures = [];
@@ -17290,7 +17289,7 @@ client.on("interactionCreate", async (interaction) => {
       client._notifyWizards.delete(wizKey);
 
       if (!targets.length) {
-        return interaction.editReply({ embeds: [{ color: PINK, title: "<:steal:1521327958634135655> Notify setup failed", description: `Couldn't create any webhooks:\n${failures.map(f => `• ${f}`).join("\n")}` }], components: [] }).catch(() => {});
+        return interaction.editReply({ embeds: [{ color: PINK, title: "Notify setup failed", description: `Couldn't create any webhooks:\n${failures.map(f => `• ${f}`).join("\n")}` }], components: [] }).catch(() => {});
       }
 
       const job = {
@@ -17304,10 +17303,10 @@ client.on("interactionCreate", async (interaction) => {
       const desc = [
         `**ID:** \`${job.id}\` — use \`,notify stop/start/delete ${job.id}\` to manage it later.`,
         _notifyJobSummary(job),
-        failures.length ? `\n<:RUSH_warning:1521415214799654985> Failed on ${failures.length} server(s):\n${failures.map(f => `• ${f}`).join("\n")}` : "",
+        failures.length ? `\nFailed on ${failures.length} server(s):\n${failures.map(f => `• ${f}`).join("\n")}` : "",
       ].filter(Boolean).join("\n");
 
-      return interaction.editReply({ embeds: [{ color: PINK, title: "<:019TXTWhite_Yes:1521327983279996999> Notify job created!", description: desc }], components: [] }).catch(() => {});
+      return interaction.editReply({ embeds: [{ color: PINK, title: "Notify job created!", description: desc }], components: [] }).catch(() => {});
     }
   } catch (e) {
     console.error(`[notify] interaction CRASH: ${e.message}\n${e.stack}`);
@@ -17339,7 +17338,7 @@ if (!global._helpExtraCategories) global._helpExtraCategories = {};
 Object.assign(global._helpExtraCategories, {
   notify: {
     label: "Notify System",
-    emoji: "📢",
+    
     description: "Scheduled daily webhook broadcasts across multiple servers",
     commands: [
       [",notify",             "Open the setup panel — message, time, duration, servers & channels (times are Italy time)"],
@@ -17356,7 +17355,7 @@ Object.assign(global._helpExtraCategories, {
 
 // ── LOGIN ────────────────────────────────────────────────────────────────────
 client.login(process.env.TOKEN).catch(e => {
-  console.error('[Bot] <:steal:1521327958634135655> Login failed:', e.message);
+  console.error('[Bot] Login failed:', e.message);
   process.exit(1);
 });
 
