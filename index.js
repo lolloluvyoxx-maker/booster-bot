@@ -5271,19 +5271,8 @@ client.on("messageCreate", async (message) => {
     return ok(message, `Added emoji ${created}`);
   }
 
-  // ,steal <emoji> — steals the emoji next to the command
-  if (command === "steal") {
-    if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return err(message, "Missing permissions.");
-    const emojiStr = args[1];
-    if (!emojiStr) return err(message, "missing required argument: **emoji**\nusage: `,steal <emoji>`");
-    const match = emojiStr.match(/<(a?):([^:]+):(\d+)>/);
-    if (!match) return err(message, "that's not a custom emoji — only emojis from other servers can be stolen");
-    const [, animated, emojiName, emojiId] = match;
-    const url = `https://cdn.discordapp.com/emojis/${emojiId}.${animated ? "gif" : "png"}`;
-    const created = await message.guild.emojis.create({ attachment: url, name: emojiName, reason: `Stolen by ${message.author.username}` }).catch(e => e);
-    if (!created || created instanceof Error) return err(message, `failed to steal emoji — ${created?.message || "unknown error"}`);
-    return ok(message, `stolen ${created} **${emojiName}**`);
-  }
+  // (,steal duplicato rimosso — ora esiste una sola implementazione, più avanti nel file,
+  // che supporta anche URL diretti e allegati oltre al formato <:nome:id>)
 
   // ,steals — steals ALL stickers from messages in the current channel
   if (command === "steals") {
@@ -15090,6 +15079,20 @@ client.on("messageCreate", async (message) => {
   // ═══════════════════════════════════════════════════════════════════════════
   // ██  EMOTE & STICKER MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════════
+  // ,raw — reply to a message with this to extract its raw <:name:id> emoji tags
+  // (works even for Components V2 messages, where the text lives inside
+  // message.components instead of message.content — mobile "Copy Text" can't see those)
+  if (command === "raw") {
+    const ref = message.reference ? await message.fetchReference().catch(() => null) : null;
+    if (!ref) return err(message, "Reply to the message you want the raw content of, then run `,raw`.");
+    const blob = JSON.stringify({ content: ref.content, components: ref.components, embeds: ref.embeds });
+    const emojiMatches = [...new Set([...blob.matchAll(/<a?:\w+:\d+>/g)].map(m => m[0]))];
+    if (!emojiMatches.length) return info(message, "No custom emoji found in that message.");
+    return message.reply({
+      content: `**Emoji found (use these directly with \`,steal\`):**\n${emojiMatches.map(e => `\`${e}\` ${e}`).join("\n")}`,
+    }).catch(() => {});
+  }
+
   if (command === "steal") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers))
       return err(message,"You need **Manage Emojis & Stickers** permission.");
