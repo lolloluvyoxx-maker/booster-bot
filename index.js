@@ -3390,41 +3390,13 @@ client.on("messageCreate", async (message) => {
 
     // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
     const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
-    let selectMenu, mainEmbed, msg;
+    let mainEmbed, msg;
     try {
       const visibleCategories = Object.entries(mergedCategories)
         .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id));
 
-      selectMenu = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId("help_category")
-          .setPlaceholder("Select a category")
-          .addOptions(
-            visibleCategories.map(([key, cat]) =>
-              new StringSelectMenuOptionBuilder()
-                .setLabel(cat.label)
-                .setDescription(cat.description.slice(0, 100))
-                .setValue(key)
-            )
-          )
-      );
-
-      const totalCommands = visibleCategories.reduce((a, [, c]) => a + _helpTags(c).length, 0);
-      mainEmbed = {
-        color: PINK,
-        image: HELP_BANNER_URL ? { url: HELP_BANNER_URL } : undefined,
-        thumbnail: { url: client.user.displayAvatarURL() },
-        title: `${client.user.username} help`,
-        description: "Experience the ultimate Discord bot designed for seamless management and community engagement.",
-        fields: [
-          { name: "Prefix", value: "`,`", inline: true },
-          { name: "Commands", value: `\`${totalCommands}\``, inline: true },
-          { name: "Modules", value: `\`${visibleCategories.length}\``, inline: true },
-        ],
-        footer: { text: "Use ,help (command) for details on a specific command" },
-      };
-
-      msg = await message.reply({ embeds: [mainEmbed], components: [selectMenu] });
+      mainEmbed = _helpBuildMainEmbed(visibleCategories);
+      msg = await message.reply({ embeds: [mainEmbed], components: [_helpBuildSelectRow(visibleCategories, "home")] });
     } catch (e) {
       log(`[help] Failed to build/send help panel: ${e.message}`, "error");
       return message.reply({ embeds: [{ color: PINK, description: `Could not build the help panel: ${e.message}` }] }).catch(() => {});
@@ -3433,8 +3405,7 @@ client.on("messageCreate", async (message) => {
     // Store session in global map — handled by the global interactionCreate handler below
     helpSessions.set(msg.id, {
       mainEmbed,
-      selectMenu,
-      categories: mergedCategories,
+      categories: Object.entries(mergedCategories).filter(([key]) => key !== 'nsfw' || isOwner(message.author.id)),
       authorId: message.author.id,
     });
     // Auto-cleanup after 60 minutes
@@ -3443,8 +3414,8 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// ── Help panel layout helpers ─────────────────────────────────────────────────
-const HELP_BANNER_URL = null; // set an image URL here to show a banner across the top of the help panel
+// ── Help panel layout helpers (mirrors the "greed" bot help panel) ───────────
+const HELP_BANNER_URL = null; // paste a banner image URL here to show it across the top of the panel — falls back to the bot's own profile banner if it has one, otherwise no banner
 
 // Turns a raw command entry (e.g. ",ban <user> [reason]") into a bare tag (e.g. "ban").
 // Rows that aren't real commands (blank separators, "Detection:" notes, bullet lines) return null.
@@ -3462,30 +3433,69 @@ function _helpTags(cat) {
   }
   return out;
 }
+function _helpBannerUrl() {
+  if (HELP_BANNER_URL) return HELP_BANNER_URL;
+  try { return client.user.bannerURL({ size: 1024 }) || null; } catch { return null; }
+}
+function _helpBuildMainEmbed(visibleCategories) {
+  const totalCommands = visibleCategories.reduce((a, [, c]) => a + _helpTags(c).length, 0);
+  const banner = _helpBannerUrl();
+  return {
+    color: PINK,
+    image: banner ? { url: banner } : undefined,
+    thumbnail: { url: client.user.displayAvatarURL() },
+    title: `${client.user.username} help`,
+    description: [
+      "Experience the ultimate Discord bot designed for seamless management and community engagement.",
+      "",
+      `**Prefix** \`,\``,
+      `**Commands** \`${totalCommands}\``,
+      `**Modules** \`${visibleCategories.length}\``,
+    ].join("\n"),
+    footer: { text: "Use ,help (command) for details on a specific command" },
+  };
+}
 function _helpBuildCategoryEmbed(cat) {
   const tags = _helpTags(cat).map(t => `\`${t}\``).join(" ");
   let body = `**${cat.label}**\n${cat.description}\n\n${tags}`;
   if (body.length > 4000) body = body.slice(0, 3997) + "...";
+  const banner = _helpBannerUrl();
   return {
     color: PINK,
-    image: HELP_BANNER_URL ? { url: HELP_BANNER_URL } : undefined,
+    image: banner ? { url: banner } : undefined,
     thumbnail: { url: client.user.displayAvatarURL() },
     title: `${client.user.username} help`,
     description: body,
     footer: { text: "Use ,help (command) for details on a specific command" },
   };
 }
-function _helpHomeRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary)
-  );
+// The select menu doubles as the "Home" nav: whichever entry is current shows as its
+// collapsed value (with a chevron), exactly like greed's "Home ›" / "Information ›" bar.
+function _helpBuildSelectRow(visibleCategories, currentKey) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("help_category")
+    .setPlaceholder("Select a category")
+    .addOptions([
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Home")
+        .setDescription("Back to the overview")
+        .setValue("home")
+        .setDefault(currentKey === "home"),
+      ...visibleCategories.map(([key, cat]) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(cat.label)
+          .setDescription(cat.description.slice(0, 100))
+          .setValue(key)
+          .setDefault(currentKey === key)
+      ),
+    ]);
+  return new ActionRowBuilder().addComponents(menu);
 }
 
 // ── Global help panel interaction handler ─────────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.message) return;
-  const id = interaction.customId;
-  if (!id || (id !== "help_category" && id !== "help_home")) return;
+  if (interaction.customId !== "help_category" || !interaction.isStringSelectMenu()) return;
 
   const sess = helpSessions.get(interaction.message.id);
   if (!sess) return interaction.reply({ content: "Session expired — type `,help` again.", flags: 64 });
@@ -3498,19 +3508,17 @@ client.on("interactionCreate", async (interaction) => {
   } catch { return; }
 
   try {
-    if (id === "help_home") {
-      await interaction.editReply({ embeds: [sess.mainEmbed], components: [sess.selectMenu] });
+    const value = interaction.values[0];
+    if (value === "home") {
+      await interaction.editReply({ embeds: [sess.mainEmbed], components: [_helpBuildSelectRow(sess.categories, "home")] });
       return;
     }
-    if (interaction.isStringSelectMenu()) {
-      const cat = sess.categories[interaction.values[0]];
-      if (!cat) return;
-      await interaction.editReply({
-        embeds: [_helpBuildCategoryEmbed(cat)],
-        components: [_helpHomeRow(), sess.selectMenu],
-      });
-      return;
-    }
+    const cat = sess.categories.find(([key]) => key === value)?.[1];
+    if (!cat) return;
+    await interaction.editReply({
+      embeds: [_helpBuildCategoryEmbed(cat)],
+      components: [_helpBuildSelectRow(sess.categories, value)],
+    });
   } catch (e) {
     log(`[help] interaction error: ${e.message}`, "error");
   }
