@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
+const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ContainerBuilder, SectionBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize, ThumbnailBuilder, MessageFlags } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -3390,13 +3390,13 @@ client.on("messageCreate", async (message) => {
 
     // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
     const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
-    let mainEmbed, msg;
+    let mainContainer, msg;
     try {
       const visibleCategories = Object.entries(mergedCategories)
         .filter(([key]) => key !== 'nsfw' || isOwner(message.author.id));
 
-      mainEmbed = _helpBuildMainEmbed(visibleCategories);
-      msg = await message.reply({ embeds: [mainEmbed], components: [_helpBuildSelectRow(visibleCategories, "home")] });
+      mainContainer = _helpBuildMainContainer(visibleCategories);
+      msg = await message.reply({ components: [mainContainer], flags: MessageFlags.IsComponentsV2 });
     } catch (e) {
       log(`[help] Failed to build/send help panel: ${e.message}`, "error");
       return message.reply({ embeds: [{ color: PINK, description: `Could not build the help panel: ${e.message}` }] }).catch(() => {});
@@ -3404,7 +3404,7 @@ client.on("messageCreate", async (message) => {
 
     // Store session in global map — handled by the global interactionCreate handler below
     helpSessions.set(msg.id, {
-      mainEmbed,
+      mainContainer,
       categories: Object.entries(mergedCategories).filter(([key]) => key !== 'nsfw' || isOwner(message.author.id)),
       authorId: message.author.id,
     });
@@ -3437,37 +3437,51 @@ function _helpBannerUrl() {
   if (HELP_BANNER_URL) return HELP_BANNER_URL;
   try { return client.user.bannerURL({ size: 1024 }) || null; } catch { return null; }
 }
-function _helpBuildMainEmbed(visibleCategories) {
+// Costruisce il pannello home in Components V2 (titolo, sottotesto, separatori, select menu integrato — stile greed/liability)
+function _helpBuildMainContainer(visibleCategories) {
   const totalCommands = visibleCategories.reduce((a, [, c]) => a + _helpTags(c).length, 0);
-  const banner = _helpBannerUrl();
-  return {
-    color: PINK,
-    image: banner ? { url: banner } : undefined,
-    thumbnail: { url: client.user.displayAvatarURL() },
-    title: `${client.user.username} help`,
-    description: [
-      "Experience the ultimate Discord bot designed for seamless management and community engagement.",
-      "",
-      `**Prefix** \`,\``,
-      `**Commands** \`${totalCommands}\``,
-      `**Modules** \`${visibleCategories.length}\``,
-    ].join("\n"),
-    footer: { text: "Use ,help (command) for details on a specific command" },
-  };
+  return new ContainerBuilder()
+    .addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(
+            `## ${client.user.username} help\n` +
+            `-# Experience the ultimate Discord bot designed for seamless management and community engagement.`
+          )
+        )
+        .setThumbnailAccessory(new ThumbnailBuilder().setURL(client.user.displayAvatarURL()))
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        `**Prefix** \`,\`\n**Commands** \`${totalCommands}\`\n**Modules** \`${visibleCategories.length}\``
+      )
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addActionRowComponents(_helpBuildSelectRow(visibleCategories, "home"))
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("-# Use `,help (command)` for details on a specific command")
+    );
 }
-function _helpBuildCategoryEmbed(cat) {
-  const tags = _helpTags(cat).map(t => `\`${t}\``).join(" ");
-  let body = `**${cat.label}**\n${cat.description}\n\n${tags}`;
-  if (body.length > 4000) body = body.slice(0, 3997) + "...";
-  const banner = _helpBannerUrl();
-  return {
-    color: PINK,
-    image: banner ? { url: banner } : undefined,
-    thumbnail: { url: client.user.displayAvatarURL() },
-    title: `${client.user.username} help`,
-    description: body,
-    footer: { text: "Use ,help (command) for details on a specific command" },
-  };
+// Costruisce il pannello di una categoria in Components V2, stesso stile della home
+function _helpBuildCategoryContainer(cat, visibleCategories, currentKey) {
+  let tags = _helpTags(cat).map(t => `\`${t}\``).join(" ") || "*No commands*";
+  if (tags.length > 3900) tags = tags.slice(0, 3897) + "...";
+  return new ContainerBuilder()
+    .addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`## ${cat.label}\n-# ${cat.description}`)
+        )
+        .setThumbnailAccessory(new ThumbnailBuilder().setURL(client.user.displayAvatarURL()))
+    )
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(tags))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small))
+    .addActionRowComponents(_helpBuildSelectRow(visibleCategories, currentKey))
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("-# Use `,help (command)` for details on a specific command")
+    );
 }
 // The select menu doubles as the "Home" nav: whichever entry is current shows as its
 // collapsed value (with a chevron), exactly like greed's "Home ›" / "Information ›" bar.
@@ -3510,14 +3524,14 @@ client.on("interactionCreate", async (interaction) => {
   try {
     const value = interaction.values[0];
     if (value === "home") {
-      await interaction.editReply({ embeds: [sess.mainEmbed], components: [_helpBuildSelectRow(sess.categories, "home")] });
+      await interaction.editReply({ components: [sess.mainContainer], flags: MessageFlags.IsComponentsV2 });
       return;
     }
     const cat = sess.categories.find(([key]) => key === value)?.[1];
     if (!cat) return;
     await interaction.editReply({
-      embeds: [_helpBuildCategoryEmbed(cat)],
-      components: [_helpBuildSelectRow(sess.categories, value)],
+      components: [_helpBuildCategoryContainer(cat, sess.categories, value)],
+      flags: MessageFlags.IsComponentsV2,
     });
   } catch (e) {
     log(`[help] interaction error: ${e.message}`, "error");
