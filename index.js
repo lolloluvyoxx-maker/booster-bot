@@ -3352,7 +3352,7 @@ client.on("messageCreate", async (message) => {
         description: "Clone, sort and manage perks servers",
         commands: [
           [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
-          [",separate", "Interactive panel to split server channels into 2–3 categories"],
+          [",separate", "Interactive panel to split server channels alphabetically (A→Z) into 4+ categories"],
           [",sortcategory", "Interactive panel to sort channels into 2–5 categories, with immune categories"],
           [",videocount [#ch]", "Count videos in a channel or the whole server (attachments + links)"],
           ["", ""],
@@ -10049,7 +10049,44 @@ client.on("messageCreate", async (message) => {
 // Opens an interactive panel to distribute all server channels into 2 or 3 categories.
 // Supports 200+ channels — creates overflow categories at every 50 channels automatically.
 
-const separateSessions = new Map(); // userId => { cat1, cat2, cat3, msgId, channelId }
+const separateSessions = new Map(); // userId => { categories: string[], msgId, channelId }
+const SEP_MAX_CATEGORIES = 20; // safety cap (embed field limit is 25)
+
+// Shared embed builder — used by all three ,separate handlers below
+function _sepBuildEmbed(s, guildName) {
+  const numCats = (s.categories || []).length;
+  const ready = numCats >= 2;
+  const list = numCats
+    ? s.categories.map((c, i) => `**Category ${i + 1}** — \`${c}\``).join("\n")
+    : "*not set*";
+  return {
+    color: PINK,
+    title: "Channel Separator",
+    description: [
+      "Distribute **all server channels**, sorted **alphabetically (A→Z)**, evenly across **4 or more categories** (2 minimum).",
+      "Each category supports up to 50 channels — overflow categories are created automatically.",
+      "",
+      list,
+      "",
+      ready
+        ? "Ready — press **Run** to start"
+        : "Set at least **2** category names (4+ recommended) to continue",
+    ].join("\n"),
+    footer: { text: `sensational • white edition • ${guildName}` },
+    timestamp: new Date(),
+  };
+}
+
+function _sepBuildRow(userId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("Run").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -10059,46 +10096,10 @@ client.on("messageCreate", async (message) => {
   if (command !== "separate") return;
   if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions — Administrator required.");
 
-  const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
-
-  // Build the panel embed
-  function buildSepEmbed(s) {
-    const ready = s.cat1 && s.cat2;
-    return {
-      color: PINK,
-      title: "Channel Separator",
-      description: [
-        "Distribute **all server channels** evenly across **2 or 3 categories**.",
-        "Each category supports up to 50 channels — overflow categories are created automatically.",
-        "",
-        `**Category 1** — ${s.cat1 ? `\`${s.cat1}\`` : "not set"}`,
-        `**Category 2** — ${s.cat2 ? `\`${s.cat2}\`` : "not set"}`,
-        `**Category 3** — ${s.cat3 ? `\`${s.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
-        "",
-        ready
-          ? "Ready — press **Run** to start"
-          : "Set at least **Category 1** and **Category 2** to continue",
-      ].join("\n"),
-      footer: { text: `sensational • white edition • ${message.guild.name}` },
-      timestamp: new Date(),
-    };
-  }
-
-  function buildSepRow(userId) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${userId}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${userId}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${userId}`).setLabel("Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${userId}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
-      ),
-    ];
-  }
-
-  const session = { cat1: null, cat2: null, cat3: null, msgId: null, channelId: message.channel.id };
+  const session = { categories: [], msgId: null, channelId: message.channel.id };
   const sentMsg = await message.reply({
-    embeds: [buildSepEmbed(session)],
-    components: buildSepRow(message.author.id),
+    embeds: [_sepBuildEmbed(session, message.guild.name)],
+    components: _sepBuildRow(message.author.id),
   });
   session.msgId = sentMsg.id;
   separateSessions.set(message.author.id, session);
@@ -10118,60 +10119,19 @@ client.on("interactionCreate", async (interaction) => {
   const s = separateSessions.get(userId);
   const { ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 
-  function buildSepEmbed(sess) {
-    const ready = sess.cat1 && sess.cat2;
-    return {
-      color: PINK,
-      title: "Channel Separator",
-      description: [
-        "Distribute **all server channels** evenly across **2 or 3 categories**.",
-        "Each category supports up to 50 channels — overflow categories are created automatically.",
-        "",
-        `**Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "not set"}`,
-        `**Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "not set"}`,
-        `**Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
-        "",
-        ready
-          ? "Ready — press **Run** to start"
-          : "Set at least **Category 1** and **Category 2** to continue",
-      ].join("\n"),
-      footer: { text: `sensational • white edition • ${interaction.guild.name}` },
-      timestamp: new Date(),
-    };
-  }
-
-  function buildSepRow(uid) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
-      ),
-    ];
-  }
-
   // Cancel
   if (action === "sep_cancel") {
     separateSessions.delete(userId);
     return interaction.update({ embeds: [{ color: PINK, description: "Channel separation cancelled." }], components: [] });
   }
 
-  // Open modal to set category names
+  // Open modal to set category names — one field, names separated by "|" (supports 4+ categories)
   if (action === "sep_setnames") {
     const modal = new ModalBuilder().setCustomId(`sep_modal:${userId}`).setTitle("Set Category Names");
     modal.addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("sep_cat1").setLabel("Category 1 name (required)").setStyle(TextInputStyle.Short)
-          .setRequired(true).setPlaceholder("e.g. Premium Channels").setValue(s?.cat1 || "")
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("sep_cat2").setLabel("Category 2 name (required)").setStyle(TextInputStyle.Short)
-          .setRequired(true).setPlaceholder("e.g. Exclusive Content").setValue(s?.cat2 || "")
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId("sep_cat3").setLabel("Category 3 name (optional — leave blank for 2)").setStyle(TextInputStyle.Short)
-          .setRequired(false).setPlaceholder("e.g. Special Access").setValue(s?.cat3 || "")
+        new TextInputBuilder().setCustomId("sep_cats").setLabel(`Categories, separated by | (min 2, max ${SEP_MAX_CATEGORIES})`).setStyle(TextInputStyle.Paragraph)
+          .setRequired(true).setPlaceholder("A-F | G-M | N-S | T-Z").setValue((s?.categories || []).join(" | "))
       ),
     );
     return interaction.showModal(modal);
@@ -10180,26 +10140,30 @@ client.on("interactionCreate", async (interaction) => {
   // Preview channel count
   if (action === "sep_preview") {
     await interaction.deferReply({ flags: 64 });
+    const cats = s?.categories || [];
+    if (cats.length < 2) {
+      return interaction.editReply({ content: "Set at least **2** category names first using **Set Category Names**." });
+    }
     const allChans = interaction.guild.channels.cache.filter(c => c && c.type !== 4);
-    const numCats = s?.cat3 ? 3 : 2;
+    const numCats = cats.length;
     const perCat = Math.ceil(allChans.size / numCats);
-    const cats = [s?.cat1 || "Category 1", s?.cat2 || "Category 2"];
-    if (s?.cat3) cats.push(s.cat3);
     const lines = cats.map((name, i) => {
       const start = i * perCat;
-      const count = Math.min(perCat, allChans.size - start);
-      const overflow = count > 50 ? ` (+ ${Math.ceil(count / 50) - 1} overflow ${count > 50 ? "categories" : "category"})` : "";
+      const count = Math.max(0, Math.min(perCat, allChans.size - start));
+      const overflowCats = count > 50 ? Math.ceil(count / 50) - 1 : 0;
+      const overflow = overflowCats > 0 ? ` (+ ${overflowCats} overflow ${overflowCats === 1 ? "category" : "categories"})` : "";
       return `**${name}** → ~${count} channels${overflow}`;
     });
     return interaction.editReply({
-      content: `**Preview** — **${allChans.size}** total channels split into **${numCats}** groups:\n\n${lines.join("\n")}`,
+      content: `**Preview** — **${allChans.size}** total channels, sorted **A→Z**, split into **${numCats}** groups:\n\n${lines.join("\n")}`,
     });
   }
 
   // Run separation
   if (action === "sep_run") {
-    if (!s?.cat1 || !s?.cat2) {
-      return interaction.reply({ content: "Set category names first using **Set Category Names**.", flags: 64 });
+    const cats = s?.categories || [];
+    if (cats.length < 2) {
+      return interaction.reply({ content: "Set at least **2** category names first using **Set Category Names**.", flags: 64 });
     }
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ content: "Administrator permission required.", flags: 64 });
@@ -10224,14 +10188,15 @@ client.on("interactionCreate", async (interaction) => {
       const guild = interaction.guild;
       await guild.channels.fetch();
 
+      // Sort ALPHABETICALLY (A→Z, case-insensitive, numeric-aware) instead of by position
       const allChans = [...guild.channels.cache
         .filter(c => c && c.type !== 4)
-        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }))
         .values()
       ];
 
-      const numCats = s.cat3 ? 3 : 2;
-      await updateStatus(`Found **${allChans.length}** channels. Creating **${numCats}** categories...`);
+      const numCats = cats.length;
+      await updateStatus(`Found **${allChans.length}** channels. Creating **${numCats}** categories (alphabetical split)...`);
 
       async function getOrCreate(name) {
         const ex = guild.channels.cache.find(c => c.type === 4 && c.name === name);
@@ -10254,38 +10219,32 @@ client.on("interactionCreate", async (interaction) => {
         await new Promise(r => setTimeout(r, 600));
       }
 
-      const slice1 = Math.ceil(allChans.length / numCats);
-      const slice2 = s.cat3 ? Math.ceil((allChans.length - slice1) / 2) : allChans.length - slice1;
-      const batch1 = allChans.slice(0, slice1);
-      const batch2 = allChans.slice(slice1, slice1 + slice2);
-      const batch3 = s.cat3 ? allChans.slice(slice1 + slice2) : [];
+      // Split the alphabetically-sorted channel list into N contiguous batches, one per category
+      const perCat = Math.ceil(allChans.length / numCats);
+      const batches = cats.map((_, i) => allChans.slice(i * perCat, (i + 1) * perCat));
 
-      const t1 = { baseName: s.cat1, currentCatId: await getOrCreate(s.cat1), count: 0 };
-      const t2 = { baseName: s.cat2, currentCatId: await getOrCreate(s.cat2), count: 0 };
-      const t3 = s.cat3 ? { baseName: s.cat3, currentCatId: await getOrCreate(s.cat3), count: 0 } : null;
-
-      await updateStatus(`Moving **${batch1.length}** channels → **${s.cat1}**...`);
-      for (const ch of batch1) { try { await moveToTracker(ch, t1); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
-
-      await updateStatus(`Moving **${batch2.length}** channels → **${s.cat2}**...`);
-      for (const ch of batch2) { try { await moveToTracker(ch, t2); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
-
-      if (t3 && batch3.length > 0) {
-        await updateStatus(`Moving **${batch3.length}** channels → **${s.cat3}**...`);
-        for (const ch of batch3) { try { await moveToTracker(ch, t3); } catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); } }
+      const trackers = [];
+      for (let i = 0; i < cats.length; i++) {
+        trackers.push({ baseName: cats[i], currentCatId: await getOrCreate(cats[i]), count: 0 });
       }
 
-      const fields = [
-        { name: s.cat1, value: `${t1.count} channels`, inline: true },
-        { name: s.cat2, value: `${t2.count} channels`, inline: true },
-      ];
-      if (t3) fields.push({ name: s.cat3, value: `${t3.count} channels`, inline: true });
+      for (let i = 0; i < cats.length; i++) {
+        const batch = batches[i];
+        if (!batch.length) continue;
+        await updateStatus(`Moving **${batch.length}** channels → **${cats[i]}**...`);
+        for (const ch of batch) {
+          try { await moveToTracker(ch, trackers[i]); }
+          catch (e) { log(`[separate] ${ch.name}: ${e.message}`, "error"); }
+        }
+      }
+
+      const fields = trackers.map((t, i) => ({ name: cats[i], value: `${t.count} channels`, inline: true }));
 
       await statusMsg?.edit({
         embeds: [{
           color: PINK,
           title: "Channel Separation Complete",
-          description: `**${guild.name}** — **${allChans.length}** channels distributed across **${numCats}** categories`,
+          description: `**${guild.name}** — **${allChans.length}** channels sorted **A→Z** and distributed across **${numCats}** categories`,
           fields,
           footer: { text: "sensational • white edition" },
           timestamp: new Date(),
@@ -10307,58 +10266,28 @@ client.on("interactionCreate", async (interaction) => {
   const userId = interaction.customId.split(":")[1];
   if (interaction.user.id !== userId) return interaction.reply({ content: "Not your session.", flags: 64 });
 
-  const cat1 = interaction.fields.getTextInputValue("sep_cat1").trim();
-  const cat2 = interaction.fields.getTextInputValue("sep_cat2").trim();
-  const cat3Raw = interaction.fields.getTextInputValue("sep_cat3").trim();
-  const cat3 = cat3Raw || null;
+  const raw = interaction.fields.getTextInputValue("sep_cats").trim();
+  const categories = raw.split("|").map(x => x.trim()).filter(Boolean);
 
-  if (!cat1 || !cat2) return interaction.reply({ content: "Category 1 and Category 2 are required.", flags: 64 });
+  if (categories.length < 2) {
+    return interaction.reply({ content: "Specify at least **2** category names, separated by `|` (e.g. `A-F | G-M | N-S | T-Z`).", flags: 64 });
+  }
+  if (categories.length > SEP_MAX_CATEGORIES) {
+    return interaction.reply({ content: `Too many categories — max is **${SEP_MAX_CATEGORIES}**.`, flags: 64 });
+  }
 
-  const s = separateSessions.get(userId) || { cat1: null, cat2: null, cat3: null, msgId: null, channelId: interaction.channelId };
-  s.cat1 = cat1;
-  s.cat2 = cat2;
-  s.cat3 = cat3;
+  const s = separateSessions.get(userId) || { categories: [], msgId: null, channelId: interaction.channelId };
+  s.categories = categories;
   separateSessions.set(userId, s);
-
-  function buildSepEmbed(sess) {
-    const ready = sess.cat1 && sess.cat2;
-    return {
-      color: PINK,
-      title: "Channel Separator",
-      description: [
-        "Distribute **all server channels** evenly across **2 or 3 categories**.",
-        "Each category supports up to 50 channels — overflow categories are created automatically.",
-        "",
-        `**Category 1** — ${sess.cat1 ? `\`${sess.cat1}\`` : "not set"}`,
-        `**Category 2** — ${sess.cat2 ? `\`${sess.cat2}\`` : "not set"}`,
-        `**Category 3** — ${sess.cat3 ? `\`${sess.cat3}\`` : "*optional — leave blank for 2-category split*"}`,
-        "",
-        ready ? "Ready — press **Run** to start" : "Set at least **Category 1** and **Category 2** to continue",
-      ].join("\n"),
-      footer: { text: `sensational • white edition • ${interaction.guild.name}` },
-      timestamp: new Date(),
-    };
-  }
-
-  function buildSepRow(uid) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sep_setnames:${uid}`).setLabel("Set Category Names").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`sep_preview:${uid}`).setLabel("Preview Channels").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(`sep_run:${uid}`).setLabel("Run").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`sep_cancel:${uid}`).setLabel("Cancel").setStyle(ButtonStyle.Danger),
-      ),
-    ];
-  }
 
   // Try to update the original panel message
   try {
     const ch = interaction.client.channels.cache.get(s.channelId) ?? await interaction.client.channels.fetch(s.channelId).catch(() => null);
     const msg = s.msgId && ch ? await ch.messages.fetch(s.msgId).catch(() => null) : null;
-    if (msg) await msg.edit({ embeds: [buildSepEmbed(s)], components: buildSepRow(userId) }).catch(() => {});
+    if (msg) await msg.edit({ embeds: [_sepBuildEmbed(s, interaction.guild.name)], components: _sepBuildRow(userId) }).catch(() => {});
   } catch (_) {}
 
-  return interaction.reply({ content: `Category names saved:\n**${cat1}** | **${cat2}**${cat3 ? ` | **${cat3}**` : ""}`, flags: 64 });
+  return interaction.reply({ content: `Category names saved (${categories.length}):\n${categories.map(c => `**${c}**`).join(" | ")}`, flags: 64 });
 });
 
 // ===== ,sortcategory COMMAND — N-CATEGORY SORTER WITH IMMUNE CATEGORIES =====
