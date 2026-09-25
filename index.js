@@ -10206,6 +10206,14 @@ client.on("interactionCreate", async (interaction) => {
         return nc.id;
       }
 
+      // Real current channel count of a category — used to seed tracker.count so overflow
+      // detection is correct even when getOrCreate reused an already-populated category
+      // (previously this assumed every tracker started at 0, which let two trackers stack
+      // channels into the same real category past Discord's hard 50-channel cap).
+      function realCategoryCount(catId) {
+        return guild.channels.cache.filter(c => c.parentId === catId && c.type !== 4).size;
+      }
+
       async function moveToTracker(ch, tracker) {
         if (tracker.count >= 50) {
           const overflowNum = Math.floor(tracker.count / 50) + 1;
@@ -10215,6 +10223,10 @@ client.on("interactionCreate", async (interaction) => {
           tracker.count = 0;
         }
         await ch.setParent(tracker.currentCatId, { lockPermissions: false, reason: "[,separate]" });
+        // Explicitly set position — moving a channel's parent does NOT by itself make Discord
+        // display it in the order we moved it; the client sorts a category's children by their
+        // own position field, so we assign sequential positions here to lock in the A→Z order.
+        await ch.setPosition(tracker.count, { relative: false }).catch(() => {});
         tracker.count++;
         await new Promise(r => setTimeout(r, 600));
       }
@@ -10225,7 +10237,8 @@ client.on("interactionCreate", async (interaction) => {
 
       const trackers = [];
       for (let i = 0; i < cats.length; i++) {
-        trackers.push({ baseName: cats[i], currentCatId: await getOrCreate(cats[i]), count: 0 });
+        const catId = await getOrCreate(cats[i]);
+        trackers.push({ baseName: cats[i], currentCatId: catId, count: realCategoryCount(catId) });
       }
 
       for (let i = 0; i < cats.length; i++) {
@@ -10274,6 +10287,18 @@ client.on("interactionCreate", async (interaction) => {
   }
   if (categories.length > SEP_MAX_CATEGORIES) {
     return interaction.reply({ content: `Too many categories — max is **${SEP_MAX_CATEGORIES}**.`, flags: 64 });
+  }
+  // Duplicate names collide into the SAME real Discord category (getOrCreate matches by
+  // name), silently funneling every batch into one category and hitting Discord's hard
+  // 50-channel-per-category cap for the later batches. Reject up front instead.
+  const seen = new Set();
+  const dupes = new Set();
+  for (const c of categories) {
+    const key = c.toLowerCase();
+    if (seen.has(key)) dupes.add(c); else seen.add(key);
+  }
+  if (dupes.size > 0) {
+    return interaction.reply({ content: `Category names must be **unique** — duplicate(s): ${[...dupes].map(d => `\`${d}\``).join(", ")}`, flags: 64 });
   }
 
   const s = separateSessions.get(userId) || { categories: [], msgId: null, channelId: interaction.channelId };
