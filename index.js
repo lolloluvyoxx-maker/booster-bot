@@ -577,7 +577,7 @@ async function loadAllData() {
   if (d[DB.NOTIFY] instanceof Map) {
     notifyJobs.clear();
     d[DB.NOTIFY].forEach((v, k) => notifyJobs.set(k, {
-      active: true, lastSentDate: null, targets: [], ...v,
+      active: true, lastSentDate: null, firesDate: null, firesToday: 0, targets: [], ...v,
     }));
     console.log(`[DB] notify_jobs restored (${notifyJobs.size})`);
   }
@@ -16464,7 +16464,10 @@ function _italyParts(date = new Date()) {
   }).formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
   return {
     year: +parts.year, month: +parts.month, day: +parts.day,
-    hour: +parts.hour, minute: +parts.minute, second: +parts.second,
+    // Some ICU builds format midnight as "24" instead of "00" with hour12:false —
+    // without the modulo, a job scheduled for 00:xx would never match and would
+    // silently never fire. % 24 normalizes "24" back to 0.
+    hour: (+parts.hour) % 24, minute: +parts.minute, second: +parts.second,
     dateStr: `${parts.year}-${parts.month}-${parts.day}`,
   };
 }
@@ -16514,6 +16517,25 @@ function _notifyNextRunTs(job) {
   return Math.floor(candidateMs / 1000);
 }
 
+// ── Daily fire cap ───────────────────────────────────────────────────────────
+// A job can be fired from 4 different places: the 30s scheduler, ,notify start,
+// the "Resume" button, and ,notify sync. None of those used to check whether the
+// job had already gone out — an admin toggling Resume a few times in one day (or
+// running ,notify start repeatedly) could re-ping every target server as many
+// times as they clicked. This caps REAL sends (any call that purges+sends to a
+// target) at 2 per job per Italy calendar day, regardless of what triggered it.
+function _notifyFiresLeftToday(job) {
+  const today = _italyParts().dateStr;
+  if (job.firesDate !== today) return 2;
+  return Math.max(0, 2 - (job.firesToday || 0));
+}
+function _notifyRegisterFire(job) {
+  const today = _italyParts().dateStr;
+  if (job.firesDate !== today) { job.firesDate = today; job.firesToday = 0; }
+  job.firesToday += 1;
+  job.lastSentDate = today; // kept in sync — used by _notifyNextRunTs's "already sent today" check
+}
+
 async function _fetchImageBuffer(url) {
   if (!url) return null;
   try {
@@ -16539,6 +16561,7 @@ async function _purgeChannelMessages(channel) {
         for (const m of fetched.values()) await m.delete().catch(() => {});
       }
       if (fetched.size < 100) break;
+      await new Promise(r => setTimeout(r, 400)); // small gap between batches to avoid 429s on large channels
     }
   } catch (e) {
     console.error(`[Notify] purge error in channel ${channel.id}: ${e.message}`);
@@ -16612,10 +16635,12 @@ async function _notifyCreateWebhookForTarget(guild, channel, reason) {
 
 function _notifyJobSummary(job) {
   const endStr = job.endAt ? `<t:${Math.floor(job.endAt / 1000)}:D>` : "no end date";
+  const left = _notifyFiresLeftToday(job);
   return [
     `**ID:** \`${job.id}\`  ·  ${job.active ? "Active" : "Paused"}`,
     `**Time:** \`${String(job.hour).padStart(2, "0")}:${String(job.minute).padStart(2, "0")}\` Italy time · daily`,
     `**Runs until:** ${endStr}${job.active ? ` · next <t:${_notifyNextRunTs(job)}:R>` : ""}`,
+    `**Sends left today:** ${left}/2`,
     `**Servers:** ${job.targets.length}`,
     `**Message:** ${job.message.length > 120 ? job.message.slice(0, 120) + "…" : job.message}`,
   ].join("\n");
@@ -16892,10 +16917,14 @@ client.on("messageCreate", async (message) => {
       job.active = sub === "start";
 
       if (sub === "start") {
+        if (_notifyFiresLeftToday(job) <= 0) {
+          saveNotifyJobs();
+          return err(message, `Notify \`${job.id}\` resumed, but it already sent the maximum **2 times today** — it'll wait until tomorrow to send again.`);
+        }
         // Mark today as already-sent so the 30s scheduler doesn't double-fire,
         // then send to every webhook right now, all at once, instead of
         // waiting for the scheduled time.
-        job.lastSentDate = _italyParts().dateStr;
+        _notifyRegisterFire(job);
         saveNotifyJobs();
         ok(message, `Notify \`${job.id}\` resumed — sending to all ${job.targets.length} target(s) now, at the same time.`);
         _notifyFireJob(job, job.id).catch(e => console.error(`[Notify] manual start fire failed job=${job.id}: ${e.message}`));
@@ -16919,7 +16948,10 @@ client.on("messageCreate", async (message) => {
       if (!job) return err(message, "Unknown notify ID. Use `,notify list` to see IDs.");
       const pending = job.targets.filter(t => !t.everSent);
       if (!pending.length) return ok(message, `Notify \`${job.id}\` — every server already has the message, nothing to sync.`);
+      if (_notifyFiresLeftToday(job) <= 0) return err(message, `Notify \`${job.id}\` already sent the maximum **2 times today** — try syncing again tomorrow.`);
 
+      _notifyRegisterFire(job);
+      saveNotifyJobs();
       ok(message, `Notify \`${job.id}\` — syncing ${pending.length} server(s) that haven't received the message yet: ${pending.map(t => t.guildName ?? t.guildId).join(", ")}`);
       _notifySyncJob(job, job.id).catch(e => console.error(`[Notify] sync failed job=${job.id}: ${e.message}`));
       return;
@@ -16990,14 +17022,20 @@ client.on("interactionCreate", async (interaction) => {
       const job = notifyJobs.get(jobId);
       if (!job) return interaction.update({ content: "That job no longer exists.", embeds: [], components: [] }).catch(() => {});
       job.active = !job.active;
+      let note = "";
       if (job.active) {
-        // Resuming via the button also fires immediately, same as ,notify start.
-        job.lastSentDate = _italyParts().dateStr;
-        _notifyFireJob(job, job.id).catch(e => console.error(`[Notify] manual toggle fire failed job=${job.id}: ${e.message}`));
+        // Resuming via the button also fires immediately, same as ,notify start —
+        // but only if today's 2-fire quota isn't already used up.
+        if (_notifyFiresLeftToday(job) > 0) {
+          _notifyRegisterFire(job);
+          _notifyFireJob(job, job.id).catch(e => console.error(`[Notify] manual toggle fire failed job=${job.id}: ${e.message}`));
+        } else {
+          note = "\n\n*Already sent the maximum 2 times today — will send again tomorrow.*";
+        }
       }
       saveNotifyJobs();
       return interaction.update({
-        embeds: [{ color: PINK, title: `Managing \`${job.id}\``, description: _notifyJobSummary(job) }],
+        embeds: [{ color: PINK, title: `Managing \`${job.id}\``, description: _notifyJobSummary(job) + note }],
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`ntf_toggle:${job.id}`).setLabel(job.active ? "Pause" : "Resume").setStyle(job.active ? ButtonStyle.Secondary : ButtonStyle.Success),
           new ButtonBuilder().setCustomId(`ntf_delete:${job.id}`).setLabel("Delete").setStyle(ButtonStyle.Danger),
@@ -17303,9 +17341,9 @@ setInterval(async () => {
     if (!job.active) continue;
     if (job.endAt && nowMs > job.endAt) { job.active = false; saveNotifyJobs(); continue; }
     if (job.hour !== hh || job.minute !== mm) continue;
-    if (job.lastSentDate === todayStr) continue;
+    if (_notifyFiresLeftToday(job) <= 0) continue;
 
-    job.lastSentDate = todayStr;
+    _notifyRegisterFire(job);
     saveNotifyJobs();
 
     await _notifyFireJob(job, jobId);
