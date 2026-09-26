@@ -17370,6 +17370,1434 @@ Object.assign(global._helpExtraCategories, {
 });
 
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// ══ EXTRA COMMAND PACK — text tools, generators, math, converters, fun,   ══
+// ══ server extras. Self-contained listener + helpers, all prefixed _ec.  ══
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── shared helpers ───────────────────────────────────────────────────────
+function _ecGcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a; }
+function _ecLcm(a, b) { return Math.abs(a * b) / (_ecGcd(a, b) || 1); }
+function _ecIsPrime(n) {
+  if (!Number.isInteger(n) || n < 2) return false;
+  if (n % 2 === 0) return n === 2;
+  for (let i = 3; i * i <= n; i += 2) if (n % i === 0) return false;
+  return true;
+}
+function _ecPrimeFactors(n) {
+  n = Math.abs(Math.trunc(n));
+  const out = [];
+  let d = 2;
+  while (d * d <= n) {
+    while (n % d === 0) { out.push(d); n /= d; }
+    d++;
+  }
+  if (n > 1) out.push(n);
+  return out;
+}
+function _ecFactorial(n) { let r = 1n; for (let i = 2n; i <= BigInt(n); i++) r *= i; return r; }
+function _ecFibSeq(n) {
+  const out = [0, 1];
+  while (out.length < n) out.push(out[out.length - 1] + out[out.length - 2]);
+  return out.slice(0, Math.max(n, 1));
+}
+function _ecLevenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+const _ecRomanTable = [[1000,"M"],[900,"CM"],[500,"D"],[400,"CD"],[100,"C"],[90,"XC"],[50,"L"],[40,"XL"],[10,"X"],[9,"IX"],[5,"V"],[4,"IV"],[1,"I"]];
+function _ecToRoman(n) {
+  n = Math.trunc(n);
+  if (n <= 0 || n > 3999) return null;
+  let out = "";
+  for (const [v, s] of _ecRomanTable) while (n >= v) { out += s; n -= v; }
+  return out;
+}
+function _ecFromRoman(s) {
+  const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+  s = s.toUpperCase().trim();
+  if (!/^[IVXLCDM]+$/.test(s)) return null;
+  let total = 0;
+  for (let i = 0; i < s.length; i++) {
+    const cur = map[s[i]], next = map[s[i + 1]];
+    if (next && cur < next) total -= cur; else total += cur;
+  }
+  return total;
+}
+const _ecMorseMap = {
+  A:".-",B:"-...",C:"-.-.",D:"-..",E:".",F:"..-.",G:"--.",H:"....",I:"..",J:".---",
+  K:"-.-",L:".-..",M:"--",N:"-.",O:"---",P:".--.",Q:"--.-",R:".-.",S:"...",T:"-",
+  U:"..-",V:"...-",W:".--",X:"-..-",Y:"-.--",Z:"--..",
+  "0":"-----","1":".----","2":"..---","3":"...--","4":"....-","5":".....","6":"-....","7":"--...","8":"---..","9":"----.",
+};
+const _ecMorseRev = Object.fromEntries(Object.entries(_ecMorseMap).map(([k, v]) => [v, k]));
+const _ecNatoMap = {
+  A:"Alpha",B:"Bravo",C:"Charlie",D:"Delta",E:"Echo",F:"Foxtrot",G:"Golf",H:"Hotel",I:"India",
+  J:"Juliett",K:"Kilo",L:"Lima",M:"Mike",N:"November",O:"Oscar",P:"Papa",Q:"Quebec",R:"Romeo",
+  S:"Sierra",T:"Tango",U:"Uniform",V:"Victor",W:"Whiskey",X:"Xray",Y:"Yankee",Z:"Zulu",
+};
+const _ecSmallCapsMap = { a:"ᴀ",b:"ʙ",c:"ᴄ",d:"ᴅ",e:"ᴇ",f:"ғ",g:"ɢ",h:"ʜ",i:"ɪ",j:"ᴊ",k:"ᴋ",l:"ʟ",m:"ᴍ",n:"ɴ",o:"ᴏ",p:"ᴘ",q:"ǫ",r:"ʀ",s:"s",t:"ᴛ",u:"ᴜ",v:"ᴠ",w:"ᴡ",x:"x",y:"ʏ",z:"ᴢ" };
+const _ecBubbleMap = { a:"ⓐ",b:"ⓑ",c:"ⓒ",d:"ⓓ",e:"ⓔ",f:"ⓕ",g:"ⓖ",h:"ⓗ",i:"ⓘ",j:"ⓙ",k:"ⓚ",l:"ⓛ",m:"ⓜ",n:"ⓝ",o:"ⓞ",p:"ⓟ",q:"ⓠ",r:"ⓡ",s:"ⓢ",t:"ⓣ",u:"ⓤ",v:"ⓥ",w:"ⓦ",x:"ⓧ",y:"ⓨ",z:"ⓩ",
+  "0":"⓪","1":"①","2":"②","3":"③","4":"④","5":"⑤","6":"⑥","7":"⑦","8":"⑧","9":"⑨" };
+function _ecMapChars(text, map) {
+  return [...text.toLowerCase()].map(c => map[c] ?? c).join("");
+}
+function _ecParseNumberList(raw) {
+  return raw.split(/[,\s]+/).map(s => parseFloat(s)).filter(n => !isNaN(n));
+}
+function _ecTruncate(s, n = 300) { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  const rest = message.content.slice(1).trim().split(/ +/).slice(1).join(" ");
+
+  // ── TEXT TOOLS ─────────────────────────────────────────────────────────
+  if (command === "uppercase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,uppercase <text>`");
+    return message.reply(_ecTruncate(rest.toUpperCase(), 1900));
+  }
+  if (command === "lowercase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,lowercase <text>`");
+    return message.reply(_ecTruncate(rest.toLowerCase(), 1900));
+  }
+  if (command === "titlecase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,titlecase <text>`");
+    return message.reply(_ecTruncate(rest.replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()), 1900));
+  }
+  if (command === "sentencecase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,sentencecase <text>`");
+    const low = rest.toLowerCase();
+    return message.reply(_ecTruncate(low.charAt(0).toUpperCase() + low.slice(1), 1900));
+  }
+  if (command === "snakecase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,snakecase <text>`");
+    return message.reply(_ecTruncate(rest.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""), 1900));
+  }
+  if (command === "kebabcase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,kebabcase <text>`");
+    return message.reply(_ecTruncate(rest.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""), 1900));
+  }
+  if (command === "camelcase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,camelcase <text>`");
+    const words = rest.trim().split(/[^a-zA-Z0-9]+/).filter(Boolean);
+    const out = words.map((w, i) => i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase()).join("");
+    return message.reply(_ecTruncate(out || "(nothing)", 1900));
+  }
+  if (command === "pascalcase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,pascalcase <text>`");
+    const words = rest.trim().split(/[^a-zA-Z0-9]+/).filter(Boolean);
+    const out = words.map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join("");
+    return message.reply(_ecTruncate(out || "(nothing)", 1900));
+  }
+  if (command === "altcase") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,altcase <text>`");
+    const out = [...rest].map((c, i) => i % 2 === 0 ? c.toLowerCase() : c.toUpperCase()).join("");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "wordcount") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,wordcount <text>`");
+    const words = rest.trim().split(/\s+/).filter(Boolean);
+    return info(message, `that's **${words.length}** word${words.length === 1 ? "" : "s"}.`);
+  }
+  if (command === "charcount") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,charcount <text>`");
+    return info(message, `**${rest.length}** characters total, **${rest.replace(/\s/g, "").length}** without spaces.`);
+  }
+  if (command === "vowelcount") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,vowelcount <text>`");
+    const n = (rest.match(/[aeiou]/gi) || []).length;
+    return info(message, `**${n}** vowel${n === 1 ? "" : "s"} found.`);
+  }
+  if (command === "consonantcount") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,consonantcount <text>`");
+    const n = (rest.match(/[bcdfghjklmnpqrstvwxyz]/gi) || []).length;
+    return info(message, `**${n}** consonant${n === 1 ? "" : "s"} found.`);
+  }
+  if (command === "sentencecount") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,sentencecount <text>`");
+    const n = (rest.match(/[.!?]+/g) || []).length || (rest.trim() ? 1 : 0);
+    return info(message, `**${n}** sentence${n === 1 ? "" : "s"} detected.`);
+  }
+  if (command === "removespaces") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,removespaces <text>`");
+    return message.reply(_ecTruncate(rest.replace(/\s+/g, ""), 1900));
+  }
+  if (command === "removevowels") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,removevowels <text>`");
+    return message.reply(_ecTruncate(rest.replace(/[aeiou]/gi, ""), 1900));
+  }
+  if (command === "removepunctuation") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,removepunctuation <text>`");
+    return message.reply(_ecTruncate(rest.replace(/[.,/#!$%^&*;:{}=\-_`~()?'"]/g, ""), 1900));
+  }
+  if (command === "onlyletters") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,onlyletters <text>`");
+    return message.reply(_ecTruncate(rest.replace(/[^a-zA-Z]/g, "") || "(nothing left)", 1900));
+  }
+  if (command === "onlynumbers") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,onlynumbers <text>`");
+    return message.reply(_ecTruncate(rest.replace(/[^0-9]/g, "") || "(nothing left)", 1900));
+  }
+  if (command === "rot13") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,rot13 <text>`");
+    const out = rest.replace(/[a-zA-Z]/g, c => {
+      const base = c <= "Z" ? 65 : 97;
+      return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
+    });
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "rot47") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,rot47 <text>`");
+    const out = rest.replace(/[!-~]/g, c => String.fromCharCode(33 + (c.charCodeAt(0) + 14) % 94));
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "morse") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,morse <text>`");
+    const out = [...rest.toUpperCase()].map(c => c === " " ? "/" : (_ecMorseMap[c] ?? c)).join(" ");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "unmorse") {
+    if (!rest) return err(message, "missing required argument: **morse code**\nusage: `,unmorse <morse code>`");
+    const out = rest.split(" ").map(tok => tok === "/" ? " " : (_ecMorseRev[tok] ?? tok)).join("");
+    return message.reply(_ecTruncate(out || "(nothing decoded)", 1900));
+  }
+  if (command === "atbash") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,atbash <text>`");
+    const out = rest.replace(/[a-zA-Z]/g, c => {
+      const isUpper = c === c.toUpperCase();
+      const base = isUpper ? 65 : 97;
+      return String.fromCharCode(base + (25 - (c.charCodeAt(0) - base)));
+    });
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "piglatin") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,piglatin <text>`");
+    const out = rest.split(/\s+/).map(w => {
+      const m = w.match(/^([bcdfghjklmnpqrstvwxyz]*)(.*)$/i);
+      if (!m) return w;
+      return m[1] ? `${m[2]}${m[1]}ay` : `${m[2]}way`;
+    }).join(" ");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "nato") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,nato <text>`");
+    const out = [...rest.toUpperCase()].map(c => c === " " ? "/" : (_ecNatoMap[c] ?? c)).join(" ");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "acronym") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,acronym <text>`");
+    const out = rest.split(/\s+/).map(w => w[0]?.toUpperCase() ?? "").join("");
+    return message.reply(`**${out}**`);
+  }
+  if (command === "palindrome") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,palindrome <text>`");
+    const clean = rest.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isPal = clean === [...clean].reverse().join("");
+    return info(message, `\`${rest}\` ${isPal ? "**is**" : "is **not**"} a palindrome.`);
+  }
+  if (command === "anagram") {
+    const parts = rest.split("|").map(s => s.trim()).filter(Boolean);
+    if (parts.length !== 2) return err(message, "missing required argument: **two words**\nusage: `,anagram word1 | word2`");
+    const norm = s => [...s.toLowerCase().replace(/[^a-z0-9]/g, "")].sort().join("");
+    const isAna = norm(parts[0]) === norm(parts[1]);
+    return info(message, `\`${parts[0]}\` and \`${parts[1]}\` ${isAna ? "**are**" : "are **not**"} anagrams.`);
+  }
+  if (command === "isogram") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,isogram <text>`");
+    const clean = rest.toLowerCase().replace(/[^a-z]/g, "");
+    const isIso = new Set(clean).size === clean.length;
+    return info(message, `\`${rest}\` ${isIso ? "**is**" : "is **not**"} an isogram.`);
+  }
+  if (command === "longestword") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,longestword <text>`");
+    const words = rest.split(/\s+/);
+    const longest = words.reduce((a, b) => b.length > a.length ? b : a, "");
+    return info(message, `longest word: **${longest}** (${longest.length} chars)`);
+  }
+  if (command === "shortestword") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,shortestword <text>`");
+    const words = rest.split(/\s+/);
+    const shortest = words.reduce((a, b) => b.length < a.length ? b : a, words[0]);
+    return info(message, `shortest word: **${shortest}** (${shortest.length} chars)`);
+  }
+  if (command === "sortwords") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,sortwords <text>`");
+    const out = rest.split(/\s+/).sort((a, b) => a.localeCompare(b)).join(" ");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "uniquewords") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,uniquewords <text>`");
+    const out = [...new Set(rest.toLowerCase().split(/\s+/))].join(" ");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "wordfreq") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,wordfreq <text>`");
+    const freq = {};
+    for (const w of rest.toLowerCase().split(/\s+/)) freq[w] = (freq[w] || 0) + 1;
+    const lines = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([w, c]) => `**${w}** — ${c}`);
+    return message.reply({ embeds: [{ color: PINK, title: "Word Frequency", description: lines.join("\n") }] });
+  }
+  if (command === "scramble") {
+    if (!rest) return err(message, "missing required argument: **word**\nusage: `,scramble <word>`");
+    const word = args[1];
+    const scrambled = [...word].sort(() => Math.random() - 0.5).join("");
+    return message.reply(`🔀 \`${scrambled}\``);
+  }
+  if (command === "repeat") {
+    const parts = rest.split("|").map(s => s.trim());
+    const text = parts[0];
+    const n = parseInt(parts[1]);
+    if (!text || isNaN(n)) return err(message, "missing required argument: **text** and **count**\nusage: `,repeat text | 3`");
+    if (n < 1 || n > 20) return err(message, "count must be between **1** and **20**.");
+    return message.reply(_ecTruncate(Array(n).fill(text).join(" "), 1900));
+  }
+  if (command === "smallcaps") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,smallcaps <text>`");
+    return message.reply(_ecTruncate(_ecMapChars(rest, _ecSmallCapsMap), 1900));
+  }
+  if (command === "bubbletext") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,bubbletext <text>`");
+    return message.reply(_ecTruncate(_ecMapChars(rest, _ecBubbleMap), 1900));
+  }
+  if (command === "reversewords") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,reversewords <text>`");
+    return message.reply(_ecTruncate(rest.split(/\s+/).reverse().join(" "), 1900));
+  }
+
+  // ── GENERATORS ─────────────────────────────────────────────────────────
+  if (command === "uuid") {
+    const uuid = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+    return message.reply(`\`${uuid}\``);
+  }
+  if (command === "hexcolor") {
+    const hex = "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
+    return message.reply({ embeds: [{ color: parseInt(hex.slice(1), 16), description: `**${hex}**` }] });
+  }
+  if (command === "rgbcolor") {
+    const r = Math.floor(Math.random() * 256), g = Math.floor(Math.random() * 256), b = Math.floor(Math.random() * 256);
+    return message.reply({ embeds: [{ color: (r << 16) + (g << 8) + b, description: `**rgb(${r}, ${g}, ${b})**` }] });
+  }
+  if (command === "randomname") {
+    const first = ["Aria","Kai","Luna","Finn","Nova","Milo","Skye","Rowan","Ivy","Theo","Wren","Sage","Jax","Zara","Remy"];
+    const last = ["Sterling","Ashford","Vale","Blackwood","Reyes","Winters","Hale","Moreau","Thorne","Rivers"];
+    return message.reply(`**${first[Math.floor(Math.random() * first.length)]} ${last[Math.floor(Math.random() * last.length)]}**`);
+  }
+  if (command === "randomusername") {
+    const adj = ["Shadow","Silent","Crimson","Frost","Iron","Mystic","Solar","Wild","Neon","Rogue"];
+    const noun = ["Wolf","Phoenix","Ranger","Ghost","Falcon","Viper","Blade","Storm","Raven","Hunter"];
+    return message.reply(`\`${adj[Math.floor(Math.random() * adj.length)]}${noun[Math.floor(Math.random() * noun.length)]}${Math.floor(Math.random() * 900 + 100)}\``);
+  }
+  if (command === "lipsum") {
+    const bank = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.".split(". ");
+    const n = Math.min(Math.max(parseInt(args[1]) || 1, 1), 5);
+    const paras = Array.from({ length: n }, () => bank.sort(() => Math.random() - 0.5).join(". ") + ".");
+    return message.reply(_ecTruncate(paras.join("\n\n"), 1900));
+  }
+  if (command === "randomword") {
+    const words = ["serendipity","luminous","cascade","ephemeral","velvet","horizon","whisper","catalyst","mosaic","tundra","quartz","nebula","harbor","zephyr","lantern"];
+    return message.reply(`**${words[Math.floor(Math.random() * words.length)]}**`);
+  }
+  if (command === "randomsentence") {
+    const subs = ["The cat", "A curious engineer", "My neighbor", "The old library", "A quiet storm"];
+    const verbs = ["discovered", "rebuilt", "ignored", "painted", "questioned"];
+    const objs = ["the ancient map", "a broken clock", "the last streetlight", "an unexpected letter", "the empty stage"];
+    return message.reply(`${subs[Math.floor(Math.random()*subs.length)]} ${verbs[Math.floor(Math.random()*verbs.length)]} ${objs[Math.floor(Math.random()*objs.length)]}.`);
+  }
+  if (command === "tarot") {
+    const cards = ["The Fool","The Magician","The High Priestess","The Empress","The Emperor","The Lovers","The Chariot","Strength","The Hermit","Wheel of Fortune","Justice","The Hanged Man","Death","Temperance","The Devil","The Tower","The Star","The Moon","The Sun","Judgement","The World"];
+    const card = cards[Math.floor(Math.random() * cards.length)];
+    const reversed = Math.random() < 0.3;
+    return message.reply({ embeds: [{ color: PINK, title: "🔮 Tarot Draw", description: `**${card}**${reversed ? " (Reversed)" : ""}\n-# for fun only` }] });
+  }
+  if (command === "carddraw") {
+    const suits = ["♠️","♥️","♦️","♣️"];
+    const ranks = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+    return message.reply(`🃏 **${ranks[Math.floor(Math.random() * ranks.length)]}${suits[Math.floor(Math.random() * suits.length)]}**`);
+  }
+  if (command === "dndstat") {
+    const rolls = Array.from({ length: 4 }, () => Math.ceil(Math.random() * 6)).sort((a, b) => b - a);
+    const total = rolls[0] + rolls[1] + rolls[2];
+    return message.reply(`🎲 rolled \`${rolls.join(", ")}\` (dropped lowest) → **${total}**`);
+  }
+  if (command === "licenseplate") {
+    const letters = () => Array.from({ length: 3 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
+    return message.reply(`🚗 \`${letters()}-${Math.floor(Math.random() * 9000 + 1000)}\``);
+  }
+  if (command === "randomip") {
+    return message.reply(`\`192.168.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}\` *(private/reserved range — for testing only)*`);
+  }
+  if (command === "macaddress") {
+    const mac = Array.from({ length: 6 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join(":");
+    return message.reply(`\`${mac}\``);
+  }
+  if (command === "riddle") {
+    const riddles = [
+      ["I speak without a mouth and hear without ears. What am I?", "An echo"],
+      ["The more you take, the more you leave behind. What am I?", "Footsteps"],
+      ["What has keys but no locks, space but no room?", "A keyboard"],
+      ["What has to be broken before you can use it?", "An egg"],
+      ["I'm tall when young and short when old. What am I?", "A candle"],
+    ];
+    const [q, a] = riddles[Math.floor(Math.random() * riddles.length)];
+    return message.reply({ embeds: [{ color: PINK, description: `🧩 **${q}**\n||${a}||` }] });
+  }
+  if (command === "dadjoke") {
+    const jokes = [
+      "Why don't skeletons fight each other? They don't have the guts.",
+      "I used to hate facial hair, but then it grew on me.",
+      "Why did the scarecrow win an award? He was outstanding in his field.",
+      "I'm reading a book about anti-gravity. It's impossible to put down.",
+      "What do you call cheese that isn't yours? Nacho cheese.",
+    ];
+    return message.reply(jokes[Math.floor(Math.random() * jokes.length)]);
+  }
+  if (command === "fortune") {
+    const fortunes = [
+      "A pleasant surprise is waiting for you.",
+      "Now is the time to try something new.",
+      "Your hard work is about to pay off.",
+      "An old friend will bring good news.",
+      "The path ahead is clearer than it seems.",
+    ];
+    return message.reply(`🥠 *${fortunes[Math.floor(Math.random() * fortunes.length)]}*`);
+  }
+  if (command === "motivate") {
+    const lines = [
+      "Small steps still move you forward.",
+      "You don't have to see the whole staircase, just take the first step.",
+      "Discipline outlasts motivation.",
+      "Progress, not perfection.",
+      "The work you avoid is usually the work that matters most.",
+    ];
+    return message.reply(`💪 ${lines[Math.floor(Math.random() * lines.length)]}`);
+  }
+  if (command === "proverb") {
+    const proverbs = [
+      "A journey of a thousand miles begins with a single step.",
+      "The best time to plant a tree was 20 years ago. The second best time is now.",
+      "Still water runs deep.",
+      "Actions speak louder than words.",
+      "A smooth sea never made a skilled sailor.",
+    ];
+    return message.reply(`📜 *${proverbs[Math.floor(Math.random() * proverbs.length)]}*`);
+  }
+  if (command === "conspiracy") {
+    const subjects = ["pigeons", "vending machines", "your microwave", "streetlights", "the office printer"];
+    const plots = ["are secretly government surveillance devices", "are controlled by a rogue AI from 1987", "communicate via Wi-Fi to plan world domination", "are actually powered by tiny sleeping dragons"];
+    return message.reply({ embeds: [{ color: PINK, description: `🛸 *${subjects[Math.floor(Math.random()*subjects.length)]} ${plots[Math.floor(Math.random()*plots.length)]}.*\n-# purely for laughs, not real` }] });
+  }
+  if (command === "superpower") {
+    const powers = ["Time freeze (10 seconds, once a day)", "Talking to animals", "Invisibility when embarrassed", "Perfect memory for song lyrics", "Teleporting to the fridge only", "Reading minds of sleeping people"];
+    return message.reply(`🦸 your power: **${powers[Math.floor(Math.random() * powers.length)]}**`);
+  }
+  if (command === "villainname") {
+    const prefix = ["Doctor", "Lord", "The", "Madame", "Count"];
+    const core = ["Malice", "Shadowbane", "Voidreaper", "Ashenclaw", "Nightspire", "Grimfrost"];
+    return message.reply(`🦹 **${prefix[Math.floor(Math.random() * prefix.length)]} ${core[Math.floor(Math.random() * core.length)]}**`);
+  }
+  if (command === "superheroname") {
+    const prefix = ["Captain", "The", "Ultra", "Mighty", "Silver"];
+    const core = ["Comet", "Aegis", "Vanguard", "Skyfire", "Ironheart", "Nova"];
+    return message.reply(`🦸 **${prefix[Math.floor(Math.random() * prefix.length)]} ${core[Math.floor(Math.random() * core.length)]}**`);
+  }
+  if (command === "bandname") {
+    const adj = ["Velvet", "Electric", "Broken", "Neon", "Wandering", "Crimson"];
+    const noun = ["Foxes", "Static", "Horizon", "Echoes", "Orbit", "Ashes"];
+    return message.reply(`🎸 **${adj[Math.floor(Math.random() * adj.length)]} ${noun[Math.floor(Math.random() * noun.length)]}**`);
+  }
+  if (command === "startupname") {
+    const a = ["Nimbus", "Vertex", "Quanta", "Lucid", "Fable", "Orbit"];
+    const b = ["ly", "ify", "Hub", "Base", "Loop", "Labs"];
+    return message.reply(`🚀 **${a[Math.floor(Math.random() * a.length)]}${b[Math.floor(Math.random() * b.length)]}**`);
+  }
+  if (command === "dishidea") {
+    const dishes = ["Garlic butter shrimp pasta", "Loaded sweet potato skins", "Miso glazed salmon", "Spicy chickpea curry", "Caprese stuffed chicken", "Honey sriracha tofu bowl"];
+    return message.reply(`🍽️ tonight's idea: **${dishes[Math.floor(Math.random() * dishes.length)]}**`);
+  }
+  if (command === "movieidea") {
+    const movies = ["a 90s sci-fi classic", "an underrated indie drama", "a feel-good comedy", "a twisty psychological thriller", "an animated adventure"];
+    return message.reply(`🎬 how about **${movies[Math.floor(Math.random() * movies.length)]}** tonight?`);
+  }
+  if (command === "bookidea") {
+    const genres = ["a cozy mystery", "a hard sci-fi epic", "a character-driven literary novel", "a fast-paced thriller", "a fantasy with a unique magic system"];
+    return message.reply(`📚 try **${genres[Math.floor(Math.random() * genres.length)]}** next.`);
+  }
+  if (command === "songidea") {
+    const moods = ["something upbeat to clean the house to", "a slow acoustic track", "a nostalgic 2000s throwback", "an instrumental to focus to", "a high-energy workout track"];
+    return message.reply(`🎵 mood match: **${moods[Math.floor(Math.random() * moods.length)]}**`);
+  }
+  if (command === "workoutidea") {
+    const workouts = ["20 min bodyweight circuit (squats, push-ups, lunges)", "a brisk 30 min walk", "a light stretching + mobility session", "a short HIIT interval session", "a beginner-friendly yoga flow"];
+    return message.reply(`🏋️ today: **${workouts[Math.floor(Math.random() * workouts.length)]}**\n-# general idea only, not personalized fitness advice`);
+  }
+  if (command === "icebreaker") {
+    const qs = [
+      "What's a small thing that instantly improves your day?",
+      "If you could master any skill instantly, what would it be?",
+      "What's the best meal you've ever had?",
+      "What's a hobby you'd pick up if time wasn't an issue?",
+      "What's a movie you can rewatch endlessly?",
+    ];
+    return message.reply(`💬 ${qs[Math.floor(Math.random() * qs.length)]}`);
+  }
+  if (command === "thisorthat") {
+    const pairs = [["Coffee","Tea"],["Mountains","Beach"],["Books","Movies"],["Summer","Winter"],["Cats","Dogs"],["Pizza","Tacos"]];
+    const [a, b] = pairs[Math.floor(Math.random() * pairs.length)];
+    return message.reply(`⚖️ **${a}** or **${b}**?`);
+  }
+  if (command === "randomemoji") {
+    const emojis = ["😀","🔥","🌊","🎉","🐉","🍕","🌙","⚡","🦋","🎸","🏔️","🍩","🛸","🌵","🎯"];
+    return message.reply(emojis[Math.floor(Math.random() * emojis.length)]);
+  }
+  if (command === "colorname") {
+    const colors = ["Cerulean","Vermilion","Chartreuse","Periwinkle","Ochre","Mauve","Teal","Amber","Indigo","Sepia"];
+    return message.reply(`🎨 **${colors[Math.floor(Math.random() * colors.length)]}**`);
+  }
+  if (command === "randomanimal") {
+    const animals = ["Red panda","Axolotl","Pangolin","Narwhal","Fennec fox","Quokka","Okapi","Capybara","Tarsier","Sea otter"];
+    return message.reply(`🐾 **${animals[Math.floor(Math.random() * animals.length)]}**`);
+  }
+
+  // ── MATH TOOLS ─────────────────────────────────────────────────────────
+  if (command === "percent") {
+    const x = parseFloat(args[1]), y = parseFloat(args[2]);
+    if (isNaN(x) || isNaN(y)) return err(message, "missing required argument: **x** and **y**\nusage: `,percent <x> <y>` (what % is x of y)");
+    return info(message, `**${x}** is **${((x / y) * 100).toFixed(2)}%** of **${y}**`);
+  }
+  if (command === "percentchange") {
+    const oldV = parseFloat(args[1]), newV = parseFloat(args[2]);
+    if (isNaN(oldV) || isNaN(newV)) return err(message, "missing required argument: **old** and **new**\nusage: `,percentchange <old> <new>`");
+    const change = ((newV - oldV) / oldV) * 100;
+    return info(message, `that's a **${change >= 0 ? "+" : ""}${change.toFixed(2)}%** change`);
+  }
+  if (command === "average") {
+    const nums = _ecParseNumberList(rest);
+    if (!nums.length) return err(message, "missing required argument: **numbers**\nusage: `,average 1 2 3 4`");
+    return info(message, `average: **${(nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(3)}**`);
+  }
+  if (command === "median") {
+    const nums = _ecParseNumberList(rest).sort((a, b) => a - b);
+    if (!nums.length) return err(message, "missing required argument: **numbers**\nusage: `,median 1 2 3 4`");
+    const mid = Math.floor(nums.length / 2);
+    const med = nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+    return info(message, `median: **${med}**`);
+  }
+  if (command === "mode") {
+    const nums = _ecParseNumberList(rest);
+    if (!nums.length) return err(message, "missing required argument: **numbers**\nusage: `,mode 1 2 2 3`");
+    const freq = {};
+    nums.forEach(n => freq[n] = (freq[n] || 0) + 1);
+    const max = Math.max(...Object.values(freq));
+    const modes = Object.keys(freq).filter(k => freq[k] === max);
+    return info(message, `mode: **${modes.join(", ")}** (appears ${max}x)`);
+  }
+  if (command === "stddev") {
+    const nums = _ecParseNumberList(rest);
+    if (nums.length < 2) return err(message, "missing required argument: **at least 2 numbers**\nusage: `,stddev 1 2 3 4`");
+    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+    const variance = nums.reduce((a, b) => a + (b - mean) ** 2, 0) / nums.length;
+    return info(message, `standard deviation: **${Math.sqrt(variance).toFixed(3)}**`);
+  }
+  if (command === "sum") {
+    const nums = _ecParseNumberList(rest);
+    if (!nums.length) return err(message, "missing required argument: **numbers**\nusage: `,sum 1 2 3`");
+    return info(message, `sum: **${nums.reduce((a, b) => a + b, 0)}**`);
+  }
+  if (command === "factorial") {
+    const n = parseInt(args[1]);
+    if (isNaN(n) || n < 0) return err(message, "missing required argument: **n** (non-negative integer)\nusage: `,factorial <n>`");
+    if (n > 500) return err(message, "keep **n** at or below 500.");
+    return message.reply(`**${n}!** = \`${_ecFactorial(n)}\``);
+  }
+  if (command === "isprime") {
+    const n = parseInt(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **n**\nusage: `,isprime <n>`");
+    return info(message, `**${n}** ${_ecIsPrime(n) ? "**is**" : "is **not**"} prime.`);
+  }
+  if (command === "primefactors") {
+    const n = parseInt(args[1]);
+    if (isNaN(n) || n < 2) return err(message, "missing required argument: **n** (≥2)\nusage: `,primefactors <n>`");
+    return info(message, `prime factors of **${n}**: \`${_ecPrimeFactors(n).join(" × ")}\``);
+  }
+  if (command === "fibonacci") {
+    const n = parseInt(args[1]);
+    if (isNaN(n) || n < 1) return err(message, "missing required argument: **n**\nusage: `,fibonacci <n>`");
+    if (n > 60) return err(message, "keep **n** at or below 60.");
+    return message.reply(`\`${_ecFibSeq(n).join(", ")}\``);
+  }
+  if (command === "gcd") {
+    const a = parseInt(args[1]), b = parseInt(args[2]);
+    if (isNaN(a) || isNaN(b)) return err(message, "missing required argument: **a** and **b**\nusage: `,gcd <a> <b>`");
+    return info(message, `GCD(${a}, ${b}) = **${_ecGcd(a, b)}**`);
+  }
+  if (command === "lcm") {
+    const a = parseInt(args[1]), b = parseInt(args[2]);
+    if (isNaN(a) || isNaN(b)) return err(message, "missing required argument: **a** and **b**\nusage: `,lcm <a> <b>`");
+    return info(message, `LCM(${a}, ${b}) = **${_ecLcm(a, b)}**`);
+  }
+  if (command === "sqrt") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n) || n < 0) return err(message, "missing required argument: **n** (non-negative)\nusage: `,sqrt <n>`");
+    return info(message, `√${n} = **${Math.sqrt(n).toFixed(4)}**`);
+  }
+  if (command === "power") {
+    const base = parseFloat(args[1]), exp = parseFloat(args[2]);
+    if (isNaN(base) || isNaN(exp)) return err(message, "missing required argument: **base** and **exponent**\nusage: `,power <base> <exp>`");
+    return info(message, `${base}^${exp} = **${Math.pow(base, exp)}**`);
+  }
+  if (command === "bmi") {
+    const kg = parseFloat(args[1]), cm = parseFloat(args[2]);
+    if (isNaN(kg) || isNaN(cm) || kg <= 0 || cm <= 0) return err(message, "missing required argument: **weight (kg)** and **height (cm)**\nusage: `,bmi <kg> <cm>`");
+    const m = cm / 100;
+    const bmi = kg / (m * m);
+    let cat = "Obese";
+    if (bmi < 18.5) cat = "Underweight"; else if (bmi < 25) cat = "Normal weight"; else if (bmi < 30) cat = "Overweight";
+    return info(message, `BMI: **${bmi.toFixed(1)}** (${cat})\n-# standard WHO formula, not medical advice`);
+  }
+  if (command === "tip") {
+    const bill = parseFloat(args[1]), pct = parseFloat(args[2]) || 15, people = parseInt(args[3]) || 1;
+    if (isNaN(bill)) return err(message, "missing required argument: **bill**\nusage: `,tip <bill> [percent] [people]`");
+    const tipAmt = bill * (pct / 100);
+    const total = bill + tipAmt;
+    return message.reply({ embeds: [{ color: PINK, title: "Tip Calculator", fields: [
+      { name: "Tip", value: `${tipAmt.toFixed(2)}`, inline: true },
+      { name: "Total", value: `${total.toFixed(2)}`, inline: true },
+      { name: `Per person (${people})`, value: `${(total / people).toFixed(2)}`, inline: true },
+    ] }] });
+  }
+  if (command === "quadratic") {
+    const a = parseFloat(args[1]), b = parseFloat(args[2]), c = parseFloat(args[3]);
+    if (isNaN(a) || isNaN(b) || isNaN(c) || a === 0) return err(message, "missing required argument: **a**, **b**, **c** (a ≠ 0)\nusage: `,quadratic <a> <b> <c>`");
+    const disc = b * b - 4 * a * c;
+    if (disc < 0) return info(message, `no real roots (discriminant = ${disc.toFixed(2)})`);
+    const x1 = (-b + Math.sqrt(disc)) / (2 * a), x2 = (-b - Math.sqrt(disc)) / (2 * a);
+    return info(message, `x = **${x1.toFixed(3)}** or x = **${x2.toFixed(3)}**`);
+  }
+  if (command === "dayofweek") {
+    const m = (args[1] || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return err(message, "missing required argument: **date**\nusage: `,dayofweek YYYY-MM-DD`");
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (isNaN(d.getTime())) return err(message, "invalid date.");
+    return info(message, `**${args[1]}** falls on a **${d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}**`);
+  }
+  if (command === "daysuntil") {
+    const m = (args[1] || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return err(message, "missing required argument: **date**\nusage: `,daysuntil YYYY-MM-DD`");
+    const target = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+    const days = Math.ceil((target - Date.now()) / 86400000);
+    return info(message, days >= 0 ? `**${days}** day(s) until **${args[1]}**` : `**${args[1]}** was **${-days}** day(s) ago`);
+  }
+  if (command === "daysbetween") {
+    const m1 = (args[1] || "").match(/^(\d{4})-(\d{2})-(\d{2})$/), m2 = (args[2] || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m1 || !m2) return err(message, "missing required argument: **two dates**\nusage: `,daysbetween YYYY-MM-DD YYYY-MM-DD`");
+    const d1 = Date.UTC(+m1[1], +m1[2] - 1, +m1[3]), d2 = Date.UTC(+m2[1], +m2[2] - 1, +m2[3]);
+    return info(message, `**${Math.abs(Math.round((d2 - d1) / 86400000))}** day(s) apart`);
+  }
+  if (command === "leapyear") {
+    const y = parseInt(args[1]);
+    if (isNaN(y)) return err(message, "missing required argument: **year**\nusage: `,leapyear <year>`");
+    const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    return info(message, `**${y}** ${isLeap ? "**is**" : "is **not**"} a leap year.`);
+  }
+  if (command === "age") {
+    const m = (args[1] || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return err(message, "missing required argument: **birthdate**\nusage: `,age YYYY-MM-DD`");
+    const birth = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    const now = new Date();
+    let years = now.getUTCFullYear() - birth.getUTCFullYear();
+    const hasHadBirthday = (now.getUTCMonth() > birth.getUTCMonth()) || (now.getUTCMonth() === birth.getUTCMonth() && now.getUTCDate() >= birth.getUTCDate());
+    if (!hasHadBirthday) years--;
+    return info(message, `**${years}** years old`);
+  }
+  if (command === "compoundinterest") {
+    const p = parseFloat(args[1]), r = parseFloat(args[2]), t = parseFloat(args[3]);
+    if (isNaN(p) || isNaN(r) || isNaN(t)) return err(message, "missing required argument: **principal**, **rate%**, **years**\nusage: `,compoundinterest <principal> <rate> <years>`");
+    const result = p * Math.pow(1 + r / 100, t);
+    return info(message, `after **${t}** years at **${r}%**: **${result.toFixed(2)}** (from ${p})`);
+  }
+  if (command === "simpleinterest") {
+    const p = parseFloat(args[1]), r = parseFloat(args[2]), t = parseFloat(args[3]);
+    if (isNaN(p) || isNaN(r) || isNaN(t)) return err(message, "missing required argument: **principal**, **rate%**, **years**\nusage: `,simpleinterest <principal> <rate> <years>`");
+    const interest = p * (r / 100) * t;
+    return info(message, `interest: **${interest.toFixed(2)}** · total: **${(p + interest).toFixed(2)}**`);
+  }
+  if (command === "romanencode") {
+    const n = parseInt(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **number** (1-3999)\nusage: `,romanencode <number>`");
+    const r = _ecToRoman(n);
+    if (!r) return err(message, "number must be between **1** and **3999**.");
+    return message.reply(`**${r}**`);
+  }
+  if (command === "romandecode") {
+    if (!args[1]) return err(message, "missing required argument: **numeral**\nusage: `,romandecode <numeral>`");
+    const n = _ecFromRoman(args[1]);
+    if (n === null) return err(message, "invalid roman numeral.");
+    return message.reply(`**${n}**`);
+  }
+  if (command === "triangle") {
+    const a = parseFloat(args[1]), b = parseFloat(args[2]), c = parseFloat(args[3]);
+    if (isNaN(a) || isNaN(b) || isNaN(c)) return err(message, "missing required argument: **3 side lengths**\nusage: `,triangle <a> <b> <c>`");
+    if (a + b <= c || a + c <= b || b + c <= a) return info(message, "not a valid triangle.");
+    const s = (a + b + c) / 2;
+    const area = Math.sqrt(s * (s - a) * (s - b) * (s - c));
+    return info(message, `valid triangle · area: **${area.toFixed(3)}** · perimeter: **${(a + b + c).toFixed(2)}**`);
+  }
+  if (command === "circle") {
+    const r = parseFloat(args[1]);
+    if (isNaN(r) || r <= 0) return err(message, "missing required argument: **radius**\nusage: `,circle <radius>`");
+    return message.reply({ embeds: [{ color: PINK, title: "Circle", fields: [
+      { name: "Area", value: `${(Math.PI * r * r).toFixed(3)}`, inline: true },
+      { name: "Circumference", value: `${(2 * Math.PI * r).toFixed(3)}`, inline: true },
+    ] }] });
+  }
+  if (command === "pythagorean") {
+    const a = parseFloat(args[1]), b = parseFloat(args[2]);
+    if (isNaN(a) || isNaN(b)) return err(message, "missing required argument: **a** and **b**\nusage: `,pythagorean <a> <b>`");
+    return info(message, `hypotenuse = **${Math.sqrt(a * a + b * b).toFixed(3)}**`);
+  }
+
+  // ── CONVERTERS ─────────────────────────────────────────────────────────
+  if (command === "km2mi") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **km**\nusage: `,km2mi <km>`");
+    return info(message, `**${n} km** = **${(n * 0.621371).toFixed(3)} mi**`);
+  }
+  if (command === "mi2km") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **miles**\nusage: `,mi2km <mi>`");
+    return info(message, `**${n} mi** = **${(n * 1.60934).toFixed(3)} km**`);
+  }
+  if (command === "kg2lb") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **kg**\nusage: `,kg2lb <kg>`");
+    return info(message, `**${n} kg** = **${(n * 2.20462).toFixed(3)} lb**`);
+  }
+  if (command === "lb2kg") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **lb**\nusage: `,lb2kg <lb>`");
+    return info(message, `**${n} lb** = **${(n * 0.453592).toFixed(3)} kg**`);
+  }
+  if (command === "celsius2f") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **celsius**\nusage: `,celsius2f <c>`");
+    return info(message, `**${n}°C** = **${(n * 9 / 5 + 32).toFixed(1)}°F**`);
+  }
+  if (command === "f2celsius") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **fahrenheit**\nusage: `,f2celsius <f>`");
+    return info(message, `**${n}°F** = **${((n - 32) * 5 / 9).toFixed(1)}°C**`);
+  }
+  if (command === "celsius2kelvin") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **celsius**\nusage: `,celsius2kelvin <c>`");
+    return info(message, `**${n}°C** = **${(n + 273.15).toFixed(2)} K**`);
+  }
+  if (command === "kelvin2celsius") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **kelvin**\nusage: `,kelvin2celsius <k>`");
+    return info(message, `**${n} K** = **${(n - 273.15).toFixed(2)}°C**`);
+  }
+  if (command === "m2ft") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **meters**\nusage: `,m2ft <m>`");
+    return info(message, `**${n} m** = **${(n * 3.28084).toFixed(3)} ft**`);
+  }
+  if (command === "ft2m") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **feet**\nusage: `,ft2m <ft>`");
+    return info(message, `**${n} ft** = **${(n * 0.3048).toFixed(3)} m**`);
+  }
+  if (command === "cm2in") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **cm**\nusage: `,cm2in <cm>`");
+    return info(message, `**${n} cm** = **${(n * 0.393701).toFixed(3)} in**`);
+  }
+  if (command === "in2cm") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **inches**\nusage: `,in2cm <in>`");
+    return info(message, `**${n} in** = **${(n * 2.54).toFixed(3)} cm**`);
+  }
+  if (command === "l2gal") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **liters**\nusage: `,l2gal <l>`");
+    return info(message, `**${n} L** = **${(n * 0.264172).toFixed(3)} gal**`);
+  }
+  if (command === "gal2l") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **gallons**\nusage: `,gal2l <gal>`");
+    return info(message, `**${n} gal** = **${(n * 3.78541).toFixed(3)} L**`);
+  }
+  if (command === "bytes2human") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n) || n < 0) return err(message, "missing required argument: **bytes**\nusage: `,bytes2human <bytes>`");
+    const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let val = n, i = 0;
+    while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+    return info(message, `**${n}** bytes = **${val.toFixed(2)} ${units[i]}**`);
+  }
+  if (command === "seconds2human") {
+    const n = parseInt(args[1]);
+    if (isNaN(n) || n < 0) return err(message, "missing required argument: **seconds**\nusage: `,seconds2human <secs>`");
+    const d = Math.floor(n / 86400), h = Math.floor((n % 86400) / 3600), m = Math.floor((n % 3600) / 60), s = n % 60;
+    return info(message, `**${[d && `${d}d`, h && `${h}h`, m && `${m}m`, `${s}s`].filter(Boolean).join(" ")}**`);
+  }
+  if (command === "dec2bin") {
+    const n = parseInt(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **number**\nusage: `,dec2bin <n>`");
+    return message.reply(`\`${n.toString(2)}\``);
+  }
+  if (command === "bin2dec") {
+    if (!/^[01]+$/.test(args[1] || "")) return err(message, "missing required argument: **binary**\nusage: `,bin2dec <binary>`");
+    return message.reply(`**${parseInt(args[1], 2)}**`);
+  }
+  if (command === "dec2hex") {
+    const n = parseInt(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **number**\nusage: `,dec2hex <n>`");
+    return message.reply(`\`0x${n.toString(16)}\``);
+  }
+  if (command === "hex2dec") {
+    const clean = (args[1] || "").replace(/^0x/i, "");
+    if (!/^[0-9a-f]+$/i.test(clean)) return err(message, "missing required argument: **hex**\nusage: `,hex2dec <hex>`");
+    return message.reply(`**${parseInt(clean, 16)}**`);
+  }
+  if (command === "dec2oct") {
+    const n = parseInt(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **number**\nusage: `,dec2oct <n>`");
+    return message.reply(`\`0o${n.toString(8)}\``);
+  }
+  if (command === "oct2dec") {
+    const clean = (args[1] || "").replace(/^0o/i, "");
+    if (!/^[0-7]+$/.test(clean)) return err(message, "missing required argument: **octal**\nusage: `,oct2dec <octal>`");
+    return message.reply(`**${parseInt(clean, 8)}**`);
+  }
+  if (command === "text2hex") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,text2hex <text>`");
+    return message.reply(_ecTruncate([...rest].map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" "), 1900));
+  }
+  if (command === "hex2text") {
+    if (!rest) return err(message, "missing required argument: **hex**\nusage: `,hex2text <hex>`");
+    const clean = rest.replace(/\s+/g, "");
+    if (!/^[0-9a-f]+$/i.test(clean) || clean.length % 2 !== 0) return err(message, "invalid hex string.");
+    const out = clean.match(/.{2}/g).map(h => String.fromCharCode(parseInt(h, 16))).join("");
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "mph2kmh") {
+    const n = parseFloat(args[1]);
+    if (isNaN(n)) return err(message, "missing required argument: **mph**\nusage: `,mph2kmh <mph>`");
+    return info(message, `**${n} mph** = **${(n * 1.60934).toFixed(2)} km/h**`);
+  }
+
+  // ── FUN EXTRA ──────────────────────────────────────────────────────────
+  if (command === "horoscope") {
+    const signs = ["aries","taurus","gemini","cancer","leo","virgo","libra","scorpio","sagittarius","capricorn","aquarius","pisces"];
+    const sign = (args[1] || "").toLowerCase();
+    if (!signs.includes(sign)) return err(message, `missing required argument: **sign**\nusage: \`,horoscope <sign>\`\nvalid: ${signs.join(", ")}`);
+    const lines = ["A small decision today leads somewhere good.", "Trust your instincts on a pending choice.", "Someone from your past may reach out.", "Focus your energy on one goal today.", "A calm day favors quiet reflection.", "An unexpected opportunity is close by."];
+    const dayIdx = (new Date().getDate() + sign.length) % lines.length;
+    return message.reply({ embeds: [{ color: PINK, title: `✨ ${sign[0].toUpperCase()}${sign.slice(1)}`, description: `${lines[dayIdx]}\n-# for fun only, not real astrology` }] });
+  }
+  if (command === "zodiac") {
+    const m = (args[1] || "").match(/^(\d{1,2})-(\d{1,2})$/);
+    if (!m) return err(message, "missing required argument: **date**\nusage: `,zodiac MM-DD`");
+    const mo = +m[1], d = +m[2];
+    const table = [[1,19,"Capricorn"],[2,18,"Aquarius"],[3,20,"Pisces"],[4,19,"Aries"],[5,20,"Taurus"],[6,20,"Gemini"],[7,22,"Cancer"],[8,22,"Leo"],[9,22,"Virgo"],[10,22,"Libra"],[11,21,"Scorpio"],[12,21,"Sagittarius"],[12,31,"Capricorn"]];
+    let sign = "Capricorn";
+    for (const [tm, td, s] of table) { if (mo < tm || (mo === tm && d <= td)) { sign = s; break; } }
+    return message.reply(`♈ **${sign}**`);
+  }
+  if (command === "luckynumber") {
+    const target = message.mentions.users.first() || message.author;
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0) + new Date().getDate();
+    return message.reply(`🍀 **${target.username}**'s lucky number today: **${(seed % 99) + 1}**`);
+  }
+  if (command === "mood") {
+    const target = message.mentions.users.first() || message.author;
+    const moods = ["Chaotic good","Sleepy but productive","Main character energy","Vibing quietly","Overthinking everything","Unstoppable today","Snack-motivated"];
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0) + new Date().getDate();
+    return message.reply(`🎭 **${target.username}**'s mood: **${moods[seed % moods.length]}**`);
+  }
+  if (command === "iq") {
+    const target = message.mentions.users.first() || message.author;
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`🧠 **${target.username}**'s IQ: **${60 + (seed % 90)}**\n-# just for fun, not a real test`);
+  }
+  if (command === "powerlevel") {
+    const target = message.mentions.users.first() || message.author;
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`⚡ **${target.username}**'s power level: **${(seed % 9000) + 1000}**`);
+  }
+  if (command === "catchphrase") {
+    const phrases = ["Let's get this bread.", "That's the whole vibe.", "No thoughts, just chaos.", "It is what it is.", "We move.", "Big brain moment."];
+    return message.reply(phrases[Math.floor(Math.random() * phrases.length)]);
+  }
+  if (command === "nicknamegen") {
+    if (!args[1]) return err(message, "missing required argument: **word**\nusage: `,nicknamegen <word>`");
+    const prefixes = ["Lil", "Big", "The", "Mr.", "Captain"];
+    const suffixes = ["ster", "zilla", "inator", "aroo", "meister"];
+    return message.reply(`**${prefixes[Math.floor(Math.random() * prefixes.length)]} ${args[1]}${suffixes[Math.floor(Math.random() * suffixes.length)]}**`);
+  }
+  if (command === "superlative") {
+    const target = message.mentions.users.first() || message.author;
+    const supers = ["Most likely to fall asleep mid-sentence", "Most likely to become famous by accident", "Most likely to win an argument with facts nobody asked for", "Most likely to adopt every stray animal", "Most likely to start a business on a whim"];
+    return message.reply(`🏆 **${target.username}** — ${supers[Math.floor(Math.random() * supers.length)]}`);
+  }
+  if (command === "rpsls") {
+    const choices = ["rock", "paper", "scissors", "lizard", "spock"];
+    const pick = (args[1] || "").toLowerCase();
+    if (!choices.includes(pick)) return err(message, `missing required argument: **choice**\nusage: \`,rpsls <${choices.join("|")}>\``);
+    const beats = { rock: ["scissors","lizard"], paper: ["rock","spock"], scissors: ["paper","lizard"], lizard: ["spock","paper"], spock: ["scissors","rock"] };
+    const bot = choices[Math.floor(Math.random() * choices.length)];
+    let result = pick === bot ? "It's a tie!" : beats[pick].includes(bot) ? "**You win!**" : "**I win!**";
+    return message.reply(`You: **${pick}** · Me: **${bot}** — ${result}`);
+  }
+  if (command === "hangmanword") {
+    const words = ["javascript","discord","pyramid","elephant","keyboard","mountain","umbrella"];
+    const word = words[Math.floor(Math.random() * words.length)];
+    const masked = word.replace(/[a-z]/g, "_ ").trim();
+    return message.reply({ embeds: [{ color: PINK, title: "🔤 Hangman", description: `\`${masked}\`\n${word.length} letters\n||${word}||` }] });
+  }
+  if (command === "wordchain") {
+    if (!args[1]) return err(message, "missing required argument: **word**\nusage: `,wordchain <word>`");
+    const bank = ["apple","elephant","tiger","rabbit","turtle","engine","narwhal","lemon","nest","tomato"];
+    const lastLetter = args[1].slice(-1).toLowerCase();
+    const options = bank.filter(w => w[0] === lastLetter);
+    return message.reply(options.length ? `➡️ **${options[Math.floor(Math.random() * options.length)]}**` : `couldn't find a word starting with **${lastLetter}** — you win this round!`);
+  }
+  if (command === "trivia") {
+    const qs = [
+      ["What planet is known as the Red Planet?", "Mars"],
+      ["How many continents are there?", "7"],
+      ["What's the largest ocean on Earth?", "Pacific Ocean"],
+      ["What gas do plants absorb from the atmosphere?", "Carbon dioxide"],
+      ["What's the smallest prime number?", "2"],
+    ];
+    const [q, a] = qs[Math.floor(Math.random() * qs.length)];
+    return message.reply({ embeds: [{ color: PINK, description: `❓ **${q}**\n||${a}||` }] });
+  }
+  if (command === "emojistory") {
+    const emojis = ["🐸","🚀","🌙","🍕","🎉","🐉","🌊","⚡","🎸","🍩","🛸","🌵"];
+    const story = Array.from({ length: 6 }, () => emojis[Math.floor(Math.random() * emojis.length)]).join(" ");
+    return message.reply(`📖 ${story}`);
+  }
+  if (command === "emojimath") {
+    const a = Math.floor(Math.random() * 9) + 1, b = Math.floor(Math.random() * 9) + 1;
+    const emoji = ["🍎","🍌","🍇","🍉","🍒"][Math.floor(Math.random() * 5)];
+    return message.reply(`${emoji.repeat(a)} + ${emoji.repeat(b)} = ||**${a + b}** ${emoji}||`);
+  }
+  if (command === "nameaesthetic") {
+    if (!rest) return err(message, "missing required argument: **name**\nusage: `,nameaesthetic <name>`");
+    return message.reply(_ecTruncate([...rest].join(" "), 1900));
+  }
+  if (command === "pun") {
+    const puns = [
+      "I used to be a baker, but I couldn't make enough dough.",
+      "A boiled egg every morning is hard to beat.",
+      "I'm on a seafood diet — I see food and I eat it.",
+      "The math teacher called in sick with algebra.",
+      "I used to be indecisive. Now I'm not so sure.",
+    ];
+    return message.reply(puns[Math.floor(Math.random() * puns.length)]);
+  }
+  if (command === "tonguetwister") {
+    const twisters = [
+      "She sells seashells by the seashore.",
+      "Peter Piper picked a peck of pickled peppers.",
+      "How can a clam cram in a clean cream can?",
+      "Fuzzy Wuzzy was a bear, Fuzzy Wuzzy had no hair.",
+      "Red lorry, yellow lorry, red lorry, yellow lorry.",
+    ];
+    return message.reply(twisters[Math.floor(Math.random() * twisters.length)]);
+  }
+  if (command === "pickupline") {
+    const lines = [
+      "Are you a parking ticket? Because you've got FINE written all over you.",
+      "Do you have a map? I keep getting lost in your eyes.",
+      "Is your name Wi-Fi? Because I'm feeling a connection.",
+      "Are you made of copper and tellurium? Because you're Cu-Te.",
+    ];
+    return message.reply(lines[Math.floor(Math.random() * lines.length)]);
+  }
+  if (command === "birthdaymessage") {
+    const target = message.mentions.users.first() || message.author;
+    const msgs = [
+      `Happy birthday, ${target}! Hope your day is full of good food and zero responsibilities.`,
+      `Another year older, ${target} — here's to more good memories ahead! 🎉`,
+      `Happy birthday ${target}! May this year bring exactly what you're hoping for.`,
+    ];
+    return message.reply(msgs[Math.floor(Math.random() * msgs.length)]);
+  }
+  if (command === "apology") {
+    const excuses = [
+      "I'm sorry, my Wi-Fi was fighting my router and lost.",
+      "My apologies — I was busy losing an argument with my alarm clock.",
+      "Sorry about that, I got emotionally invested in a spreadsheet.",
+    ];
+    return message.reply(excuses[Math.floor(Math.random() * excuses.length)]);
+  }
+  if (command === "excuse") {
+    const excuses = [
+      "My cat unplugged my router mid-task.",
+      "I was recalculating my entire life plan.",
+      "A squirrel outside demanded my full attention.",
+      "My coffee hadn't kicked in yet — legally I wasn't operational.",
+    ];
+    return message.reply(`📋 **${excuses[Math.floor(Math.random() * excuses.length)]}**`);
+  }
+  if (command === "cheer") {
+    const lines = [
+      "Rough moment, not a rough life. Keep going.",
+      "You've gotten through 100% of your bad days so far.",
+      "This part is temporary — better hours are ahead.",
+      "Small progress today still counts.",
+    ];
+    return message.reply(`💛 ${lines[Math.floor(Math.random() * lines.length)]}`);
+  }
+  if (command === "confidence") {
+    const lines = [
+      "You're more capable than the voice in your head admits.",
+      "You don't need permission to take up space.",
+      "You've handled hard things before — this is no different.",
+    ];
+    return message.reply(`🔥 ${lines[Math.floor(Math.random() * lines.length)]}`);
+  }
+  if (command === "affirmation") {
+    const lines = [
+      "I am allowed to take things one step at a time.",
+      "I am doing better than I give myself credit for.",
+      "I can handle whatever today brings.",
+    ];
+    return message.reply(`🌿 *${lines[Math.floor(Math.random() * lines.length)]}*`);
+  }
+  if (command === "dreaminterpret") {
+    if (!rest) return err(message, "missing required argument: **dream**\nusage: `,dreaminterpret <describe your dream>`");
+    const meanings = ["a desire for more freedom", "unresolved stress from this week", "excitement about a new beginning", "a need for rest", "hidden confidence you haven't shown yet"];
+    const seed = [...rest].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply({ embeds: [{ color: PINK, description: `💭 that dream might reflect **${meanings[seed % meanings.length]}**.\n-# just for fun, not real dream analysis` }] });
+  }
+  if (command === "namemeaning") {
+    if (!args[1]) return err(message, "missing required argument: **name**\nusage: `,namemeaning <name>`");
+    const traits = ["a natural leader", "endlessly curious", "the calm one in every group", "quietly ambitious", "the friend everyone trusts"];
+    const seed = [...args[1].toLowerCase()].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`✨ **${args[1]}** means... **${traits[seed % traits.length]}**\n-# just for fun`);
+  }
+  if (command === "luckycolor") {
+    const target = message.mentions.users.first() || message.author;
+    const colors = ["Emerald green","Royal blue","Sunset orange","Deep violet","Rose gold","Midnight black"];
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0) + new Date().getDate();
+    return message.reply(`🎨 **${target.username}**'s lucky color today: **${colors[seed % colors.length]}**`);
+  }
+  if (command === "spiritanimal") {
+    const target = message.mentions.users.first() || message.author;
+    const animals = ["Owl","Wolf","Fox","Bear","Dolphin","Eagle","Otter","Tiger"];
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`🦉 **${target.username}**'s spirit animal: **${animals[seed % animals.length]}**`);
+  }
+  if (command === "animename") {
+    const first = ["Kai","Yuki","Ren","Sora","Aki","Hana"];
+    const last = ["shiro","kage","tsuki","hara","zawa"];
+    return message.reply(`⛩️ **${first[Math.floor(Math.random() * first.length)]} ${last[Math.floor(Math.random() * last.length)]}**`);
+  }
+
+  // ── SERVER EXTRAS ──────────────────────────────────────────────────────
+  if (command === "emojilist") {
+    const emojis = [...message.guild.emojis.cache.values()];
+    if (!emojis.length) return ok(message, "this server has no custom emojis.");
+    return message.reply(_ecTruncate(emojis.map(e => e.toString()).join(" "), 1900));
+  }
+  if (command === "stickerlist") {
+    const stickers = [...message.guild.stickers.cache.values()];
+    if (!stickers.length) return ok(message, "this server has no custom stickers.");
+    return message.reply({ embeds: [{ color: PINK, title: `Stickers (${stickers.length})`, description: stickers.map(s => s.name).slice(0, 40).join(", ") }] });
+  }
+  if (command === "threadlist") {
+    const active = await message.guild.channels.fetchActiveThreads().catch(() => null);
+    if (!active || !active.threads.size) return ok(message, "no active threads found.");
+    return message.reply({ embeds: [{ color: PINK, title: `Active Threads (${active.threads.size})`, description: [...active.threads.values()].map(t => t.name).slice(0, 30).join("\n") }] });
+  }
+  if (command === "voicechannels") {
+    const vcs = message.guild.channels.cache.filter(c => c.type === 2);
+    return message.reply({ embeds: [{ color: PINK, title: `Voice Channels (${vcs.size})`, description: vcs.map(c => c.name).slice(0, 40).join("\n") || "none" }] });
+  }
+  if (command === "textchannels") {
+    const tcs = message.guild.channels.cache.filter(c => c.type === 0);
+    return message.reply({ embeds: [{ color: PINK, title: `Text Channels (${tcs.size})`, description: tcs.map(c => c.name).slice(0, 40).join("\n") || "none" }] });
+  }
+  if (command === "categorylist") {
+    const cats = message.guild.channels.cache.filter(c => c.type === 4);
+    return message.reply({ embeds: [{ color: PINK, title: `Categories (${cats.size})`, description: cats.map(c => c.name).slice(0, 40).join("\n") || "none" }] });
+  }
+  if (command === "webhooklist") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageWebhooks)) return err(message, "Missing permissions.");
+    const hooks = await message.channel.fetchWebhooks().catch(() => null);
+    if (!hooks || !hooks.size) return ok(message, "no webhooks in this channel.");
+    return message.reply({ embeds: [{ color: PINK, title: `Webhooks in #${message.channel.name}`, description: [...hooks.values()].map(h => h.name).join("\n") }] });
+  }
+  if (command === "rolelist") {
+    const roles = [...message.guild.roles.cache.filter(r => r.id !== message.guild.id).values()].sort((a, b) => b.position - a.position);
+    return message.reply(_ecTruncate(roles.map(r => r.name).join(", ") || "no roles", 1900));
+  }
+  if (command === "emojicount") {
+    return info(message, `this server has **${message.guild.emojis.cache.size}** custom emojis.`);
+  }
+  if (command === "stickercount") {
+    return info(message, `this server has **${message.guild.stickers.cache.size}** custom stickers.`);
+  }
+  if (command === "biggestrole") {
+    await message.guild.members.fetch().catch(() => {});
+    const roles = [...message.guild.roles.cache.filter(r => r.id !== message.guild.id).values()];
+    if (!roles.length) return ok(message, "no roles to compare.");
+    const biggest = roles.reduce((a, b) => b.members.size > a.members.size ? b : a);
+    return info(message, `biggest role: **${biggest.name}** (${biggest.members.size} members)`);
+  }
+  if (command === "smallestrole") {
+    await message.guild.members.fetch().catch(() => {});
+    const roles = [...message.guild.roles.cache.filter(r => r.id !== message.guild.id && r.members.size > 0).values()];
+    if (!roles.length) return ok(message, "no roles with members to compare.");
+    const smallest = roles.reduce((a, b) => b.members.size < a.members.size ? b : a);
+    return info(message, `smallest role (excluding empty): **${smallest.name}** (${smallest.members.size} members)`);
+  }
+  if (command === "norole") {
+    await message.guild.members.fetch().catch(() => {});
+    const members = message.guild.members.cache.filter(m => m.roles.cache.size === 1 && !m.user.bot);
+    return info(message, `**${members.size}** member(s) have no roles.`);
+  }
+  if (command === "tierperks") {
+    const tier = message.guild.premiumTier;
+    const perks = {
+      0: "No boost perks active yet.",
+      1: "50 emoji slots · 128kbps audio · 1 animated banner slot",
+      2: "100 emoji slots · 256kbps audio · server banner · 50MB uploads",
+      3: "250 emoji slots · 384kbps audio · vanity URL · 100MB uploads",
+    };
+    return message.reply({ embeds: [{ color: PINK, title: `Boost Tier ${tier}`, description: perks[tier] || "Unknown tier" }] });
+  }
+  if (command === "splash") {
+    const url = message.guild.splashURL({ size: 1024 });
+    if (!url) return ok(message, "this server has no invite splash image.");
+    return message.reply({ embeds: [{ color: PINK, title: "Invite Splash", image: { url } }] });
+  }
+  if (command === "discoverysplash") {
+    const url = message.guild.discoverySplashURL({ size: 1024 });
+    if (!url) return ok(message, "this server has no discovery splash image.");
+    return message.reply({ embeds: [{ color: PINK, title: "Discovery Splash", image: { url } }] });
+  }
+  if (command === "oldestchannel") {
+    const ch = [...message.guild.channels.cache.filter(c => c.type !== 4).values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)[0];
+    if (!ch) return ok(message, "no channels found.");
+    return info(message, `oldest channel: **#${ch.name}** — <t:${Math.floor(ch.createdTimestamp / 1000)}:D>`);
+  }
+  if (command === "newestchannel") {
+    const ch = [...message.guild.channels.cache.filter(c => c.type !== 4).values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+    if (!ch) return ok(message, "no channels found.");
+    return info(message, `newest channel: **#${ch.name}** — <t:${Math.floor(ch.createdTimestamp / 1000)}:D>`);
+  }
+  if (command === "channelcount") {
+    const all = message.guild.channels.cache;
+    const text = all.filter(c => c.type === 0).size, voice = all.filter(c => c.type === 2).size, cat = all.filter(c => c.type === 4).size;
+    return message.reply({ embeds: [{ color: PINK, title: "Channel Counts", fields: [
+      { name: "Text", value: `${text}`, inline: true }, { name: "Voice", value: `${voice}`, inline: true }, { name: "Categories", value: `${cat}`, inline: true },
+    ] }] });
+  }
+  if (command === "rolecolorlist") {
+    const colored = [...message.guild.roles.cache.filter(r => r.id !== message.guild.id && r.hexColor !== "#000000").values()].sort((a, b) => b.position - a.position);
+    if (!colored.length) return ok(message, "no colored roles found.");
+    return message.reply(_ecTruncate(colored.map(r => `${r.name} — \`${r.hexColor}\``).join("\n"), 1900));
+  }
+  if (command === "mentionableroles") {
+    const roles = [...message.guild.roles.cache.filter(r => r.mentionable && r.id !== message.guild.id).values()];
+    return message.reply(_ecTruncate(roles.map(r => r.name).join(", ") || "none", 1900));
+  }
+  if (command === "hoistedroles") {
+    const roles = [...message.guild.roles.cache.filter(r => r.hoist).values()];
+    return message.reply(_ecTruncate(roles.map(r => r.name).join(", ") || "none", 1900));
+  }
+  if (command === "everyoneperms") {
+    const perms = message.guild.roles.everyone.permissions.toArray();
+    return message.reply({ embeds: [{ color: PINK, title: "@everyone Permissions", description: perms.length ? perms.join(", ") : "none" }] });
+  }
+  if (command === "vlevel") {
+    const levels = { 0: "None", 1: "Low", 2: "Medium", 3: "High", 4: "Very High" };
+    return info(message, `verification level: **${levels[message.guild.verificationLevel] ?? message.guild.verificationLevel}**`);
+  }
+  if (command === "cflevel") {
+    const levels = { 0: "Disabled", 1: "Members without roles", 2: "All members" };
+    return info(message, `explicit content filter: **${levels[message.guild.explicitContentFilter] ?? message.guild.explicitContentFilter}**`);
+  }
+  if (command === "inactivethreads") {
+    const archived = await message.channel.threads?.fetchArchived().catch(() => null);
+    if (!archived) return ok(message, "couldn't fetch archived threads for this channel.");
+    return info(message, `**${archived.threads.size}** archived thread(s) in this channel.`);
+  }
+  if (command === "threadcount") {
+    const active = await message.guild.channels.fetchActiveThreads().catch(() => null);
+    return info(message, `**${active ? active.threads.size : 0}** active thread(s) server-wide.`);
+  }
+  if (command === "sysinfo") {
+    const mem = process.memoryUsage();
+    return message.reply({ embeds: [{ color: PINK, title: "System Info", fields: [
+      { name: "Node.js", value: process.version, inline: true },
+      { name: "Memory", value: `${(mem.heapUsed / 1024 / 1024).toFixed(1)} MB`, inline: true },
+      { name: "Platform", value: process.platform, inline: true },
+    ] }] });
+  }
+  if (command === "afklist") {
+    const list = [...afkUsers.entries()].filter(([k]) => k.startsWith(`${message.guild.id}-`));
+    if (!list.length) return ok(message, "no one is currently AFK.");
+    const lines = await Promise.all(list.map(async ([k, reason]) => {
+      const uid = k.split("-")[1];
+      const u = await client.users.fetch(uid).catch(() => null);
+      return `**${u?.username ?? uid}** — ${reason}`;
+    }));
+    return message.reply({ embeds: [{ color: PINK, title: "Currently AFK", description: lines.join("\n") }] });
+  }
+});
+
+
+// ── Help entry: Extra Command Pack (189 new commands) ──────────────────────
+if (!global._helpExtraCategories) global._helpExtraCategories = {};
+Object.assign(global._helpExtraCategories, {
+  texttools: {
+    label: "Text Tools",
+    description: "Text transforms, ciphers and word analysis",
+    commands: [
+      [",uppercase <text>", "Convert to UPPERCASE"],
+      [",lowercase <text>", "Convert to lowercase"],
+      [",titlecase <text>", "Convert To Title Case"],
+      [",sentencecase <text>", "Capitalize first letter only"],
+      [",snakecase <text>", "convert_to_snake_case"],
+      [",kebabcase <text>", "convert-to-kebab-case"],
+      [",camelcase <text>", "convertToCamelCase"],
+      [",pascalcase <text>", "ConvertToPascalCase"],
+      [",altcase <text>", "AlTeRnAtInG cAsE"],
+      [",wordcount <text>", "Count words"],
+      [",charcount <text>", "Count characters"],
+      [",vowelcount <text>", "Count vowels"],
+      [",consonantcount <text>", "Count consonants"],
+      [",sentencecount <text>", "Count sentences"],
+      [",removespaces <text>", "Remove all spaces"],
+      [",removevowels <text>", "Remove all vowels"],
+      [",removepunctuation <text>", "Strip punctuation"],
+      [",onlyletters <text>", "Keep only letters"],
+      [",onlynumbers <text>", "Keep only digits"],
+      [",rot13 <text>", "ROT13 cipher"],
+      [",rot47 <text>", "ROT47 cipher"],
+      [",morse <text>", "Text to Morse code"],
+      [",unmorse <morse>", "Morse code to text"],
+      [",atbash <text>", "Atbash cipher"],
+      [",piglatin <text>", "Convert to Pig Latin"],
+      [",nato <text>", "NATO phonetic spelling"],
+      [",acronym <text>", "Build an acronym from words"],
+      [",palindrome <text>", "Check if text is a palindrome"],
+      [",anagram word1 | word2", "Check if two words are anagrams"],
+      [",isogram <text>", "Check if text is an isogram"],
+      [",longestword <text>", "Find the longest word"],
+      [",shortestword <text>", "Find the shortest word"],
+      [",sortwords <text>", "Sort words alphabetically"],
+      [",uniquewords <text>", "List unique words"],
+      [",wordfreq <text>", "Word frequency count"],
+      [",scramble <word>", "Scramble a word's letters"],
+      [",repeat text | 3", "Repeat text N times"],
+      [",smallcaps <text>", "Convert to ˢᵐᵃˡˡ ᶜᵃᵖˢ"],
+      [",bubbletext <text>", "Convert to Ⓑⓤⓑⓑⓛⓔ text"],
+      [",reversewords <text>", "Reverse word order"],
+    ]
+  },
+  generators: {
+    label: "Generators",
+    description: "Random names, ideas and curiosities",
+    commands: [
+      [",uuid", "Generate a random UUID"],
+      [",hexcolor", "Random hex color"],
+      [",rgbcolor", "Random RGB color"],
+      [",randomname", "Random full name"],
+      [",randomusername", "Random username"],
+      [",lipsum [n]", "Lorem ipsum paragraph(s)"],
+      [",randomword", "Random English word"],
+      [",randomsentence", "Random nonsense sentence"],
+      [",tarot", "Draw a random tarot card"],
+      [",carddraw", "Draw a random playing card"],
+      [",dndstat", "Roll a D&D ability score"],
+      [",licenseplate", "Random license plate"],
+      [",randomip", "Random private-range IP"],
+      [",macaddress", "Random MAC address"],
+      [",riddle", "Random riddle with spoiler answer"],
+      [",dadjoke", "Random dad joke"],
+      [",fortune", "Fortune cookie message"],
+      [",motivate", "Random motivational line"],
+      [",proverb", "Random proverb"],
+      [",conspiracy", "Silly fake conspiracy theory"],
+      [",superpower", "Random superpower"],
+      [",villainname", "Random supervillain name"],
+      [",superheroname", "Random superhero name"],
+      [",bandname", "Random band name"],
+      [",startupname", "Random startup name"],
+      [",dishidea", "Random dinner idea"],
+      [",movieidea", "Random movie night suggestion"],
+      [",bookidea", "Random book genre suggestion"],
+      [",songidea", "Random listening mood suggestion"],
+      [",workoutidea", "Random workout idea"],
+      [",icebreaker", "Random icebreaker question"],
+      [",thisorthat", "Random this-or-that prompt"],
+      [",randomemoji", "Random emoji"],
+      [",colorname", "Random color name"],
+      [",randomanimal", "Random unusual animal"],
+    ]
+  },
+  mathtools: {
+    label: "Math Tools",
+    description: "Calculators for everyday math",
+    commands: [
+      [",percent <x> <y>", "What % is x of y"],
+      [",percentchange <old> <new>", "Percentage change"],
+      [",average n1 n2 ...", "Average of numbers"],
+      [",median n1 n2 ...", "Median of numbers"],
+      [",mode n1 n2 ...", "Mode of numbers"],
+      [",stddev n1 n2 ...", "Standard deviation"],
+      [",sum n1 n2 ...", "Sum of numbers"],
+      [",factorial <n>", "Factorial of n"],
+      [",isprime <n>", "Check if n is prime"],
+      [",primefactors <n>", "Prime factorization"],
+      [",fibonacci <n>", "First n Fibonacci numbers"],
+      [",gcd <a> <b>", "Greatest common divisor"],
+      [",lcm <a> <b>", "Least common multiple"],
+      [",sqrt <n>", "Square root"],
+      [",power <base> <exp>", "Exponentiation"],
+      [",bmi <kg> <cm>", "BMI calculator"],
+      [",tip <bill> [%] [people]", "Tip calculator"],
+      [",quadratic <a> <b> <c>", "Solve a quadratic equation"],
+      [",dayofweek YYYY-MM-DD", "What weekday a date falls on"],
+      [",daysuntil YYYY-MM-DD", "Days until a date"],
+      [",daysbetween d1 d2", "Days between two dates"],
+      [",leapyear <year>", "Check leap year"],
+      [",age YYYY-MM-DD", "Calculate age from birthdate"],
+      [",compoundinterest p r t", "Compound interest calculator"],
+      [",simpleinterest p r t", "Simple interest calculator"],
+      [",romanencode <n>", "Number to Roman numeral"],
+      [",romandecode <numeral>", "Roman numeral to number"],
+      [",triangle <a> <b> <c>", "Triangle validity & area"],
+      [",circle <radius>", "Circle area & circumference"],
+      [",pythagorean <a> <b>", "Hypotenuse calculator"],
+    ]
+  },
+  converters: {
+    label: "Converters",
+    description: "Unit and number base converters",
+    commands: [
+      [",km2mi <km>", "Kilometers to miles"],
+      [",mi2km <mi>", "Miles to kilometers"],
+      [",kg2lb <kg>", "Kilograms to pounds"],
+      [",lb2kg <lb>", "Pounds to kilograms"],
+      [",celsius2f <c>", "Celsius to Fahrenheit"],
+      [",f2celsius <f>", "Fahrenheit to Celsius"],
+      [",celsius2kelvin <c>", "Celsius to Kelvin"],
+      [",kelvin2celsius <k>", "Kelvin to Celsius"],
+      [",m2ft <m>", "Meters to feet"],
+      [",ft2m <ft>", "Feet to meters"],
+      [",cm2in <cm>", "Centimeters to inches"],
+      [",in2cm <in>", "Inches to centimeters"],
+      [",l2gal <l>", "Liters to gallons"],
+      [",gal2l <gal>", "Gallons to liters"],
+      [",bytes2human <bytes>", "Bytes to human-readable size"],
+      [",seconds2human <secs>", "Seconds to human-readable duration"],
+      [",dec2bin <n>", "Decimal to binary"],
+      [",bin2dec <binary>", "Binary to decimal"],
+      [",dec2hex <n>", "Decimal to hex"],
+      [",hex2dec <hex>", "Hex to decimal"],
+      [",dec2oct <n>", "Decimal to octal"],
+      [",oct2dec <octal>", "Octal to decimal"],
+      [",text2hex <text>", "Text to hex string"],
+      [",hex2text <hex>", "Hex string to text"],
+      [",mph2kmh <mph>", "Mph to km/h"],
+    ]
+  },
+  funextra: {
+    label: "Fun Extra",
+    description: "More games, generators and silly tools",
+    commands: [
+      [",horoscope <sign>", "Daily horoscope (for fun)"],
+      [",zodiac MM-DD", "Find zodiac sign from a date"],
+      [",luckynumber [user]", "Today's lucky number"],
+      [",mood [user]", "Random mood generator"],
+      [",iq [user]", "Fake IQ generator (for fun)"],
+      [",powerlevel [user]", "Anime-style power level"],
+      [",catchphrase", "Random catchphrase"],
+      [",nicknamegen <word>", "Generate a silly nickname"],
+      [",superlative [user]", "Random silly superlative"],
+      [",rpsls <rock|paper|scissors|lizard|spock>", "Expanded rock-paper-scissors"],
+      [",hangmanword", "Random hangman word + hint"],
+      [",wordchain <word>", "Continue a word chain"],
+      [",trivia", "Random trivia question"],
+      [",emojistory", "Random emoji story"],
+      [",emojimath", "Emoji-based math puzzle"],
+      [",nameaesthetic <name>", "S p a c e d   o u t   n a m e"],
+      [",pun", "Random pun"],
+      [",tonguetwister", "Random tongue twister"],
+      [",pickupline", "Random cheesy pickup line"],
+      [",birthdaymessage [user]", "Generate a birthday message"],
+      [",apology", "Random funny apology"],
+      [",excuse", "Random silly excuse"],
+      [",cheer", "Quick cheer-up message"],
+      [",confidence", "Quick confidence boost"],
+      [",affirmation", "Random positive affirmation"],
+      [",dreaminterpret <dream>", "Silly dream interpretation (for fun)"],
+      [",namemeaning <name>", "Silly name meaning (for fun)"],
+      [",luckycolor [user]", "Today's lucky color"],
+      [",spiritanimal [user]", "Random spirit animal"],
+      [",animename", "Random anime-style name"],
+    ]
+  },
+  serverextra: {
+    label: "Server Extras",
+    description: "More server info and listing tools",
+    commands: [
+      [",emojilist", "List all custom emojis"],
+      [",stickerlist", "List all custom stickers"],
+      [",threadlist", "List active threads"],
+      [",voicechannels", "List voice channels"],
+      [",textchannels", "List text channels"],
+      [",categorylist", "List categories"],
+      [",webhooklist", "List webhooks in this channel"],
+      [",rolelist", "List all roles"],
+      [",emojicount", "Count of custom emojis"],
+      [",stickercount", "Count of custom stickers"],
+      [",biggestrole", "Role with the most members"],
+      [",smallestrole", "Non-empty role with fewest members"],
+      [",norole", "Count members with no roles"],
+      [",tierperks", "Current boost tier perks"],
+      [",splash", "Server invite splash image"],
+      [",discoverysplash", "Server discovery splash image"],
+      [",oldestchannel", "Oldest channel in the server"],
+      [",newestchannel", "Newest channel in the server"],
+      [",channelcount", "Channel counts by type"],
+      [",rolecolorlist", "List roles with their colors"],
+      [",mentionableroles", "List mentionable roles"],
+      [",hoistedroles", "List hoisted roles"],
+      [",everyoneperms", "@everyone's permissions"],
+      [",vlevel", "Current verification level"],
+      [",cflevel", "Current explicit content filter level"],
+      [",inactivethreads", "Archived thread count (this channel)"],
+      [",threadcount", "Active thread count (server-wide)"],
+      [",sysinfo", "Bot process/system info"],
+      [",afklist", "List currently AFK members"],
+    ]
+  },
+});
+
+
 // ── LOGIN ────────────────────────────────────────────────────────────────────
 client.login(process.env.TOKEN).catch(e => {
   console.error('[Bot] Login failed:', e.message);
