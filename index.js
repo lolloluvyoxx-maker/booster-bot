@@ -18,7 +18,7 @@ const path = require("path");
 const Jimp = require("jimp");
 
 // -- Real music playback (,play, ,queue, ,skip, etc.) --
-const { Player, useMainPlayer, useQueue, QueueRepeatMode } = require("discord-player");
+const { Player, useMainPlayer, useQueue, QueueRepeatMode, QueryType } = require("discord-player");
 const { DefaultExtractors } = require("@discord-player/extractor");
 const { YoutubeiExtractor } = require("discord-player-youtubei");
 require("ffmpeg-static"); // side-effect: registers a bundled ffmpeg binary for prism-media/discord-player to find
@@ -20041,9 +20041,17 @@ MUSIC.play = async (message, args, rest) => {
     return err(message, "no audio sources are registered on this bot at all (0 extractors loaded) -- check the Railway startup logs for a `[music] Failed to load/register ...` line, that's why every search comes back empty.");
   }
   const is247 = MUSIC_247.has(message.guild.id);
+  // SoundCloud is registered before Youtubei, and discord-player's AUTO query resolution
+  // tries extractors in registration order -- for a plain text query (not a URL) SoundCloud
+  // was claiming it, searching its own catalog, coming up empty, and never falling through
+  // to YouTube. Force plain-text searches straight to Youtubei; still let real URLs (Spotify,
+  // SoundCloud, Vimeo links, etc.) auto-resolve to whichever extractor actually owns them.
+  const isUrl = /^https?:\/\//i.test(rest);
+  const searchEngine = isUrl ? QueryType.AUTO : `ext:${YoutubeiExtractor.identifier}`;
   let track;
   try {
     ({ track } = await p.play(vc, rest, {
+      searchEngine,
       nodeOptions: {
         metadata: { channel: message.channel },
         leaveOnEmpty: !is247,
