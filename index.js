@@ -3009,387 +3009,505 @@ client.on("messageCreate", async (message) => {
   // ,help
   if (command === "help") {
     const categoriess = {
+      information: {
+        label: "Information",
+        description: "",
+        commands: [
+          [",afk", ""],
+          [",antiselfreact", ""],
+          [",avatar", ""],
+          [",avatarhistory", ""],
+          [",banner", ""],
+          [",bans", ""],
+          [",bible", ""],
+          [",boomer", ""],
+          [",botinfo", ""],
+          [",channelinfo", ""],
+          [",churn", ""],
+          [",clearnames", ""],
+          [",color", ""],
+          [",emojis", ""],
+          [",firstmessage", ""],
+          [",funnel", ""],
+          [",guild", ""],
+          [",guildbanner", ""],
+          [",guildicon", ""],
+          [",guildsplash", ""],
+          [",guildstats", ""],
+          [",help", ""],
+          [",inrole", ""],
+          [",invite", ""],
+          [",inviteinfo", ""],
+          [",membercount", ""],
+          [",namehistory", ""],
+          [",newusers", ""],
+          [",ocr", ""],
+          [",permissions", ""],
+          [",quran", ""],
+          [",recover", ""],
+          [",reverse", ""],
+          [",roleinfo", ""],
+          [",roles", ""],
+          [",schedule", ""],
+          [",screenshot", ""],
+          [",serveravatar", ""],
+          [",serverbanner", ""],
+          [",serverinfo", ""],
+          [",serverinvites", ""],
+          [",sets", ""],
+          [",stats", ""],
+          [",stickers", ""],
+          [",timezone", ""],
+          [",urbandictionary", ""],
+          [",verification", ""],
+          [",vote", ""],
+          [",weather", ""],
+        ]
+      },
       moderation: {
         label: "Moderation",
-        
-        description: "Ban, kick, mute, jail and more",
+        description: "",
         commands: [
-          [",ban <user> [reason]", "Ban a user from the server"],
-          [",unban <userId>", "Unban a user"],
-          [",kick <user> [reason]", "Kick a user"],
-          [",mute <user> [mins] [reason]", "Mute a user"],
-          [",unmute <user>", "Unmute a user"],
-          [",timeout <user> <time> [reason]", "Timeout a user (e.g. 10m, 1h)"],
-          [",untimeout <user>", "Remove timeout"],
-          [",tempban <user> <mins> [reason]", "Temporarily ban a user"],
-          [",softban <user> [reason]", "Ban then unban (clears messages)"],
-          [",hardban <user> [reason]", "Permanent ban with message deletion"],
-          [",hackban <userId> [reason]", "Ban a user not in the server"],
-          [",massban <id1> <id2> ...", "Ban multiple users at once"],
-          [",masskick @u1 @u2 ...", "Kick multiple users"],
-          [",warn <user> <reason>", "Warn a user"],
-          [",warnings <user>", "View user warnings"],
-          [",clearwarns <user>", "Clear all warnings"],
-          [",delwarn <user> <#>", "Delete a specific warning"],
-          [",jail <user> [reason]", "Jail a user"],
-          [",unjail <user>", "Unjail a user"],
-          [",imute <user>", "Image mute a user"],
-          [",iunmute <user>", "Remove image mute"],
-          [",reactionmute <user>", "Reaction mute a user"],
-          [",reactionunmute <user>", "Remove reaction mute"],
-          [",strip <user>", "Remove all roles from user"],
-          [",purge <amount>", "Delete messages"],
-          [",purge bots/images/links/user/contains ...", "Filtered purge"],
-          [",lock [#channel]", "Lock a channel"],
-          [",unlock [#channel]", "Unlock a channel"],
-          [",hide [#channel]", "Hide a channel"],
-          [",unhide [#channel]", "Unhide a channel"],
-          [",lockall", "Lock all channels"],
-          [",unlockall", "Unlock all channels"],
-          [",lockdown [reason]", "Full server lockdown"],
-          [",unlockdown", "Lift lockdown"],
-          [",slowmode <secs>", "Set slowmode"],
-          [",slowmodeall <secs>", "Set slowmode in all channels"],
-          [",nuke", "Clone and delete a channel"],
-          [",nick <user> <name>", "Change a user's nickname"],
-          [",resetnick <user>", "Reset nickname"],
-          [",dehoist", "Remove hoisted characters"],
-          [",decancer <user>", "Clean special chars from nick"],
-          [",role add/remove <user> <role>", "Add or remove a role"],
-          [",temprole <user> <role> <time>", "Give a role temporarily"],
-          [",massrole add/remove <role>", "Add/remove role from everyone"],
-          [",massnick <nick>", "Set nickname for everyone"],
-          [",banwave", "Ban all users who joined in last 5 min"],
-          [",prune <days>", "Kick inactive members"],
-          [",dehoist / ,dehoistall", "Dehoist member nicknames"],
+          [",approvals", ""],
+          [",audit", ""],
+          [",ban", ""],
+          [",botclear", ""],
+          [",cleanup", ""],
+          [",denyperm", ""],
+          [",fn", ""],
+          [",hardban", ""],
+          [",hide", ""],
+          [",history", ""],
+          [",imute", ""],
+          [",iunmute", ""],
+          [",jail", ""],
+          [",kick", ""],
+          [",lockdown", ""],
+          [",modhistory", ""],
+          [",modstats", ""],
+          [",nickname", ""],
+          [",nsfw", ""],
+          [",nuke", ""],
+          [",picperms", ""],
+          [",protect", ""],
+          [",purge", ""],
+          [",reveal", ""],
+          [",rmute", ""],
+          [",role", ""],
+          [",runmute", ""],
+          [",selfpurge", ""],
+          [",setup", ""],
+          [",sfw", ""],
+          [",slowmode", ""],
+          [",softban", ""],
+          [",spoiler", ""],
+          [",staffstrip", ""],
+          [",strip", ""],
+          [",timeout", ""],
+          [",topic", ""],
+          [",unban", ""],
+          [",unjail", ""],
+          [",unlockdown", ""],
+          [",untimeout", ""],
+          [",warn", ""],
+          [",warnings", ""],
         ]
       },
-      security: {
-        label: "Security",
-        
-        description: "AntiNuke, AntiRaid, AutoMod",
+      server: {
+        label: "Server",
+        description: "",
         commands: [
-          [",antinuke on/off", "Enable/disable AntiNuke"],
-          [",antinuke punishment <ban|kick|strip>", "Set punishment"],
-          [",antinuke threshold <n>", "Set action threshold"],
-          [",antinuke whitelist <user>", "Whitelist a user"],
-          [",antinuke status", "View AntiNuke config"],
-          [",antiraid on/off", "Enable/disable AntiRaid"],
-          [",antiraid action <ban|kick|mute>", "Set raid action"],
-          [",antiraid threshold <n>", "Set join threshold"],
-          [",antiraid window <secs>", "Set detection window"],
-          [",antiraid unlock", "Manually unlock server"],
-          [",antiraid status", "View AntiRaid config"],
-          [",vanitylock on/off/status", "Lock your vanity URL"],
-          [",vanitytransfer <code>", "Transfer a vanity URL"],
-          [",filter on/off", "Toggle AutoMod filter"],
-          [",filter add/remove <word>", "Add/remove banned word"],
-          [",filter links/invites/caps/spam/mentions", "Toggle filter types"],
-          [",filter status", "View filter config"],
-          [",blacklist add/remove/list/clear <word>", "Word blacklist"],
-          [",antilinks / ,antiinvites", "Toggle link/invite filter"],
-          [",antispam / ,anticaps", "Toggle spam/caps filter"],
-          [",filterexempt add/remove @role/#channel", "Exempt from filter"],
-          [",bind staff <role>", "Set a staff role"],
-          [",fakeperm add/remove/list <role> <perm>", "Fake permissions"],
-          [",ignore <user>", "Bot ignores all cmds from user"],
-          [",ignorelist", "List ignored users"],
-        ]
-      },
-      info: {
-        label: "Information",
-        
-        description: "User, server, role info and more",
-        commands: [
-          [",userinfo [user]", "Detailed user information"],
-          [",serverinfo", "Server information"],
-          [",avatar [user]", "Get user avatar"],
-          [",banner [user]", "Get user banner"],
-          [",roleinfo <role>", "Role information"],
-          [",channelinfo [#channel]", "Channel information"],
-          [",botinfo", "Bot information"],
-          [",ping", "Bot latency"],
-          [",uptime", "Bot uptime"],
-          [",membercount", "Server member count"],
-          [",bans", "List all bans"],
-          [",baninfo <userId>", "Info on a ban"],
-          [",inviteinfo <code>", "Invite information"],
-          [",invites [user]", "User invite count"],
-          [",listinvites", "List all invites"],
-          [",createinvite [maxUses] [hours]", "Create invite"],
-          [",whois [user]", "Detailed member info"],
-          [",memberinfo [user]", "Member information"],
-          [",newmembers [n]", "Recently joined members"],
-          [",oldmembers [n]", "Oldest members"],
-          [",inrole <role>", "Members with a role"],
-          [",boosters", "List server boosters"],
-          [",servericon", "Server icon"],
-          [",serverbanner", "Server banner"],
-          [",serverstats", "Detailed server stats"],
-          [",onlinecount", "Online member counts"],
-          [",admins", "List server admins"],
-          [",mods", "List moderators"],
-          [",bots", "List bots"],
-          [",stafflist", "List all staff"],
-          [",find <query>", "Search members by name"],
-          [",rolecount <role>", "Members in a role"],
-          [",id [user/role/channel]", "Get a Discord ID"],
-          [",snowflake <id>", "Decode Discord snowflake"],
-          [",discrim <0000>", "Find users by discriminator"],
-          [",permissions [user]", "Check permissions"],
-          [",shared [userId]", "Mutual servers"],
-          [",joined [user]", "When user joined"],
-          [",created [user]", "Account creation date"],
-          [",accountage [user]", "Account age"],
-          [",serverage", "How old the server is"],
-          [",serverfeatures", "Server feature flags"],
-          [",boostgoal", "Boost tier progress"],
-          [",vanity", "Server vanity URL"],
-          [",modlogs [user]", "Recent mod actions"],
-          [",history <user>", "User mod history"],
-          [",cases <user>", "User mod cases"],
-          [",case <id>", "View a mod case"],
-          [",audit", "Recent audit log"],
-        ]
-      },
-      config: {
-        label: "Server Config",
-        
-        description: "Setup, welcome, roles, tickets...",
-        commands: [
-          [",setup", "Create jail/log channels & roles"],
-          [",setupmute", "Create muted roles"],
-          [",autorole <@role|off>", "Set autorole for new members"],
-          [",welcome #channel <msg>", "Set welcome message"],
-          [",goodbye #channel <msg>", "Set goodbye message"],
-          [",starboard #channel [threshold]", "Setup starboard"],
-          [",bumpchannel #channel", "Set bump reminder channel"],
-          [",jointocreate #vc", "Setup Join to Create VC"],
-          [",confessions #channel", "Setup confessions channel"],
-          [",modlog #channel", "Set mod log channel"],
-          [",messagelog #channel", "Log deleted/edited messages"],
-          [",joinlog #channel", "Log joins and leaves"],
-          [",voicelog #channel", "Log voice activity"],
-          [",log <event> #channel", "Configure specific log events"],
-          [",verification <level>", "Set verification level"],
-          [",contentfilter <level>", "Set content filter"],
-          [",setname <name>", "Rename the server"],
-          [",setdesc <text>", "Set server description"],
-          [",serverrules rule1 | rule2", "Post server rules"],
-          [",muterole <@role>", "Set custom mute role"],
-          [",pingrole <@role>", "Toggle role mentionable"],
-          [",rolecreate <name> [color]", "Create a role"],
-          [",roledelete <@role>", "Delete a role"],
-          [",rolecolor <@role> <hex>", "Change role color"],
-          [",rolehoist <@role>", "Toggle role hoist"],
-          [",rolemention <@role>", "Toggle role mentionable"],
-          [",rolepos <@role> <pos>", "Change role position"],
-          [",channelcreate <name> [text|voice]", "Create a channel"],
-          [",channeldelete [#channel]", "Delete a channel"],
-          [",channelclone [#channel]", "Clone a channel"],
-          [",categorycreate <name>", "Create a category"],
-          [",ticket setup/create/close/add/remove", "Ticket system"],
-          [",cc add/remove/list", "Custom commands"],
-          [",alias add/remove/list", "Command aliases"],
-          [",disable/enable <command>", "Disable a command"],
-          [",autorespond add/remove/list", "Auto responders"],
-          [",reactiontrigger add/remove/list", "Reaction triggers"],
-          [",reactionrole <msgId> <emoji> <@role>", "Reaction roles"],
-          [",sticky <message|off>", "Sticky message"],
-          [",counter create/delete/list", "Member counters"],
-          [",warnthreshold <n> <action>", "Auto punish on warns"],
-          [",birthday channel #channel", "Birthday announcements"],
-          [",antinuke / ,antiraid / ,vanitylock", "Security systems"],
-          [",moderation <on|off|status>", "Enable or disable all moderation commands (,warn ,ban ,afk ,timeout)"],
-          [",config", "Open the Video Scraper config panel — set sources, target, schedule, and rename prefix"],
-        ]
-      },
-      economy: {
-        label: "Economy",
-        
-        description: "Coins, gambling, work and more",
-        commands: [
-          [",balance [user]", "Check coin balance"],
-          [",daily", "Claim daily reward (500 coins)"],
-          [",weekly", "Claim weekly reward (2500 coins)"],
-          [",monthly", "Claim monthly reward (10000 coins)"],
-          [",work", "Work to earn coins (1h cooldown)"],
-          [",crime", "Commit a crime for coins (risky)"],
-          [",rob <user>", "Rob another user"],
-          [",pay <user> <amount>", "Pay someone coins"],
-          [",bet <amount>", "Coinflip for coins"],
-          [",blackjack <amount>", "Play blackjack"],
-          [",slots", "Spin the slot machine"],
-          [",dice <NdN>", "Roll dice (e.g. 2d6)"],
-          [",richlist", "Top 10 richest users"],
-          [",give <user> <amount>", "Admin: give coins"],
-          [",take <user> <amount>", "Admin: take coins"],
-          [",setbal <user> <amount>", "Admin: set balance"],
-          [",resetbal <user>", "Admin: reset balance"],
-        ]
-      },
-      fun: {
-        label: "Fun",
-        
-        description: "Games, generators and more",
-        commands: [
-          [",coinflip", "Flip a coin"],
-          [",8ball <question>", "Ask the magic 8ball"],
-          [",roll [sides]", "Roll a dice"],
-          [",dice <NdN>", "Roll multiple dice"],
-          [",choose opt1 | opt2 | ...", "Choose between options"],
-          [",decide opt1 | opt2 | ...", "Let the bot decide"],
-          [",number <min> <max>", "Random number"],
-          [",yesno", "Random yes or no"],
-          [",poll <question>", "Create a quick poll"],
-          [",poll create q | opt1 | opt2", "Advanced poll with options"],
-          [",rps <rock|paper|scissors>", "Rock paper scissors"],
-          [",ttt <@user>", "Tic tac toe"],
-          [",slots", "Slot machine"],
-          [",numberguess", "Number guessing game"],
-          [",ship [@u1] [@u2]", "Ship two users"],
-          [",rate <thing>", "Rate something"],
-          [",pp [user]", "Check pp size"],
-          [",howgay [user]", "How gay are you"],
-          [",howdumb [user]", "How dumb are you"],
-          [",hack <user>", "Fake hack someone"],
-          [",wanted [user]", "Wanted poster"],
-          [",wyr", "Would you rather"],
-          [",nhie", "Never have I ever"],
-          [",tod", "Truth or dare"],
-          [",compliment [user]", "Send a compliment"],
-          [",insult [user]", "Silly insult"],
-          [",meme", "Random meme"],
-          [",joke", "Random joke"],
-          [",fact", "Random fact"],
-          [",quote", "Random quote"],
-          [",catfact / ,dogfact", "Animal facts"],
-          [",cat / ,dog / ,fox / ,duck / ,panda", "Animal images"],
-          [",team <size> @u1 @u2 ...", "Split into teams"],
-          [",shuffle item1 | item2", "Shuffle items"],
-          [",countdown <n>", "Countdown in chat"],
-          [",ascii <text>", "ASCII text"],
-          [",emojify <text>", "Emojify text"],
-          [",mock <text>", "SpOnGeBoB mock text"],
-          [",leet <text>", "L33t speak"],
-          [",vaporwave <text>", "Vaporwave text"],
-          [",zalgo <text>", "Zalgo text"],
-          [",reverse <text>", "Reverse text"],
-          [",clap <text>", "Add claps"],
+          [",setup", ""],
+          [",setupmute", ""],
+          [",autorole", ""],
+          [",welcome", ""],
+          [",goodbye", ""],
+          [",starboard", ""],
+          [",bumpchannel", ""],
+          [",jointocreate", ""],
+          [",confessions", ""],
+          [",modlog", ""],
+          [",messagelog", ""],
+          [",joinlog", ""],
+          [",voicelog", ""],
+          [",log", ""],
+          [",verification", ""],
+          [",contentfilter", ""],
+          [",setname", ""],
+          [",setdesc", ""],
+          [",serverrules", ""],
+          [",muterole", ""],
+          [",pingrole", ""],
+          [",rolecreate", ""],
+          [",roledelete", ""],
+          [",rolecolor", ""],
+          [",rolehoist", ""],
+          [",rolemention", ""],
+          [",rolepos", ""],
+          [",channelcreate", ""],
+          [",channeldelete", ""],
+          [",channelclone", ""],
+          [",categorycreate", ""],
+          [",ticket", ""],
+          [",cc", ""],
+          [",alias", ""],
+          [",disable/enable", ""],
+          [",autorespond", ""],
+          [",reactiontrigger", ""],
+          [",reactionrole", ""],
+          [",sticky", ""],
+          [",counter", ""],
+          [",warnthreshold", ""],
+          [",birthday", ""],
+          [",antinuke", ""],
+          [",moderation", ""],
+          [",config", ""],
         ]
       },
       utility: {
         label: "Utility",
-        
-        description: "Useful tools and helpers",
+        description: "",
         commands: [
-          [",remind <time> <text>", "Set a reminder (e.g. 30m, 1h)"],
-          [",reminders", "View your reminders"],
-          [",afk [reason]", "Set AFK status"],
-          [",todo add/done/remove/list", "Personal todo list"],
-          [",tag create/delete/list/<name>", "Server tags"],
-          [",highlight add/remove/list <word>", "Word highlights"],
-          [",snipe", "Snipe last deleted message"],
-          [",editsnipe", "Snipe last edited message"],
-          [",pin/unpin <messageId>", "Pin/unpin a message"],
-          [",pins", "List pinned messages count"],
-          [",weather <city>", "Weather info"],
-          [",math / ,calc <expr>", "Calculate an expression"],
-          [",urban <word>", "Urban Dictionary"],
-          [",define <word>", "Dictionary definition"],
-          [",translate <lang> <text>", "Translate text"],
-          [",qr <text>", "Generate QR code"],
-          [",color <#hex>", "Color info"],
-          [",encode/decode <text>", "Base64 encode/decode"],
-          [",binary <text>", "Text to binary"],
-          [",timestamp [date]", "Discord timestamp"],
-          [",charinfo <text>", "Unicode character info"],
-          [",google/youtube/spotify <query>", "Search links"],
-          [",password [length]", "Generate secure password"],
-          [",token", "Generate random token"],
-          [",invitebot", "Get bot invite link"],
-          [",copycat <user> <msg>", "Send message as user"],
-          [",say / ,say2 #channel <msg>", "Say something"],
-          [",embed <title> | <desc>", "Send an embed"],
-          [",announce #channel <msg>", "Announce a message"],
-          [",react <msgId> <emoji>", "React to a message"],
-          [",export", "Export last 100 chat messages"],
-          [",nsfwcheck / ,nsfw", "Check/toggle NSFW"],
-          [",firstmessage", "Jump to first message"],
-          [",serverage / ,accountage", "Age info"],
-          [",news", "Discord status"],
-          [",source", "Bot tech info"],
+          [",ai", ""],
+          [",bumpreminder", ""],
+          [",caption", ""],
+          [",clearsnipe", ""],
+          [",copyembed", ""],
+          [",createembed", ""],
+          [",crypto", ""],
+          [",editsnipe", ""],
+          [",embed", ""],
+          [",emoji", ""],
+          [",fortnite", ""],
+          [",google", ""],
+          [",imageonly", ""],
+          [",img2gif", ""],
+          [",lookup", ""],
+          [",notify", ""],
+          [",pin", ""],
+          [",pypi", ""],
+          [",reactionsnipe", ""],
+          [",reminder", ""],
+          [",search", ""],
+          [",snipe", ""],
+          [",sticker", ""],
+          [",timer", ""],
+          [",translate", ""],
+          [",unpin", ""],
+          [",webhook", ""],
+        ]
+      },
+      socials: {
+        label: "Socials",
+        description: "",
+        commands: [
+          [",bio", ""],
+          [",github", ""],
+          [",instagram", ""],
+          [",kicklive", ""],
+          [",league", ""],
+          [",minecraft", ""],
+          [",pinterest", ""],
+          [",roblox", ""],
+          [",rolimons", ""],
+          [",soundcloud", ""],
+          [",spotify", ""],
+          [",tiktok", ""],
+          [",twitch", ""],
+          [",valorant", ""],
+          [",x", ""],
+          [",youtube", ""],
         ]
       },
       lastfm: {
         label: "Last.fm",
-        
-        description: "Music tracking with Last.fm",
+        description: "",
         commands: [
-          [",fm set <username>", "Link your Last.fm account"],
-          [",fm unset", "Unlink Last.fm"],
-          [",np [user]", "Now playing / last track"],
-          [",fmprofile [user]", "Last.fm profile stats"],
-          [",topartists", "Your top artists"],
-          [",toptracks", "Your top tracks"],
-          [",topalbums", "Your top albums"],
+          [",fm", ""],
+          [",lastfm", ""],
+          [",lyrics", ""],
         ]
       },
-      leveling: {
-        label: "Leveling",
-        
-        description: "XP and level system",
+      security: {
+        label: "Security",
+        description: "",
         commands: [
-          [",rank [user]", "View your rank and XP"],
-          [",leaderboard", "Server XP leaderboard"],
-          [",setlevel <user> <level>", "Admin: set user level"],
-          [",resetxp <user>", "Admin: reset user XP"],
+          [",antinuke", ""],
+          [",antiraid", ""],
+          [",fakepermissions", ""],
+          [",filter", ""],
+          [",honeypot", ""],
+          [",incidents", ""],
+          [",panic", ""],
+          [",security", ""],
         ]
       },
-      perks: {
-        label: "Perks Tools",
-        
-        description: "Clone, sort and manage perks servers",
+      fun: {
+        label: "Fun",
+        description: "",
         commands: [
-          [",perks", "Open the perks system panel — configure boost roles, vault, messages"],
-          [",separate", "Interactive panel to split server channels alphabetically (A→Z) into 4+ categories"],
-          [",sortcategory", "Interactive panel to sort channels into 2–5 categories, with immune categories"],
-          [",videocount [#ch]", "Count videos in a channel or the whole server (attachments + links)"],
-          ["", ""],
-          [",clone", "Open the full clone/setup panel"],
-          [",cloneperks <srcId> <tgtId>", "Clone all roles, categories and channels"],
-          [",clonecategoryperks <srcId> <tgtId>", "Clone a category + distribute its videos per-channel"],
-          [",setuppaidperks <srcId> <tgtId>", "Full paid-perks setup with exclusive channels"],
-          [",hidepaidperks <tgtId> [n]", "Randomly hide N channels in a server (default 20)"],
-          [",sortchannels <id> Cat1|Cat2|Cat3", "Distribute channels into 2–3 categories with overflow"],
+          [",8ball", ""],
+          [",angry", ""],
+          [",baka", ""],
+          [",birthday", ""],
+          [",bitches", ""],
+          [",bite", ""],
+          [",blacktea", ""],
+          [",blush", ""],
+          [",bored", ""],
+          [",brainrotlock", ""],
+          [",choose", ""],
+          [",cry", ""],
+          [",cuddle", ""],
+          [",diary", ""],
+          [",dominant", ""],
+          [",facepalm", ""],
+          [",feed", ""],
+          [",flag", ""],
+          [",flags", ""],
+          [",fuck", ""],
+          [",gang", ""],
+          [",handhold", ""],
+          [",handshake", ""],
+          [",happy", ""],
+          [",highfive", ""],
+          [",howautism", ""],
+          [",howgay", ""],
+          [",howlesbian", ""],
+          [",howsimp", ""],
+          [",hug", ""],
+          [",interact", ""],
+          [",iq", ""],
+          [",jumbo", ""],
+          [",kiss", ""],
+          [",laugh", ""],
+          [",lurk", ""],
+          [",nod", ""],
+          [",nom", ""],
+          [",nope", ""],
+          [",nutkick", ""],
+          [",pat", ""],
+          [",peck", ""],
+          [",poke", ""],
+          [",poll", ""],
+          [",pout", ""],
+          [",pp", ""],
+          [",punch", ""],
+          [",quickpoll", ""],
+          [",quote", ""],
+          [",randomhex", ""],
+          [",randomuser", ""],
+          [",roast", ""],
+          [",roleplay", ""],
+          [",rps", ""],
+          [",run", ""],
+          [",ship", ""],
+          [",shoot", ""],
+          [",shrug", ""],
+          [",slap", ""],
+          [",sleep", ""],
+          [",smile", ""],
+          [",smoke", ""],
+          [",smug", ""],
+          [",spank", ""],
+          [",spark", ""],
+          [",stare", ""],
+          [",taps", ""],
+          [",think", ""],
+          [",thumbsup", ""],
+          [",tickle", ""],
+          [",ttt", ""],
+          [",uwuify", ""],
+          [",uwulock", ""],
+          [",vape", ""],
+          [",wave", ""],
+          [",wink", ""],
+          [",wyr", ""],
+          [",yawn", ""],
+          [",yeet", ""],
         ]
       },
-      nsfw: {
-        label: "NSFW (Owner Only)",
-        
-        description: "Anti-minors system — owner only",
+      economy: {
+        label: "Economy",
+        description: "",
         commands: [
-          [",addc #channel", "Add channel to minor monitoring"],
-          [",delc #channel", "Remove channel from monitoring"],
-          [",list", "Show all monitored channels & config"],
-          [",reqattach #channel", "Require media — deletes text-only messages"],
-          [",unreqattach #channel", "Remove media requirement"],
-          [",modr @role", "Role pinged on minor detections"],
-          [",logs #channel", "Channel where minor warnings are sent"],
-          ["", ""],
-          ["Detection:", ""],
-          ["• Ages 10–17", "Deleted + warning logged"],
-          ["• Reversed bypass (61 reversed)", "Deleted + warning logged"],
-          ["• Emoji numbers (15)", "Normalized + detected"],
-          ["• underage / minor / still in hs", "Instant flag"],
-          ["• No 18+ age mentioned", "Silently deleted"],
-          ["• Suspiciously high age (99m)", "Flagged as bypass"],
+          [",addbalance", ""],
+          [",balance", ""],
+          [",bankrupt", ""],
+          [",blackjack", ""],
+          [",bombs", ""],
+          [",business", ""],
+          [",coinflip", ""],
+          [",crash", ""],
+          [",credit", ""],
+          [",crime", ""],
+          [",daily", ""],
+          [",deposit", ""],
+          [",dice", ""],
+          [",economy", ""],
+          [",gamble", ""],
+          [",highlow", ""],
+          [",ladder", ""],
+          [",leaderboard", ""],
+          [",loan", ""],
+          [",market", ""],
+          [",objectives", ""],
+          [",plinko", ""],
+          [",profile", ""],
+          [",removebalance", ""],
+          [",resetbalance", ""],
+          [",rob", ""],
+          [",roulette", ""],
+          [",scratch", ""],
+          [",shop", ""],
+          [",slots", ""],
+          [",tax", ""],
+          [",tier", ""],
+          [",transactions", ""],
+          [",transfer", ""],
+          [",withdraw", ""],
+          [",work", ""],
         ]
-      }
+      },
+      voice: {
+        label: "Voice",
+        description: "",
+        commands: [
+          [",voicemaster", ""],
+        ]
+      },
+      manipulation: {
+        label: "Manipulation",
+        description: "",
+        commands: [
+          [",3d", ""],
+          [",ads", ""],
+          [",alert", ""],
+          [",bayer", ""],
+          [",bevel", ""],
+          [",billboard", ""],
+          [",blocks", ""],
+          [",blur", ""],
+          [",boil", ""],
+          [",bomb", ""],
+          [",bonks", ""],
+          [",calling", ""],
+          [",canny", ""],
+          [",captcha", ""],
+          [",cartoon", ""],
+          [",cinema", ""],
+          [",clock", ""],
+          [",console", ""],
+          [",cow", ""],
+          [",cracks", ""],
+          [",cube", ""],
+          [",didyoumean", ""],
+          [",dither", ""],
+          [",dizzy", ""],
+          [",drake", ""],
+          [",drip", ""],
+          [",earthquake", ""],
+          [",emojify", ""],
+          [",endless", ""],
+          [",equations", ""],
+          [",explicit", ""],
+          [",facts", ""],
+          [",fall", ""],
+          [",fan", ""],
+          [",fire", ""],
+          [",flush", ""],
+          [",gallery", ""],
+          [",gameboy", ""],
+          [",glitch", ""],
+          [",globe", ""],
+          [",gun", ""],
+          [",halfinvert", ""],
+          [",hearts", ""],
+          [",infinity", ""],
+          [",invert", ""],
+          [",ipcam", ""],
+          [",knit", ""],
+          [",lamp", ""],
+          [",laundry", ""],
+          [",layers", ""],
+          [",letters", ""],
+          [",lines", ""],
+          [",liquefy", ""],
+          [",logoff", ""],
+          [",lsd", ""],
+          [",magnify", ""],
+          [",matrix", ""],
+          [",melt", ""],
+          [",neon", ""],
+          [",oogway", ""],
+          [",optics", ""],
+          [",painting", ""],
+          [",paparazzi", ""],
+          [",patpat", ""],
+          [",pattern", ""],
+          [",phase", ""],
+          [",phone", ""],
+          [",plank", ""],
+          [",plates", ""],
+          [",poly", ""],
+          [",pooh", ""],
+          [",print", ""],
+          [",pyramid", ""],
+          [",radiate", ""],
+          [",rain", ""],
+          [",reflection", ""],
+          [",ripped", ""],
+          [",sadcat", ""],
+          [",sensitive", ""],
+          [",shear", ""],
+          [",shine", ""],
+          [",shock", ""],
+          [",shred", ""],
+          [",slice", ""],
+          [",soap", ""],
+          [",spin", ""],
+          [",stereo", ""],
+          [",stretch", ""],
+          [",supreme", ""],
+          [",tiles", ""],
+          [",tunnel", ""],
+          [",tv", ""],
+          [",wall", ""],
+          [",wanted", ""],
+          [",warp", ""],
+          [",wiggle", ""],
+          [",zonk", ""],
+        ]
+      },
+      music: {
+        label: "Music",
+        description: "",
+        commands: [
+          [",247", ""],
+          [",automix", ""],
+          [",clearqueue", ""],
+          [",current", ""],
+          [",loop", ""],
+          [",pause", ""],
+          [",play", ""],
+          [",preset", ""],
+          [",queue", ""],
+          [",remove", ""],
+          [",resume", ""],
+          [",seek", ""],
+          [",shuffle", ""],
+          [",skip", ""],
+          [",stop", ""],
+          [",volume", ""],
+        ]
+      },
     };
 
     // Merge in any extra categories registered via global._helpExtraCategories (emotes, keto, securityv2, etc.)
-    const mergedCategories = { ...categoriess, ...(global._helpExtraCategories || {}) };
+    // Only the fixed 12 modules are shown — extra categories registered elsewhere
+    // (global._helpExtraCategories) are intentionally not merged in anymore; their
+    // underlying commands still work, they're just no longer listed here.
+    const mergedCategories = { ...categoriess };
     let mainContainer, msg;
     try {
       const visibleCategories = Object.entries(mergedCategories)
@@ -3471,7 +3589,7 @@ function _helpBuildCategoryContainer(cat, visibleCategories, currentKey) {
     .addSectionComponents(
       new SectionBuilder()
         .addTextDisplayComponents(
-          new TextDisplayBuilder().setContent(`## ${cat.label}\n-# ${cat.description}`)
+          new TextDisplayBuilder().setContent(cat.description ? `## ${cat.label}\n-# ${cat.description}` : `## ${cat.label}`)
         )
         .setThumbnailAccessory(new ThumbnailBuilder().setURL(client.user.displayAvatarURL()))
     )
@@ -3495,13 +3613,14 @@ function _helpBuildSelectRow(visibleCategories, currentKey) {
         .setDescription("Back to the overview")
         .setValue("home")
         .setDefault(currentKey === "home"),
-      ...visibleCategories.map(([key, cat]) =>
-        new StringSelectMenuOptionBuilder()
+      ...visibleCategories.map(([key, cat]) => {
+        const opt = new StringSelectMenuOptionBuilder()
           .setLabel(cat.label)
-          .setDescription(cat.description.slice(0, 100))
           .setValue(key)
-          .setDefault(currentKey === key)
-      ),
+          .setDefault(currentKey === key);
+        if (cat.description) opt.setDescription(cat.description.slice(0, 100));
+        return opt;
+      }),
     ]);
   return new ActionRowBuilder().addComponents(menu);
 }
@@ -4182,7 +4301,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,leaderboard / ,lb
-  if (command === "leaderboard" || command === "lb") {
+  if (command === "xplb") {
     const guildEntries = [...xpData.entries()]
       .filter(([k]) => k.startsWith(message.guild.id))
       .sort((a, b) => (b[1].level * 1000 + b[1].xp) - (a[1].level * 1000 + a[1].xp))
@@ -4633,7 +4752,7 @@ client.on("messageCreate", async (message) => {
     const username = lastfmUsers.get(target.id);
     if (!username) return err(message, `No Last.fm username set. Use \`,fm set <username>\``);
     try {
-      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=1`);
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${username}&api_key=${process.env.LASTFM_API_KEY || ""}&format=json&limit=1`);
       const data = await res.json();
       const track = data.recenttracks?.track?.[0];
       if (!track) return err(message, "No recent tracks found.");
@@ -4649,7 +4768,7 @@ client.on("messageCreate", async (message) => {
     const username = lastfmUsers.get(message.author.id);
     if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
     try {
-      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopartists&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopartists&user=${username}&api_key=${process.env.LASTFM_API_KEY || ""}&format=json&limit=10`);
       const data = await res.json();
       const artists = data.topartists?.artist;
       if (!artists) return err(message, "No data found.");
@@ -4663,7 +4782,7 @@ client.on("messageCreate", async (message) => {
     const username = lastfmUsers.get(message.author.id);
     if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
     try {
-      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${username}&api_key=${process.env.LASTFM_API_KEY || ""}&format=json&limit=10`);
       const data = await res.json();
       const tracks = data.toptracks?.track;
       if (!tracks) return err(message, "No data found.");
@@ -4677,7 +4796,7 @@ client.on("messageCreate", async (message) => {
     const username = lastfmUsers.get(message.author.id);
     if (!username) return err(message, "Set your Last.fm username first with `,fm set <username>`");
     try {
-      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopalbums&user=${username}&api_key=YOUR_LASTFM_KEY&format=json&limit=10`);
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.gettopalbums&user=${username}&api_key=${process.env.LASTFM_API_KEY || ""}&format=json&limit=10`);
       const data = await res.json();
       const albums = data.topalbums?.album;
       if (!albums) return err(message, "No data found.");
@@ -4692,7 +4811,7 @@ client.on("messageCreate", async (message) => {
     const username = lastfmUsers.get(target.id);
     if (!username) return err(message, "No Last.fm username set.");
     try {
-      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getinfo&user=${username}&api_key=YOUR_LASTFM_KEY&format=json`);
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getinfo&user=${username}&api_key=${process.env.LASTFM_API_KEY || ""}&format=json`);
       const data = await res.json();
       const user = data.user;
       if (!user) return err(message, "missing required argument: **user**");
@@ -6959,6 +7078,7 @@ const stickyMessages = new Map();    // channelId => { content, msgId }
 const bumpReminder = new Map();      // guildId => { channelId, lastBump, reminded }
 const joinToCreate = new Map();      // guildId => { triggerVcId, categoryId }
 const tempVoiceChannels = new Set(); // channelIds of temp vc
+const tempVoiceOwners = new Map();   // channelId => ownerUserId (for ,voicemaster)
 const confessions = new Map();       // guildId => channelId
 const appealConfig = new Map();      // guildId => channelId
 const medicConfig = new Map();       // guildId => { roleId }
@@ -7077,6 +7197,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
     }).catch(() => null);
     if (ch) {
       tempVoiceChannels.add(ch.id);
+      tempVoiceOwners.set(ch.id, newState.member.id);
       await newState.member.voice.setChannel(ch).catch(() => {});
     }
   }
@@ -7085,6 +7206,7 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
     if (oldState.channel.members.size === 0) {
       await oldState.channel.delete().catch(() => {});
       tempVoiceChannels.delete(oldState.channelId);
+      tempVoiceOwners.delete(oldState.channelId);
     }
   }
 });
@@ -18795,6 +18917,1277 @@ Object.assign(global._helpExtraCategories, {
       [",afklist", "List currently AFK members"],
     ]
   },
+});
+
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ══ MODULE PACK — Information, Moderation, Utility, Socials, Last.fm,    ══
+// ══ Security, Fun, Economy, Voice (163 new commands). Prefixed _gd.      ══
+// ══════════════════════════════════════════════════════════════════════════
+
+const avatarHistoryData = new Map();  // userId => [{url, ts}]
+const nameHistoryData = new Map();    // userId => [{name, ts, type: "username"|"nickname"}]
+const memberLeaveLog = new Map();     // guildId => [{userId, ts}]
+const roleRecoveryData = new Map();   // `${guildId}-${userId}` => [roleId, ...]
+// userTimezones already declared earlier in the file — reused as-is
+const antiSelfReactConfig = new Map(); // guildId => bool
+const lockedNicknames = new Map();     // `${guildId}-${userId}` => locked nickname (,fn)
+const imageOnlyChannels = new Map();   // channelId => bool
+const reactionSnipeCache = new Map();  // channelId => { emoji, userTag, ts, messageId }
+const userBios = new Map();            // userId => bio text
+const fakePermissions = new Map();      // guildId => Map(roleId => Set(permName))
+const honeypotChannels = new Map();     // channelId => guildId
+const securityIncidents = new Map();    // guildId => [{type, detail, ts}]
+const brainrotLocked = new Set();       // userIds
+const uwuLocked = new Set();            // userIds
+const userDiaries = new Map();          // userId => [{text, ts}]
+const bank = new Map();                 // userId => bank balance
+const loans = new Map();                // userId => { amount }
+const businesses = new Map();           // userId => [{name, boughtAt, lastCollect}]
+const txLedger = new Map();             // userId => [{type, amount, ts}]
+const dailyObjectives = new Map();      // `${userId}-${dateStr}` => [doneIndexes]
+const guildTax = new Map();              // guildId => percent
+
+const _brainrotWords = ["skibidi", "rizz", "gyatt", "fanum tax", "sigma", "no cap", "bussin", "ohio", "mewing", "sussy"];
+function _gdBrainrotify(text) {
+  const words = text.split(/\s+/);
+  return words.map(w => Math.random() < 0.35 ? `${w} ${_brainrotWords[Math.floor(Math.random() * _brainrotWords.length)]}` : w).join(" ") + " 💀";
+}
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild || message.content.startsWith(",")) return;
+    if (brainrotLocked.has(message.author.id)) {
+      await message.channel.send(`> ${_gdBrainrotify(message.content).slice(0, 1900)}`).catch(() => {});
+    } else if (uwuLocked.has(message.author.id)) {
+      const uwu = message.content.replace(/[rl]/g, "w").replace(/[RL]/g, "W") + " uwu";
+      await message.channel.send(`> ${uwu.slice(0, 1900)}`).catch(() => {});
+    }
+  } catch {}
+});
+
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild) return;
+    if (!honeypotChannels.has(message.channel.id)) return;
+    if (message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+    await message.delete().catch(() => {});
+    await message.member.ban({ reason: "[honeypot] interacted with trap channel" }).catch(() => {});
+    const list = securityIncidents.get(message.guild.id) || [];
+    list.push({ type: "Honeypot", detail: `banned ${message.author.username}`, ts: Date.now() });
+    securityIncidents.set(message.guild.id, list.slice(-100));
+  } catch {}
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  try {
+    if (!reaction.message.guild || user.bot) return;
+    reactionSnipeCache.set(reaction.message.channel.id, {
+      emoji: reaction.emoji.toString(), userTag: user.username, ts: Date.now(), messageId: reaction.message.id,
+    });
+  } catch {}
+});
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild) return;
+    if (message.content.startsWith(",")) return;
+    if (imageOnlyChannels.get(message.channel.id) && message.attachments.size === 0 && !/https?:\/\/\S+\.(png|jpe?g|gif|webp)/i.test(message.content)) {
+      if (message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+      await message.delete().catch(() => {});
+    }
+  } catch {}
+});
+
+client.on("userUpdate", (oldUser, newUser) => {
+  try {
+    if (oldUser.displayAvatarURL() !== newUser.displayAvatarURL()) {
+      const list = avatarHistoryData.get(newUser.id) || [];
+      list.unshift({ url: newUser.displayAvatarURL({ size: 512 }), ts: Date.now() });
+      avatarHistoryData.set(newUser.id, list.slice(0, 10));
+    }
+    if (oldUser.username !== newUser.username) {
+      const list = nameHistoryData.get(newUser.id) || [];
+      list.unshift({ name: oldUser.username, ts: Date.now(), type: "username" });
+      nameHistoryData.set(newUser.id, list.slice(0, 15));
+    }
+  } catch {}
+});
+client.on("guildMemberUpdate", (oldMember, newMember) => {
+  try {
+    if (oldMember.nickname !== newMember.nickname && oldMember.nickname) {
+      const list = nameHistoryData.get(newMember.id) || [];
+      list.unshift({ name: oldMember.nickname, ts: Date.now(), type: "nickname" });
+      nameHistoryData.set(newMember.id, list.slice(0, 15));
+    }
+    const lockedNick = lockedNicknames.get(`${newMember.guild.id}-${newMember.id}`);
+    if (lockedNick && newMember.nickname !== lockedNick) {
+      newMember.setNickname(lockedNick).catch(() => {});
+    }
+  } catch {}
+});
+client.on("guildMemberRemove", (member) => {
+  try {
+    const list = memberLeaveLog.get(member.guild.id) || [];
+    list.push({ userId: member.id, ts: Date.now() });
+    memberLeaveLog.set(member.guild.id, list.slice(-500));
+    roleRecoveryData.set(`${member.guild.id}-${member.id}`, member.roles.cache.filter(r => r.id !== member.guild.id).map(r => r.id));
+  } catch {}
+});
+client.on("messageReactionAdd", async (reaction, user) => {
+  try {
+    if (!reaction.message.guild) return;
+    if (!antiSelfReactConfig.get(reaction.message.guild.id)) return;
+    if (reaction.message.author?.id === user.id) await reaction.users.remove(user.id).catch(() => {});
+  } catch {}
+});
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  const rest = message.content.slice(1).trim().split(/ +/).slice(1).join(" ");
+
+  // ── INFORMATION ────────────────────────────────────────────────────────
+  if (command === "antiselfreact") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const sub = (args[1] || "").toLowerCase();
+    if (!["on", "off"].includes(sub)) return err(message, "missing required argument: **on/off**\nusage: `,antiselfreact <on|off>`");
+    antiSelfReactConfig.set(message.guild.id, sub === "on");
+    return ok(message, `Anti self-react **${sub === "on" ? "enabled" : "disabled"}**.`);
+  }
+  if (command === "avatarhistory") {
+    const target = message.mentions.users.first() || message.author;
+    const list = avatarHistoryData.get(target.id) || [];
+    if (!list.length) return ok(message, `No tracked avatar changes for **${target.username}** yet — history builds up from now on.`);
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Avatar History`, description: list.map((e, i) => `**${i + 1}.** <t:${Math.floor(e.ts / 1000)}:R>`).join("\n"), image: { url: list[0].url } }] });
+  }
+  if (command === "bible") {
+    if (!rest) return err(message, "missing required argument: **reference**\nusage: `,bible john 3:16`");
+    try {
+      const res = await fetch(`https://bible-api.com/${encodeURIComponent(rest)}`);
+      const data = await res.json();
+      if (!data.text) return err(message, "reference not found.");
+      return message.reply({ embeds: [{ color: PINK, title: data.reference, description: data.text.trim().slice(0, 3900) }] });
+    } catch { return err(message, "couldn't reach the Bible API right now."); }
+  }
+  if (command === "boomer") {
+    const lines = ["Back in my day we had to walk to school uphill both ways.", "Kids these days and their... whatever this is.", "I don't understand these newfangled emoji things.", "Ok boomer.", "Is this thing a Facebook?"];
+    return message.reply(lines[Math.floor(Math.random() * lines.length)]);
+  }
+  if (command === "churn") {
+    const list = (memberLeaveLog.get(message.guild.id) || []).filter(e => Date.now() - e.ts < 7 * 86400000);
+    const rate = message.guild.memberCount ? ((list.length / message.guild.memberCount) * 100).toFixed(2) : "0";
+    return message.reply({ embeds: [{ color: PINK, title: "Member Churn (7d)", description: `**${list.length}** member(s) left in the last 7 days\nChurn rate: **${rate}%** of current member count\n-# tracking started when this feature was added` }] });
+  }
+  if (command === "clearnames") {
+    const target = message.mentions.users.first() || message.author;
+    if (target.id !== message.author.id && !message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    nameHistoryData.delete(target.id);
+    return ok(message, `Cleared name history for **${target.username}**.`);
+  }
+  if (command === "funnel") {
+    await message.guild.members.fetch().catch(() => {});
+    const now = Date.now();
+    const buckets = { "Today": 0, "This week": 0, "This month": 0, "Older": 0 };
+    message.guild.members.cache.forEach(m => {
+      if (!m.joinedTimestamp) return;
+      const d = now - m.joinedTimestamp;
+      if (d < 86400000) buckets["Today"]++;
+      else if (d < 7 * 86400000) buckets["This week"]++;
+      else if (d < 30 * 86400000) buckets["This month"]++;
+      else buckets["Older"]++;
+    });
+    return message.reply({ embeds: [{ color: PINK, title: "Member Join Funnel", fields: Object.entries(buckets).map(([k, v]) => ({ name: k, value: `${v}`, inline: true })) }] });
+  }
+  if (command === "guild") {
+    const g = message.guild;
+    return message.reply({ embeds: [{ color: PINK, title: g.name, thumbnail: { url: g.iconURL({ size: 256 }) }, fields: [
+      { name: "Vanity", value: g.vanityURLCode ? `discord.gg/${g.vanityURLCode}` : "None", inline: true },
+      { name: "Features", value: g.features.length ? g.features.slice(0, 5).join(", ") : "None", inline: true },
+      { name: "NSFW Level", value: `${g.nsfwLevel}`, inline: true },
+      { name: "Locale", value: g.preferredLocale, inline: true },
+      { name: "Partnered", value: g.features.includes("PARTNERED") ? "Yes" : "No", inline: true },
+      { name: "Verified", value: g.features.includes("VERIFIED") ? "Yes" : "No", inline: true },
+    ] }] });
+  }
+  if (command === "guildstats") {
+    const g = message.guild;
+    await g.members.fetch().catch(() => {});
+    const bots = g.members.cache.filter(m => m.user.bot).size;
+    const humans = g.memberCount - bots;
+    const online = g.members.cache.filter(m => m.presence?.status && m.presence.status !== "offline").size;
+    return message.reply({ embeds: [{ color: PINK, title: `${g.name} Stats`, fields: [
+      { name: "Humans", value: `${humans}`, inline: true },
+      { name: "Bots", value: `${bots}`, inline: true },
+      { name: "Online (cached)", value: `${online}`, inline: true },
+      { name: "Text Channels", value: `${g.channels.cache.filter(c => c.type === 0).size}`, inline: true },
+      { name: "Voice Channels", value: `${g.channels.cache.filter(c => c.type === 2).size}`, inline: true },
+      { name: "Emojis", value: `${g.emojis.cache.size}`, inline: true },
+    ] }] });
+  }
+  if (command === "invite") {
+    if (!message.channel.permissionsFor(message.guild.members.me).has(PermissionFlagsBits.CreateInstantInvite)) return err(message, "I don't have permission to create invites here.");
+    const invite = await message.channel.createInvite({ maxAge: 86400, maxUses: 0, reason: `Requested by ${message.author.username}` }).catch(() => null);
+    if (!invite) return err(message, "couldn't create an invite for this channel.");
+    return message.reply(`https://discord.gg/${invite.code}\n-# expires in 24h`);
+  }
+  if (command === "namehistory") {
+    const target = message.mentions.users.first() || message.author;
+    const list = nameHistoryData.get(target.id) || [];
+    if (!list.length) return ok(message, `No tracked name changes for **${target.username}** yet.`);
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Name History`, description: list.map(e => `**${e.name}** (${e.type}) — <t:${Math.floor(e.ts / 1000)}:R>`).join("\n") }] });
+  }
+  if (command === "newusers") {
+    await message.guild.members.fetch().catch(() => {});
+    const recent = [...message.guild.members.cache.values()].filter(m => m.joinedTimestamp && Date.now() - m.joinedTimestamp < 172800000).sort((a, b) => b.joinedTimestamp - a.joinedTimestamp).slice(0, 20);
+    if (!recent.length) return ok(message, "No new members in the last 48 hours.");
+    return message.reply({ embeds: [{ color: PINK, title: "New Members (48h)", description: recent.map(m => `**${m.user.username}** — <t:${Math.floor(m.joinedTimestamp / 1000)}:R>`).join("\n") }] });
+  }
+  if (command === "ocr") {
+    const imgUrl = message.attachments.first()?.url || args[1];
+    if (!imgUrl) return err(message, "missing required argument: **image**\nusage: `,ocr` (with an attached image) or `,ocr <url>`");
+    try {
+      const key = process.env.OCR_SPACE_KEY || "helloworld";
+      const res = await fetch(`https://api.ocr.space/parse/imageurl?apikey=${key}&url=${encodeURIComponent(imgUrl)}`);
+      const data = await res.json();
+      const text = data?.ParsedResults?.[0]?.ParsedText?.trim();
+      if (!text) return err(message, "no text detected in that image.");
+      return message.reply({ embeds: [{ color: PINK, title: "OCR Result", description: text.slice(0, 3900) }] });
+    } catch { return err(message, "OCR service unavailable right now."); }
+  }
+  if (command === "quran") {
+    if (!args[1]) return err(message, "missing required argument: **reference**\nusage: `,quran 2:255`");
+    try {
+      const res = await fetch(`https://api.alquran.cloud/v1/ayah/${encodeURIComponent(args[1])}/en.asad`);
+      const data = await res.json();
+      if (data.code !== 200) return err(message, "reference not found.");
+      return message.reply({ embeds: [{ color: PINK, title: `Surah ${data.data.surah.englishName} ${data.data.numberInSurah}`, description: data.data.text.slice(0, 3900) }] });
+    } catch { return err(message, "couldn't reach the Quran API right now."); }
+  }
+  if (command === "recover") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,recover <user>`");
+    const roleIds = roleRecoveryData.get(`${message.guild.id}-${target.id}`) || [];
+    if (!roleIds.length) return ok(message, "no saved roles found for that member.");
+    let restored = 0;
+    for (const rid of roleIds) {
+      const role = message.guild.roles.cache.get(rid);
+      if (role) { await target.roles.add(role).catch(() => {}); restored++; }
+    }
+    return ok(message, `restored **${restored}** role(s) to **${target.user.username}**.`);
+  }
+  if (command === "schedule") {
+    const events = await message.guild.scheduledEvents.fetch().catch(() => null);
+    if (!events || !events.size) return ok(message, "no scheduled events found.");
+    const lines = [...events.values()].map(e => `**${e.name}** — <t:${Math.floor(e.scheduledStartTimestamp / 1000)}:R>`);
+    return message.reply({ embeds: [{ color: PINK, title: "Scheduled Events", description: lines.join("\n") }] });
+  }
+  if (command === "serveravatar") {
+    const url = message.guild.iconURL({ size: 1024 });
+    if (!url) return ok(message, "this server has no icon set.");
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name}'s Icon`, image: { url } }] });
+  }
+  if (command === "serverinvites") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const invites = await message.guild.invites.fetch().catch(() => null);
+    if (!invites || !invites.size) return ok(message, "no active invites.");
+    const lines = [...invites.values()].slice(0, 20).map(i => `**${i.code}** — ${i.uses ?? 0} uses, by ${i.inviter?.username ?? "unknown"}`);
+    return message.reply({ embeds: [{ color: PINK, title: `Active Invites (${invites.size})`, description: lines.join("\n") }] });
+  }
+  if (command === "sets") {
+    const jtc = joinToCreate.get(message.guild.id);
+    const fc = filterConfig.get(message.guild.id);
+    return message.reply({ embeds: [{ color: PINK, title: "Server Settings Overview", fields: [
+      { name: "Verification Level", value: `${message.guild.verificationLevel}`, inline: true },
+      { name: "Content Filter", value: `${message.guild.explicitContentFilter}`, inline: true },
+      { name: "Word Filter", value: fc?.enabled ? "On" : "Off", inline: true },
+      { name: "Join to Create", value: jtc ? "Configured" : "Not set up", inline: true },
+      { name: "Antinuke", value: antinukeConfig.get(message.guild.id)?.enabled ? "On" : "Off", inline: true },
+      { name: "Antiraid", value: antiraidConfig.get(message.guild.id)?.enabled ? "On" : "Off", inline: true },
+    ] }] });
+  }
+  if (command === "timezone") {
+    const sub = (args[1] || "").toLowerCase();
+    if (sub === "set") {
+      const tz = args[2];
+      if (!tz) return err(message, "missing required argument: **timezone**\nusage: `,timezone set Europe/Rome`");
+      try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch { return err(message, "invalid IANA timezone (e.g. `Europe/Rome`, `America/New_York`)."); }
+      userTimezones.set(message.author.id, tz);
+      return ok(message, `Timezone set to **${tz}**.`);
+    }
+    const target = message.mentions.users.first() || message.author;
+    const tz = userTimezones.get(target.id);
+    if (!tz) return ok(message, `**${target.username}** hasn't set a timezone. Use \`,timezone set <tz>\`.`);
+    const time = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: true, weekday: "short" }).format(new Date());
+    return info(message, `**${target.username}**'s time: **${time}** (${tz})`);
+  }
+  if (command === "urbandictionary" || command === "urban") {
+    if (!rest) return err(message, "missing required argument: **term**\nusage: `,urbandictionary <term>`");
+    try {
+      const res = await fetch(`https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(rest)}`);
+      const data = await res.json();
+      const def = data?.list?.[0];
+      if (!def) return err(message, "no definition found.");
+      return message.reply({ embeds: [{ color: PINK, title: def.word, description: `${def.definition.slice(0, 1800).replace(/[\[\]]/g, "")}\n\n*${def.example.slice(0, 500).replace(/[\[\]]/g, "")}*` }] });
+    } catch { return err(message, "couldn't reach Urban Dictionary right now."); }
+  }
+  if (command === "vote") {
+    return message.reply({ embeds: [{ color: PINK, title: "Vote", description: "Voting links aren't configured for this bot yet — ask a server admin to set one up." }] });
+  }
+
+  // ── MODERATION ─────────────────────────────────────────────────────────
+  if (command === "approvals") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    await message.guild.members.fetch().catch(() => {});
+    const pending = message.guild.members.cache.filter(m => m.pending);
+    if (!pending.size) return ok(message, "no pending membership screening approvals.");
+    return message.reply({ embeds: [{ color: PINK, title: `Pending Approvals (${pending.size})`, description: [...pending.values()].slice(0, 30).map(m => `${m.user.username}`).join("\n") }] });
+  }
+  if (command === "botclear") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const amount = Math.min(parseInt(args[1]) || 50, 100);
+    const msgs = await message.channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!msgs) return err(message, "couldn't fetch messages.");
+    const botMsgs = [...msgs.filter(m => m.author.bot).values()].slice(0, amount);
+    if (!botMsgs.length) return ok(message, "no bot messages found in the last 100.");
+    await message.channel.bulkDelete(botMsgs, true).catch(() => {});
+    return ok(message, `cleared **${botMsgs.length}** bot message(s).`);
+  }
+  if (command === "denyperm") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const target = message.mentions.roles.first() || message.mentions.members.first();
+    const permName = args[args.length - 1];
+    if (!target || !permName || !(permName in PermissionFlagsBits)) return err(message, "missing required argument: **@role/@user** and **permission**\nusage: `,denyperm @role SendMessages`");
+    await message.channel.permissionOverwrites.edit(target, { [permName]: false }).catch(() => null);
+    return ok(message, `denied **${permName}** for ${target.toString ? target.toString() : target.name} in this channel.`);
+  }
+  if (command === "fn") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageNicknames)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,fn <user> <nickname>` (omit nickname to unlock)");
+    const nick = args.slice(2).join(" ");
+    if (!nick) {
+      lockedNicknames.delete(`${message.guild.id}-${target.id}`);
+      return ok(message, `nickname unlocked for **${target.user.username}**.`);
+    }
+    await target.setNickname(nick).catch(() => null);
+    lockedNicknames.set(`${message.guild.id}-${target.id}`, nick);
+    return ok(message, `forced nickname **${nick}** on **${target.user.username}** (locked — they can't change it).`);
+  }
+  if (command === "modhistory") {
+    const target = message.mentions.users.first() || await client.users.fetch(args[1]).catch(() => null) || message.author;
+    const list = warns.get(`${message.guild.id}-${target.id}`) || [];
+    if (!list.length) return ok(message, `**${target.username}** has no moderation history.`);
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Mod History`, description: list.map((w, i) => `**#${i + 1}** ${w.reason} — by ${w.mod} (${w.date})`).join("\n") }] });
+  }
+  if (command === "modstats") {
+    const target = message.mentions.users.first() || message.author;
+    let count = 0;
+    for (const [key, list] of warns.entries()) {
+      if (!key.startsWith(message.guild.id)) continue;
+      count += list.filter(w => w.mod === target.username).length;
+    }
+    return info(message, `**${target.username}** has issued **${count}** warning(s) in this server.`);
+  }
+  if (command === "picperms") {
+    const target = message.mentions.members.first() || message.mentions.roles.first() || message.member;
+    const perms = message.channel.permissionsFor(target);
+    if (!perms) return err(message, "couldn't resolve permissions for that target here.");
+    const allowed = perms.toArray();
+    return message.reply({ embeds: [{ color: PINK, title: `Channel Permissions — #${message.channel.name}`, description: allowed.length ? allowed.join(", ") : "None" }] });
+  }
+  if (command === "protect") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first() || message.mentions.roles.first();
+    if (!target) return err(message, "missing required argument: **@user/@role**\nusage: `,protect <@user|@role>`");
+    const cfg = antinukeConfig.get(message.guild.id) || { whitelist: new Set() };
+    if (!cfg.whitelist) cfg.whitelist = new Set();
+    if (cfg.whitelist.has(target.id)) { cfg.whitelist.delete(target.id); antinukeConfig.set(message.guild.id, cfg); return ok(message, `**${target.username ?? target.name}** removed from antinuke protection.`); }
+    cfg.whitelist.add(target.id);
+    antinukeConfig.set(message.guild.id, cfg);
+    return ok(message, `**${target.username ?? target.name}** is now protected from antinuke actions.`);
+  }
+  if (command === "reveal") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    await ch.permissionOverwrites.edit(message.guild.id, { ViewChannel: null }).catch(() => null);
+    return ok(message, `revealed **#${ch.name}** to @everyone.`);
+  }
+  if (command === "rmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,rmute <@role>`");
+    const mr = muteRole.get(message.guild.id);
+    if (!mr) return err(message, "no mute role configured — use `,setupmute` first.");
+    await message.guild.members.fetch().catch(() => {});
+    let n = 0;
+    for (const m of role.members.values()) { await m.roles.add(mr).catch(() => {}); n++; }
+    return ok(message, `muted **${n}** member(s) with role **${role.name}**.`);
+  }
+  if (command === "runmute") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
+    const role = message.mentions.roles.first();
+    if (!role) return err(message, "missing required argument: **role**\nusage: `,runmute <@role>`");
+    const mr = muteRole.get(message.guild.id);
+    if (!mr) return err(message, "no mute role configured.");
+    await message.guild.members.fetch().catch(() => {});
+    let n = 0;
+    for (const m of role.members.values()) { if (m.roles.cache.has(mr)) { await m.roles.remove(mr).catch(() => {}); n++; } }
+    return ok(message, `unmuted **${n}** member(s) with role **${role.name}**.`);
+  }
+  if (command === "selfpurge") {
+    const amount = Math.min(parseInt(args[1]) || 10, 100);
+    const msgs = await message.channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!msgs) return err(message, "couldn't fetch messages.");
+    const own = [...msgs.filter(m => m.author.id === message.author.id).values()].slice(0, amount);
+    await message.channel.bulkDelete(own, true).catch(() => {});
+    return ok(message, `deleted **${own.length}** of your own message(s).`);
+  }
+  if (command === "sfw") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    if (ch.type !== 0) return err(message, "that's not a text channel.");
+    await ch.setNSFW(false).catch(() => null);
+    return ok(message, `**#${ch.name}** marked as SFW.`);
+  }
+  if (command === "staffstrip") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.members.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,staffstrip <user>`");
+    const staffPerms = [PermissionFlagsBits.Administrator, PermissionFlagsBits.BanMembers, PermissionFlagsBits.KickMembers, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ModerateMembers];
+    const toRemove = target.roles.cache.filter(r => staffPerms.some(p => r.permissions.has(p)) && r.id !== message.guild.id);
+    for (const r of toRemove.values()) await target.roles.remove(r).catch(() => {});
+    return ok(message, `stripped **${toRemove.size}** staff role(s) from **${target.user.username}**.`);
+  }
+
+  // ── UTILITY ────────────────────────────────────────────────────────────
+  if (command === "ai") {
+    if (!rest) return err(message, "missing required argument: **prompt**\nusage: `,ai <prompt>`");
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) return err(message, "no AI provider configured — an admin needs to set the `ANTHROPIC_API_KEY` environment variable.");
+    try {
+      await message.channel.sendTyping().catch(() => {});
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 600, messages: [{ role: "user", content: rest }] }),
+      });
+      const data = await res.json();
+      const text = data?.content?.map(c => c.text || "").join("").trim();
+      if (!text) return err(message, "the AI didn't return a response.");
+      return message.reply(_ecTruncate(text, 1900));
+    } catch { return err(message, "AI request failed."); }
+  }
+  if (command === "bumpreminder") {
+    const ch = message.mentions.channels.first();
+    if (ch) {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+      const existing = bumpReminder.get(message.guild.id) || {};
+      existing.channelId = ch.id;
+      bumpReminder.set(message.guild.id, existing);
+      return ok(message, `bump reminders will post in **#${ch.name}**.`);
+    }
+    const configured = bumpReminder.get(message.guild.id)?.channelId;
+    return info(message, configured ? `bump reminders are set to <#${configured}>.` : "bump reminders aren't configured — use `,bumpreminder #channel`.");
+  }
+  if (command === "copyembed") {
+    const msgId = args[1];
+    if (!msgId) return err(message, "missing required argument: **message ID**\nusage: `,copyembed <messageId>`");
+    const target = await message.channel.messages.fetch(msgId).catch(() => null);
+    if (!target || !target.embeds.length) return err(message, "message not found or has no embed.");
+    const json = JSON.stringify(target.embeds[0].toJSON(), null, 2);
+    return message.reply({ content: `\`\`\`json\n${json.slice(0, 1900)}\n\`\`\`` });
+  }
+  if (command === "createembed") {
+    const parts = rest.split("|").map(s => s.trim());
+    if (!parts[0]) return err(message, "missing required argument: **title**\nusage: `,createembed title | description`");
+    return message.channel.send({ embeds: [{ color: PINK, title: parts[0], description: parts[1] || undefined }] });
+  }
+  if (command === "crypto") {
+    const coinMap = { btc: "bitcoin", eth: "ethereum", sol: "solana", doge: "dogecoin", ltc: "litecoin", xrp: "ripple", ada: "cardano", bnb: "binancecoin" };
+    const coin = coinMap[(args[1] || "").toLowerCase()] || (args[1] || "").toLowerCase();
+    if (!args[1]) return err(message, "missing required argument: **coin**\nusage: `,crypto btc`");
+    try {
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coin)}&vs_currencies=usd&include_24hr_change=true`);
+      const data = await res.json();
+      const info_ = data[coin];
+      if (!info_) return err(message, "coin not found.");
+      const change = info_.usd_24h_change;
+      return message.reply({ embeds: [{ color: PINK, title: coin.toUpperCase(), description: `**$${info_.usd.toLocaleString()}**\n24h: ${change >= 0 ? "+" : ""}${change?.toFixed(2)}%` }] });
+    } catch { return err(message, "couldn't reach CoinGecko right now."); }
+  }
+  if (command === "fortnite") {
+    const key = process.env.FORTNITE_API_KEY;
+    if (!key) return err(message, "no Fortnite API key configured — an admin needs to set `FORTNITE_API_KEY`.");
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,fortnite <username>`");
+    try {
+      const res = await fetch(`https://fortnite-api.com/v2/stats/br/v2?name=${encodeURIComponent(args[1])}`, { headers: { Authorization: key } });
+      const data = await res.json();
+      if (!data?.data) return err(message, "player not found.");
+      const s = data.data.stats?.all?.overall;
+      return message.reply({ embeds: [{ color: PINK, title: data.data.account.name, fields: [
+        { name: "Wins", value: `${s?.wins ?? 0}`, inline: true }, { name: "K/D", value: `${s?.kd ?? 0}`, inline: true }, { name: "Matches", value: `${s?.matches ?? 0}`, inline: true },
+      ] }] });
+    } catch { return err(message, "couldn't reach the Fortnite API right now."); }
+  }
+  if (command === "imageonly") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+    const ch = message.mentions.channels.first() || message.channel;
+    const cur = imageOnlyChannels.get(ch.id);
+    imageOnlyChannels.set(ch.id, !cur);
+    return ok(message, `image-only mode **${!cur ? "enabled" : "disabled"}** in **#${ch.name}**.`);
+  }
+  if (command === "pypi") {
+    if (!args[1]) return err(message, "missing required argument: **package**\nusage: `,pypi requests`");
+    try {
+      const res = await fetch(`https://pypi.org/pypi/${encodeURIComponent(args[1])}/json`);
+      if (!res.ok) return err(message, "package not found.");
+      const data = await res.json();
+      const i = data.info;
+      return message.reply({ embeds: [{ color: PINK, title: `${i.name} ${i.version}`, description: (i.summary || "No description").slice(0, 300), fields: [
+        { name: "Author", value: i.author || "Unknown", inline: true }, { name: "License", value: i.license || "Unknown", inline: true },
+      ], url: i.project_url || i.home_page || undefined }] });
+    } catch { return err(message, "couldn't reach PyPI right now."); }
+  }
+  if (command === "reactionsnipe" || command === "rs") {
+    const data = reactionSnipeCache.get(message.channel.id);
+    if (!data) return ok(message, "no removed reactions to snipe.");
+    return message.reply({ embeds: [{ color: PINK, description: `${data.emoji} removed by **${data.userTag}** — <t:${Math.floor(data.ts / 1000)}:R>`, footer: { text: "on message " + data.messageId } }] });
+  }
+  if (command === "sticker") {
+    if (!args[1]) return err(message, "missing required argument: **name**\nusage: `,sticker <name>`");
+    const st = message.guild.stickers.cache.find(s => s.name.toLowerCase() === args.slice(1).join(" ").toLowerCase());
+    if (!st) return err(message, "sticker not found — check `,stickerlist`.");
+    return message.channel.send({ stickers: [st.id] });
+  }
+  if (command === "timer") {
+    const timeStr = args[1];
+    const label = args.slice(2).join(" ") || "Timer";
+    if (!timeStr) return err(message, "missing required argument: **time**\nusage: `,timer 5m Break time`");
+    const match = timeStr.match(/^(\d+)(s|m|h)$/);
+    if (!match) return err(message, "invalid time format — use `30s`, `5m`, `2h`");
+    const units = { s: 1000, m: 60000, h: 3600000 };
+    const ms = parseInt(match[1]) * units[match[2]];
+    if (ms > 86400000) return err(message, "keep timers under 24h.");
+    ok(message, `⏱️ Timer set for **${timeStr}** — I'll ping you here when it's done.`);
+    setTimeout(() => { message.channel.send(`${message.author} ⏰ **${label}** — time's up!`).catch(() => {}); }, ms);
+    return;
+  }
+
+  // ── SOCIALS ────────────────────────────────────────────────────────────
+  if (command === "bio") {
+    const sub = (args[1] || "").toLowerCase();
+    if (sub === "set") {
+      const text = args.slice(2).join(" ");
+      if (!text) return err(message, "missing required argument: **text**\nusage: `,bio set <text>`");
+      if (text.length > 200) return err(message, "keep your bio under 200 characters.");
+      userBios.set(message.author.id, text);
+      return ok(message, "bio updated.");
+    }
+    const target = message.mentions.users.first() || message.author;
+    const bio = userBios.get(target.id);
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Bio`, description: bio || "*no bio set*" }] });
+  }
+  if (command === "github") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,github <username>`");
+    try {
+      const res = await fetch(`https://api.github.com/users/${encodeURIComponent(args[1])}`);
+      if (!res.ok) return err(message, "GitHub user not found.");
+      const d = await res.json();
+      return message.reply({ embeds: [{ color: PINK, title: d.login, url: d.html_url, thumbnail: { url: d.avatar_url }, description: d.bio || "", fields: [
+        { name: "Repos", value: `${d.public_repos}`, inline: true }, { name: "Followers", value: `${d.followers}`, inline: true }, { name: "Following", value: `${d.following}`, inline: true },
+      ] }] });
+    } catch { return err(message, "couldn't reach GitHub right now."); }
+  }
+  if (command === "instagram" || command === "ig") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,instagram <username>`");
+    return message.reply({ embeds: [{ color: PINK, title: `@${args[1]}`, url: `https://instagram.com/${args[1]}`, description: "Full profile stats need Instagram API access, which isn't configured — here's a direct link." }] });
+  }
+  if (command === "kicklive") {
+    if (!args[1]) return err(message, "missing required argument: **channel**\nusage: `,kicklive <channel>`");
+    try {
+      const res = await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(args[1])}`);
+      if (!res.ok) return err(message, "channel not found or Kick API unavailable.");
+      const d = await res.json();
+      const live = d?.livestream != null;
+      return message.reply({ embeds: [{ color: PINK, title: d.user?.username ?? args[1], url: `https://kick.com/${args[1]}`, description: live ? `🔴 **LIVE** — ${d.livestream?.session_title ?? ""}` : "⚫ Offline" }] });
+    } catch { return err(message, "couldn't reach Kick right now."); }
+  }
+  if (command === "league") {
+    if (!args[1]) return err(message, "missing required argument: **summoner name**\nusage: `,league <name>`");
+    if (!process.env.RIOT_API_KEY) return message.reply({ embeds: [{ color: PINK, title: args[1], description: "Full stats need a Riot API key, which isn't configured on this bot." }] });
+    return err(message, "League lookup isn't fully configured yet.");
+  }
+  if (command === "minecraft" || command === "mc") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,minecraft <username>`");
+    try {
+      const res = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(args[1])}`);
+      if (!res.ok) return err(message, "Minecraft account not found.");
+      const d = await res.json();
+      const uuid = d.id;
+      return message.reply({ embeds: [{ color: PINK, title: d.name, thumbnail: { url: `https://mc-heads.net/avatar/${uuid}/128` }, description: `UUID: \`${uuid}\`` }] });
+    } catch { return err(message, "couldn't reach the Mojang API right now."); }
+  }
+  if (command === "pinterest") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,pinterest <username>`");
+    return message.reply({ embeds: [{ color: PINK, title: `@${args[1]}`, url: `https://pinterest.com/${args[1]}`, description: "No key-free Pinterest API is available — here's a direct link." }] });
+  }
+  if (command === "roblox") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,roblox <username>`");
+    try {
+      const res = await fetch("https://users.roblox.com/v1/usernames/users", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usernames: [args[1]], excludeBannedUsers: false }),
+      });
+      const data = await res.json();
+      const u = data?.data?.[0];
+      if (!u) return err(message, "Roblox user not found.");
+      return message.reply({ embeds: [{ color: PINK, title: u.name, url: `https://www.roblox.com/users/${u.id}/profile`, thumbnail: { url: `https://www.roblox.com/headshot-thumbnail/image?userId=${u.id}&width=150&height=150&format=png` }, description: `ID: \`${u.id}\`` }] });
+    } catch { return err(message, "couldn't reach the Roblox API right now."); }
+  }
+  if (command === "rolimons") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,rolimons <username>`");
+    try {
+      const res = await fetch("https://users.roblox.com/v1/usernames/users", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usernames: [args[1]], excludeBannedUsers: false }),
+      });
+      const data = await res.json();
+      const u = data?.data?.[0];
+      if (!u) return err(message, "Roblox user not found.");
+      return message.reply(`https://www.rolimons.com/player/${u.id}`);
+    } catch { return err(message, "couldn't resolve that Roblox username."); }
+  }
+  if (command === "soundcloud" || command === "sc") {
+    if (!rest) return err(message, "missing required argument: **query**\nusage: `,soundcloud <search>`");
+    return message.reply(`https://soundcloud.com/search?q=${encodeURIComponent(rest)}`);
+  }
+  if (command === "tiktok") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,tiktok <username>`");
+    return message.reply({ embeds: [{ color: PINK, title: `@${args[1]}`, url: `https://tiktok.com/@${args[1]}`, description: "Full profile stats need TikTok API access, which isn't configured — here's a direct link." }] });
+  }
+  if (command === "twitch") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,twitch <username>`");
+    if (process.env.TWITCH_CLIENT_ID && process.env.TWITCH_CLIENT_SECRET) {
+      return err(message, "Twitch lookup isn't fully wired up yet despite having credentials configured.");
+    }
+    return message.reply({ embeds: [{ color: PINK, title: args[1], url: `https://twitch.tv/${args[1]}`, description: "Live status needs Twitch API credentials, which aren't configured — here's a direct link." }] });
+  }
+  if (command === "valorant" || command === "val") {
+    if (!args[1]) return err(message, "missing required argument: **name#tag**\nusage: `,valorant <name#tag>`");
+    return message.reply({ embeds: [{ color: PINK, title: args[1], description: "Valorant stats need a Riot API key, which isn't configured on this bot." }] });
+  }
+  if (command === "x" || command === "twitter") {
+    if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,x <username>`");
+    return message.reply(`https://x.com/${args[1]}`);
+  }
+
+  // ── LAST.FM ────────────────────────────────────────────────────────────
+  if (command === "lastfm") {
+    const target = message.mentions.users.first() || message.author;
+    const username = lastfmUsers.get(target.id);
+    if (!username) return err(message, `No Last.fm username set. Use \`,fm set <username>\``);
+    if (!process.env.LASTFM_API_KEY) return err(message, "no Last.fm API key configured — an admin needs to set `LASTFM_API_KEY`.");
+    try {
+      const res = await fetch(`https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${encodeURIComponent(username)}&api_key=${process.env.LASTFM_API_KEY}&format=json&limit=1`);
+      const data = await res.json();
+      const track = data.recenttracks?.track?.[0];
+      if (!track) return err(message, "no recent tracks found.");
+      const isPlaying = track["@attr"]?.nowplaying === "true";
+      return message.reply({ embeds: [{ color: PINK, author: { name: `${isPlaying ? "Now Playing" : "Last Played"} — ${username}`, icon_url: target.displayAvatarURL() }, title: track.name, description: `by **${track.artist["#text"]}** on *${track.album["#text"]}*`, thumbnail: { url: track.image?.[2]?.["#text"] || "" } }] });
+    } catch { return err(message, "couldn't reach Last.fm right now."); }
+  }
+  if (command === "lyrics") {
+    if (!rest) return err(message, "missing required argument: **song**\nusage: `,lyrics <song title>`");
+    return message.reply({ embeds: [{ color: PINK, title: `Lyrics search: ${rest}`, description: `I can't reproduce lyrics directly (copyright), but here's a search link:\nhttps://genius.com/search?q=${encodeURIComponent(rest)}` }] });
+  }
+
+  // ── SECURITY ───────────────────────────────────────────────────────────
+  if (command === "fakepermissions" || command === "fakeperms") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const sub = (args[1] || "").toLowerCase();
+    const role = message.mentions.roles.first();
+    const permName = args[3];
+    if (sub === "add") {
+      if (!role || !permName) return err(message, "missing required argument: **@role** and **permission**\nusage: `,fakepermissions add @role permissionName`");
+      const guildMap = fakePermissions.get(message.guild.id) || new Map();
+      const set = guildMap.get(role.id) || new Set();
+      set.add(permName);
+      guildMap.set(role.id, set);
+      fakePermissions.set(message.guild.id, guildMap);
+      return ok(message, `granted fake permission **${permName}** to **${role.name}**.`);
+    }
+    if (sub === "remove") {
+      const guildMap = fakePermissions.get(message.guild.id);
+      guildMap?.get(role?.id)?.delete(permName);
+      return ok(message, `removed fake permission **${permName}** from **${role?.name}**.`);
+    }
+    const guildMap = fakePermissions.get(message.guild.id);
+    if (!guildMap || !guildMap.size) return ok(message, "no fake permissions configured.");
+    const lines = [...guildMap.entries()].map(([rid, set]) => `<@&${rid}> — ${[...set].join(", ")}`);
+    return message.reply({ embeds: [{ color: PINK, title: "Fake Permissions", description: lines.join("\n") }] });
+  }
+  if (command === "honeypot") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const sub = (args[1] || "setup").toLowerCase();
+    if (sub === "setup") {
+      const ch = await message.guild.channels.create({
+        name: "free-nitro", type: 0, reason: "[honeypot]",
+        permissionOverwrites: [{ id: message.guild.id, allow: [PermissionFlagsBits.ViewChannel], deny: [] }],
+      }).catch(() => null);
+      if (!ch) return err(message, "couldn't create the honeypot channel.");
+      honeypotChannels.set(ch.id, message.guild.id);
+      return ok(message, `honeypot channel created: **#${ch.name}**. Anyone (non-staff) who posts there gets banned instantly.`);
+    }
+    if (sub === "remove" || sub === "off") {
+      for (const [chId, gId] of honeypotChannels.entries()) {
+        if (gId === message.guild.id) { honeypotChannels.delete(chId); await message.guild.channels.cache.get(chId)?.delete().catch(() => {}); }
+      }
+      return ok(message, "honeypot removed.");
+    }
+    return err(message, "usage: `,honeypot setup` or `,honeypot remove`");
+  }
+  if (command === "incidents") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
+    const list = (securityIncidents.get(message.guild.id) || []).slice(-15).reverse();
+    if (!list.length) return ok(message, "no security incidents logged.");
+    return message.reply({ embeds: [{ color: PINK, title: "Recent Security Incidents", description: list.map(i => `**${i.type}** — ${i.detail} — <t:${Math.floor(i.ts / 1000)}:R>`).join("\n") }] });
+  }
+  if (command === "panic") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const textChannels = message.guild.channels.cache.filter(c => c.type === 0);
+    let locked = 0;
+    for (const ch of textChannels.values()) {
+      await ch.permissionOverwrites.edit(message.guild.id, { SendMessages: false }).catch(() => {});
+      locked++;
+    }
+    const list = securityIncidents.get(message.guild.id) || [];
+    list.push({ type: "Panic", detail: `triggered by ${message.author.username}`, ts: Date.now() });
+    securityIncidents.set(message.guild.id, list.slice(-100));
+    return ok(message, `🚨 panic mode: locked **${locked}** channel(s). Use \`,lockdown off\`-style commands per channel to restore, or \`,unlockdown\`.`);
+  }
+
+  // ── FUN ────────────────────────────────────────────────────────────────
+  function _gdAction(verb, emoji) {
+    const target = message.mentions.users.first();
+    const desc = target
+      ? (target.id === message.author.id ? `**${message.author.username}** ${verb}s themselves ${emoji}` : `**${message.author.username}** ${verb}s **${target.username}** ${emoji}`)
+      : `**${message.author.username}** ${verb}s the air ${emoji}`;
+    return message.reply({ embeds: [{ color: PINK, description: desc }] });
+  }
+  const actionMap = {
+    bite: ["bites", "🦷"], cuddle: ["cuddles", "🥰"], feed: ["feeds", "🍰"], handhold: ["holds hands with", "🤝"],
+    handshake: ["shakes hands with", "🤝"], highfive: ["high-fives", "🖐️"], hug: ["hugs", "🤗"], kiss: ["kisses", "😘"],
+    nod: ["nods at", "😌"], pat: ["pats", "🫳"], peck: ["pecks", "😙"], poke: ["pokes", "👉"], punch: ["punches", "👊"],
+    slap: ["slaps", "✋"], tickle: ["tickles", "🤭"], wave: ["waves at", "👋"], nutkick: ["kicks", "🥾"],
+    spank: ["spanks", "✋"], stare: ["stares at", "👀"], shoot: ["shoots", "🔫"],
+  };
+  if (actionMap[command]) {
+    const [verb, emoji] = actionMap[command];
+    return _gdAction(verb, emoji);
+  }
+  const soloMap = {
+    facepalm: ["facepalms", "🤦"], think: ["is thinking...", "🤔"], shrug: ["shrugs", "🤷"], smug: ["looks smug", "😏"],
+    taps: ["taps their foot impatiently", "🦶"], yawn: ["yawns", "🥱"], cry: ["is crying", "😢"], laugh: ["is laughing", "😂"],
+    happy: ["is happy", "😄"], angry: ["is angry", "😠"], blush: ["is blushing", "😳"], smile: ["is smiling", "😊"],
+    sleep: ["is sleeping", "😴"], smoke: ["is smoking", "🚬"], vape: ["is vaping", "💨"], run: ["is running away", "🏃"],
+    lurk: ["is now lurking", "👁️"], pout: ["is pouting", "😤"], thumbsup: ["gives a thumbs up", "👍"], bored: ["is bored", "🥱"],
+  };
+  if (soloMap[command]) {
+    const [verb, emoji] = soloMap[command];
+    return message.reply({ embeds: [{ color: PINK, description: `**${message.author.username}** ${verb} ${emoji}` }] });
+  }
+  if (command === "spark") {
+    return message.reply(`✨ **${message.author.username}** sparks up the conversation!`);
+  }
+  if (command === "wink") {
+    const target = message.mentions.users.first();
+    return message.reply({ embeds: [{ color: PINK, description: target ? `**${message.author.username}** winks at **${target.username}** 😉` : `**${message.author.username}** winks 😉` }] });
+  }
+  if (command === "yeet") {
+    const target = message.mentions.users.first();
+    return message.reply({ embeds: [{ color: PINK, description: target ? `**${message.author.username}** yeets **${target.username}** into the sun! 🚀` : `**${message.author.username}** yeets themselves into the sun! 🚀` }] });
+  }
+  if (command === "baka") {
+    const target = message.mentions.users.first();
+    return message.reply(target ? `**${target.username}**, b-baka! It's not like I like you or anything! 😳` : "b-baka!! 😳");
+  }
+  if (command === "bitches") {
+    const lines = ["ain't got time for that.", "be like that sometimes.", "love drama, apparently.", "never text back first."];
+    return message.reply(`${lines[Math.floor(Math.random() * lines.length)]}`);
+  }
+  // ,birthday already handled by the existing command elsewhere
+  if (command === "blacktea") {
+    const letterPairs = ["TH", "ST", "CH", "BR", "GR", "SP", "TR", "PL"];
+    const pair = letterPairs[Math.floor(Math.random() * letterPairs.length)];
+    return message.reply({ embeds: [{ color: PINK, title: "🍵 Black Tea", description: `Name a word containing **${pair}**! First correct reply wins (self-judged, no timer enforced).` }] });
+  }
+  if (command === "brainrotlock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,brainrotlock <user>`");
+    const cur = brainrotLocked.has(target.id);
+    if (cur) { brainrotLocked.delete(target.id); return ok(message, `brainrot-lock removed from **${target.username}**.`); }
+    brainrotLocked.add(target.id);
+    return ok(message, `**${target.username}** is now brainrot-locked (their messages get echoed back translated 💀).`);
+  }
+  if (command === "uwulock") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,uwulock <user>`");
+    const cur = uwuLocked.has(target.id);
+    if (cur) { uwuLocked.delete(target.id); return ok(message, `uwu-lock removed from **${target.username}**.`); }
+    uwuLocked.add(target.id);
+    return ok(message, `**${target.username}** is now uwu-locked (their messages get echoed back uwu'd 🥺).`);
+  }
+  if (command === "uwuify") {
+    if (!rest) return err(message, "missing required argument: **text**\nusage: `,uwuify <text>`");
+    const out = rest.replace(/[rl]/g, "w").replace(/[RL]/g, "W").replace(/n([aeiou])/g, "ny$1").replace(/N([aeiou])/g, "Ny$1") + " uwu";
+    return message.reply(_ecTruncate(out, 1900));
+  }
+  if (command === "diary") {
+    const sub = (args[1] || "").toLowerCase();
+    if (sub === "write") {
+      const text = args.slice(2).join(" ");
+      if (!text) return err(message, "missing required argument: **text**\nusage: `,diary write <text>`");
+      const list = userDiaries.get(message.author.id) || [];
+      list.push({ text, ts: Date.now() });
+      userDiaries.set(message.author.id, list.slice(-20));
+      return ok(message, "diary entry saved (DM me `,diary read` to see it privately)." );
+    }
+    const list = userDiaries.get(message.author.id) || [];
+    if (!list.length) return ok(message, "no diary entries yet — `,diary write <text>` to add one.");
+    message.author.send({ embeds: [{ color: PINK, title: "Your Diary", description: list.map(e => `<t:${Math.floor(e.ts / 1000)}:d>: ${e.text}`).join("\n") }] }).catch(() => message.reply("couldn't DM you — check your privacy settings."));
+    return ok(message, "sent to your DMs.");
+  }
+  if (command === "dominant") {
+    const target = message.mentions.users.first() || message.author;
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`**${target.username}** is **${seed % 100}%** dominant.\n-# just for fun`);
+  }
+  if (command === "flag") {
+    if (!args[1]) return err(message, "missing required argument: **country**\nusage: `,flag <country>`");
+    const flags = { italy: "🇮🇹", usa: "🇺🇸", france: "🇫🇷", germany: "🇩🇪", spain: "🇪🇸", uk: "🇬🇧", japan: "🇯🇵", brazil: "🇧🇷", canada: "🇨🇦", mexico: "🇲🇽" };
+    const key = args[1].toLowerCase();
+    return message.reply(flags[key] ? `${flags[key]} **${args[1]}**` : "country not in my quick list — try a full name like `italy`, `usa`, `japan`.");
+  }
+  if (command === "flags") {
+    const flags = [["🇮🇹", "Italy"], ["🇺🇸", "USA"], ["🇯🇵", "Japan"], ["🇧🇷", "Brazil"], ["🇩🇪", "Germany"], ["🇰🇷", "South Korea"], ["🇪🇸", "Spain"], ["🇨🇦", "Canada"]];
+    const [emoji, name] = flags[Math.floor(Math.random() * flags.length)];
+    return message.reply({ embeds: [{ color: PINK, description: `${emoji}\nWhich country is this?\n||${name}||` }] });
+  }
+  if (command === "fuck") {
+    const lines = ["yeah, that's frustrating.", "ugh, mood.", "big same energy.", "that's rough, buddy."];
+    return message.reply(lines[Math.floor(Math.random() * lines.length)]);
+  }
+  if (command === "gang") {
+    const gangs = ["Midnight Foxes", "Iron Wolves", "Velvet Vipers", "Crimson Owls", "Shadow Ravens"];
+    const seed = [...message.author.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`🔫 **${message.author.username}** is repping **${gangs[seed % gangs.length]}**.`);
+  }
+  if (command === "howautism" || command === "howlesbian" || command === "howsimp") {
+    const label = { howautism: "autistic", howlesbian: "lesbian", howsimp: "simp" }[command];
+    const target = message.mentions.users.first() || message.author;
+    const seed = [...target.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+    return message.reply(`**${target.username}** is **${seed % 101}%** ${label}\n-# just for fun`);
+  }
+  if (command === "interact") {
+    const list = Object.keys(actionMap).concat(Object.keys(soloMap)).sort().join(", ");
+    return message.reply({ embeds: [{ color: PINK, title: "Interaction Commands", description: list }] });
+  }
+  if (command === "nom") {
+    return message.reply({ embeds: [{ color: PINK, description: `**${message.author.username}** noms on a snack 🍪` }] });
+  }
+  if (command === "nope") {
+    return message.reply(`**${message.author.username}** says nope. 🙅`);
+  }
+  if (command === "quickpoll") {
+    if (!rest) return err(message, "missing required argument: **question**\nusage: `,quickpoll <question>`");
+    const msg = await message.channel.send({ embeds: [{ color: PINK, description: `📊 ${rest}` }] });
+    await msg.react("👍"); await msg.react("👎");
+    return;
+  }
+  if (command === "randomhex") {
+    const hex = "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
+    return message.reply({ embeds: [{ color: parseInt(hex.slice(1), 16), description: `**${hex}**` }] });
+  }
+  if (command === "randomuser") {
+    await message.guild.members.fetch().catch(() => {});
+    const humans = [...message.guild.members.cache.filter(m => !m.user.bot).values()];
+    if (!humans.length) return ok(message, "no members to pick from.");
+    const pick = humans[Math.floor(Math.random() * humans.length)];
+    return message.reply(`🎲 **${pick.user.username}**`);
+  }
+  if (command === "roast") {
+    const target = message.mentions.users.first() || message.author;
+    const lines = ["you're the reason the gene pool needs a lifeguard.", "you have something on your chin... no, the third one down.", "I'd agree with you but then we'd both be wrong.", "you're proof that even evolution takes breaks."];
+    return message.reply(`**${target.username}**, ${lines[Math.floor(Math.random() * lines.length)]}`);
+  }
+  if (command === "roleplay" || command === "rp") {
+    if (!rest) return err(message, "missing required argument: **action**\nusage: `,roleplay walks into the room`");
+    return message.channel.send(`*${message.author.username} ${rest}*`);
+  }
+
+  // ── ECONOMY ────────────────────────────────────────────────────────────
+  function _gdBal(uid) { return economy.get(uid) || 0; }
+  function _gdSetBal(uid, v) { economy.set(uid, Math.max(0, Math.round(v))); saveEconomy(); }
+  function _gdLedger(uid, entry) {
+    const list = txLedger.get(uid) || [];
+    list.push({ ...entry, ts: Date.now() });
+    txLedger.set(uid, list.slice(-25));
+  }
+
+  if (command === "addbalance") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const amt = parseInt(args[2]);
+    if (!target || isNaN(amt) || amt <= 0) return err(message, "missing required argument: **user** and **amount**\nusage: `,addbalance @user 100`");
+    _gdSetBal(target.id, _gdBal(target.id) + amt);
+    return ok(message, `added **${amt}** to **${target.username}**'s balance.`);
+  }
+  if (command === "removebalance") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    const amt = parseInt(args[2]);
+    if (!target || isNaN(amt) || amt <= 0) return err(message, "missing required argument: **user** and **amount**\nusage: `,removebalance @user 100`");
+    _gdSetBal(target.id, _gdBal(target.id) - amt);
+    return ok(message, `removed **${amt}** from **${target.username}**'s balance.`);
+  }
+  if (command === "resetbalance") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "Missing permissions.");
+    const target = message.mentions.users.first();
+    if (!target) return err(message, "missing required argument: **user**\nusage: `,resetbalance @user`");
+    _gdSetBal(target.id, 0);
+    bank.set(target.id, 0);
+    return ok(message, `reset **${target.username}**'s balance.`);
+  }
+  if (command === "bankrupt") {
+    const lastB = economy.get(`bankrupt-${message.author.id}`);
+    if (lastB && Date.now() - lastB < 86400000) return err(message, "you can only declare bankruptcy once per day.");
+    _gdSetBal(message.author.id, 50);
+    bank.set(message.author.id, 0);
+    economy.set(`bankrupt-${message.author.id}`, Date.now());
+    saveEconomy();
+    return ok(message, "declared bankruptcy — balance reset, with **50** relief coins to start over.");
+  }
+  if (command === "bombs") {
+    const bet = parseInt(args[1]);
+    const mineCount = Math.min(Math.max(parseInt(args[2]) || 3, 1), 24);
+    if (isNaN(bet) || bet <= 0) return err(message, "missing required argument: **bet**\nusage: `,bombs <bet> [mines 1-24]`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const safeSpots = 25 - mineCount;
+    const winChance = safeSpots / 25;
+    const won = Math.random() < winChance;
+    const multiplier = (25 / safeSpots) * 0.95;
+    if (won) { _gdSetBal(message.author.id, _gdBal(message.author.id) + Math.round(bet * (multiplier - 1))); return ok(message, `💣 dodged **${mineCount}** mines! Won **${Math.round(bet * (multiplier - 1))}**.`); }
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - bet);
+    return err(message, `💥 hit a mine! Lost **${bet}**.`);
+  }
+  if (command === "business") {
+    const sub = (args[1] || "").toLowerCase();
+    const catalog = { lemonstand: { cost: 500, rate: 20 }, cafe: { cost: 2000, rate: 90 }, techstartup: { cost: 10000, rate: 500 } };
+    if (sub === "buy") {
+      const name = (args[2] || "").toLowerCase();
+      if (!catalog[name]) return err(message, `unknown business — options: ${Object.keys(catalog).join(", ")}`);
+      if (_gdBal(message.author.id) < catalog[name].cost) return err(message, "not enough balance.");
+      _gdSetBal(message.author.id, _gdBal(message.author.id) - catalog[name].cost);
+      const owned = businesses.get(message.author.id) || [];
+      owned.push({ name, boughtAt: Date.now(), lastCollect: Date.now() });
+      businesses.set(message.author.id, owned);
+      return ok(message, `bought a **${name}** for **${catalog[name].cost}**! It earns passively — use \`,business collect\`.`);
+    }
+    if (sub === "collect") {
+      const owned = businesses.get(message.author.id) || [];
+      if (!owned.length) return ok(message, "you don't own any businesses. `,business buy <name>`");
+      let total = 0;
+      const now = Date.now();
+      for (const b of owned) {
+        const hours = (now - b.lastCollect) / 3600000;
+        total += Math.floor(hours * catalog[b.name].rate);
+        b.lastCollect = now;
+      }
+      businesses.set(message.author.id, owned);
+      _gdSetBal(message.author.id, _gdBal(message.author.id) + total);
+      return ok(message, `collected **${total}** from your businesses.`);
+    }
+    const owned = businesses.get(message.author.id) || [];
+    return message.reply({ embeds: [{ color: PINK, title: "Your Businesses", description: owned.length ? owned.map(b => `**${b.name}**`).join("\n") : `None yet. Catalog: ${Object.keys(catalog).map(k => `${k} (${catalog[k].cost})`).join(", ")}` }] });
+  }
+  if (command === "crash") {
+    const bet = parseInt(args[1]);
+    const cashoutAt = parseFloat(args[2]) || 2;
+    if (isNaN(bet) || bet <= 0) return err(message, "missing required argument: **bet**\nusage: `,crash <bet> [cashout multiplier]`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const crashPoint = 1 + Math.random() * Math.random() * 20;
+    if (cashoutAt <= crashPoint) {
+      const winnings = Math.round(bet * cashoutAt) - bet;
+      _gdSetBal(message.author.id, _gdBal(message.author.id) + winnings);
+      return ok(message, `📈 crashed at **${crashPoint.toFixed(2)}x** — you cashed out at **${cashoutAt}x** and won **${winnings}**!`);
+    }
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - bet);
+    return err(message, `📉 crashed at **${crashPoint.toFixed(2)}x** before your **${cashoutAt}x** cashout — lost **${bet}**.`);
+  }
+  if (command === "credit") {
+    const bal = _gdBal(message.author.id);
+    const debt = loans.get(message.author.id)?.amount || 0;
+    const score = Math.max(300, Math.min(850, 500 + Math.floor(bal / 100) - Math.floor(debt / 50)));
+    return message.reply({ embeds: [{ color: PINK, title: "Credit Score", description: `**${score}** / 850${debt ? `\nOutstanding loan: **${debt}**` : ""}` }] });
+  }
+  if (command === "deposit") {
+    const amt = args[1] === "all" ? _gdBal(message.author.id) : parseInt(args[1]);
+    if (isNaN(amt) || amt <= 0) return err(message, "missing required argument: **amount**\nusage: `,deposit <amount|all>`");
+    if (amt > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - amt);
+    bank.set(message.author.id, (bank.get(message.author.id) || 0) + amt);
+    return ok(message, `deposited **${amt}** to your bank.`);
+  }
+  if (command === "withdraw") {
+    const bankBal = bank.get(message.author.id) || 0;
+    const amt = args[1] === "all" ? bankBal : parseInt(args[1]);
+    if (isNaN(amt) || amt <= 0) return err(message, "missing required argument: **amount**\nusage: `,withdraw <amount|all>`");
+    if (amt > bankBal) return err(message, "you don't have that much in the bank.");
+    bank.set(message.author.id, bankBal - amt);
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + amt);
+    return ok(message, `withdrew **${amt}** from your bank.`);
+  }
+  if (command === "economy") {
+    const totalCirculation = [...economy.entries()].filter(([k]) => !k.includes("-")).reduce((a, [, v]) => a + v, 0);
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Economy`, fields: [
+      { name: "Total in circulation", value: `${totalCirculation}`, inline: true },
+      { name: "Your balance", value: `${_gdBal(message.author.id)}`, inline: true },
+      { name: "Your bank", value: `${bank.get(message.author.id) || 0}`, inline: true },
+    ] }] });
+  }
+  if (command === "gamble") {
+    const bet = args[1] === "all" ? _gdBal(message.author.id) : parseInt(args[1]);
+    if (isNaN(bet) || bet <= 0) return err(message, "missing required argument: **bet**\nusage: `,gamble <amount|all>`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const won = Math.random() < 0.45;
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + (won ? bet : -bet));
+    return won ? ok(message, `won **${bet}**! 🎉`) : err(message, `lost **${bet}**.`);
+  }
+  if (command === "highlow" || command === "hl") {
+    const bet = parseInt(args[1]);
+    const guess = (args[2] || "").toLowerCase();
+    if (isNaN(bet) || bet <= 0 || !["high", "low"].includes(guess)) return err(message, "missing required argument: **bet** and **high/low**\nusage: `,highlow <bet> <high|low>`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const current = Math.ceil(Math.random() * 13), next = Math.ceil(Math.random() * 13);
+    const actual = next > current ? "high" : next < current ? "low" : "tie";
+    const won = actual === guess;
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + (won ? bet : -bet));
+    return message.reply(`Card: **${current}** → **${next}** (${actual}) — ${won ? `you won **${bet}**! 🎉` : `you lost **${bet}**.`}`);
+  }
+  if (command === "ladder") {
+    const bet = parseInt(args[1]);
+    const rung = Math.min(Math.max(parseInt(args[2]) || 1, 1), 5);
+    if (isNaN(bet) || bet <= 0) return err(message, "missing required argument: **bet** and **rung (1-5)**\nusage: `,ladder <bet> <rung>`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const successChance = 1 - rung * 0.15;
+    const multiplier = 1 + rung * 0.8;
+    const won = Math.random() < successChance;
+    if (won) { const win = Math.round(bet * multiplier) - bet; _gdSetBal(message.author.id, _gdBal(message.author.id) + win); return ok(message, `🪜 climbed rung **${rung}**! Won **${win}**.`); }
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - bet);
+    return err(message, `🪜 fell off rung **${rung}**. Lost **${bet}**.`);
+  }
+  if (command === "leaderboard" || command === "lb") {
+    const sorted = [...economy.entries()].filter(([k]) => !k.includes("-")).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (!sorted.length) return ok(message, "no economy data yet.");
+    const lines = await Promise.all(sorted.map(async ([uid, bal], i) => {
+      const u = await client.users.fetch(uid).catch(() => null);
+      return `**${i + 1}.** ${u?.username ?? uid} — ${bal}`;
+    }));
+    return message.reply({ embeds: [{ color: PINK, title: "💰 Richest Members", description: lines.join("\n") }] });
+  }
+  if (command === "loan") {
+    const sub = (args[1] || "").toLowerCase();
+    if (sub === "repay") {
+      const debt = loans.get(message.author.id);
+      if (!debt) return ok(message, "you have no outstanding loan.");
+      const amt = Math.min(debt.amount, _gdBal(message.author.id));
+      if (amt <= 0) return err(message, "you don't have any balance to repay with.");
+      _gdSetBal(message.author.id, _gdBal(message.author.id) - amt);
+      debt.amount -= amt;
+      if (debt.amount <= 0) loans.delete(message.author.id); else loans.set(message.author.id, debt);
+      return ok(message, `repaid **${amt}**${debt.amount > 0 ? ` — **${debt.amount}** remaining` : " — loan cleared!"}`);
+    }
+    const amt = parseInt(args[1]);
+    if (isNaN(amt) || amt <= 0) return err(message, "missing required argument: **amount**\nusage: `,loan <amount>` or `,loan repay`");
+    if (loans.has(message.author.id)) return err(message, "you already have an outstanding loan — repay it first with `,loan repay`.");
+    const maxLoan = 500 + _gdBal(message.author.id) * 2;
+    if (amt > maxLoan) return err(message, `max loan available: **${maxLoan}**.`);
+    loans.set(message.author.id, { amount: Math.round(amt * 1.15) });
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + amt);
+    return ok(message, `loaned **${amt}** (repay **${Math.round(amt * 1.15)}** with 15% interest).`);
+  }
+  if (command === "market") {
+    const stocks = { alpha: 100, beta: 250, gamma: 40 };
+    const seed = Math.floor(Date.now() / 3600000);
+    const lines = Object.entries(stocks).map(([name, base]) => {
+      const wiggle = Math.sin(seed + name.length) * 0.15;
+      const price = Math.round(base * (1 + wiggle));
+      return `**${name.toUpperCase()}** — ${price}`;
+    });
+    return message.reply({ embeds: [{ color: PINK, title: "Market Prices (hourly)", description: lines.join("\n") }] });
+  }
+  if (command === "objectives") {
+    const day = new Date().toDateString();
+    const done = dailyObjectives.get(`${message.author.id}-${day}`) || [];
+    const tasks = ["Use ,daily", "Win a ,coinflip", "Send 5 messages"];
+    return message.reply({ embeds: [{ color: PINK, title: "Today's Objectives", description: tasks.map((t, i) => `${done.includes(i) ? "✅" : "⬜"} ${t}`).join("\n") }] });
+  }
+  if (command === "plinko") {
+    const bet = parseInt(args[1]);
+    if (isNaN(bet) || bet <= 0) return err(message, "missing required argument: **bet**\nusage: `,plinko <bet>`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const multipliers = [0, 0.5, 1, 1.5, 3, 1.5, 1, 0.5, 0];
+    const slot = Math.floor(Math.random() * multipliers.length);
+    const mult = multipliers[slot];
+    const result = Math.round(bet * mult) - bet;
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + result);
+    return message.reply(`🔴 ball landed on **${mult}x** — ${result >= 0 ? `won **${result}**!` : `lost **${-result}**.`}`);
+  }
+  if (command === "profile") {
+    const target = message.mentions.users.first() || message.author;
+    return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Profile`, thumbnail: { url: target.displayAvatarURL() }, fields: [
+      { name: "Wallet", value: `${_gdBal(target.id)}`, inline: true },
+      { name: "Bank", value: `${bank.get(target.id) || 0}`, inline: true },
+      { name: "Net Worth", value: `${_gdBal(target.id) + (bank.get(target.id) || 0)}`, inline: true },
+    ] }] });
+  }
+  if (command === "roulette") {
+    const bet = parseInt(args[1]);
+    const choice = (args[2] || "").toLowerCase();
+    if (isNaN(bet) || bet <= 0 || !["red", "black", "green"].includes(choice)) return err(message, "missing required argument: **bet** and **red/black/green**\nusage: `,roulette <bet> <red|black|green>`");
+    if (bet > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    const roll = Math.random();
+    const result = roll < 0.05 ? "green" : roll < 0.525 ? "red" : "black";
+    const won = result === choice;
+    const payout = choice === "green" ? 14 : 2;
+    _gdSetBal(message.author.id, _gdBal(message.author.id) + (won ? bet * (payout - 1) : -bet));
+    return message.reply(`🎡 landed on **${result}** — ${won ? `you won **${bet * (payout - 1)}**!` : `you lost **${bet}**.`}`);
+  }
+  if (command === "scratch") {
+    const cost = 50;
+    if (_gdBal(message.author.id) < cost) return err(message, `scratch cards cost **${cost}**.`);
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - cost);
+    const win = Math.random() < 0.3 ? Math.round(cost * (1 + Math.random() * 4)) : 0;
+    if (win) _gdSetBal(message.author.id, _gdBal(message.author.id) + win);
+    return message.reply(win ? `🎟️ scratch card won **${win}**!` : "🎟️ scratch card — no luck this time.");
+  }
+  if (command === "tax") {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return info(message, `current server tax rate: **${guildTax.get(message.guild.id) || 0}%**`);
+    }
+    const rate = parseInt(args[1]);
+    if (isNaN(rate) || rate < 0 || rate > 50) return err(message, "missing required argument: **rate (0-50)**\nusage: `,tax <rate>`");
+    guildTax.set(message.guild.id, rate);
+    return ok(message, `server tax rate set to **${rate}%**.`);
+  }
+  if (command === "tier") {
+    const bal = _gdBal(message.author.id) + (bank.get(message.author.id) || 0);
+    const tiers = [[0, "Bronze"], [1000, "Silver"], [10000, "Gold"], [100000, "Platinum"], [1000000, "Diamond"]];
+    let cur = tiers[0][1];
+    for (const [amt, name] of tiers) if (bal >= amt) cur = name;
+    return info(message, `**${message.author.username}**'s tier: **${cur}** (net worth: ${bal})`);
+  }
+  if (command === "transactions") {
+    const list = (txLedger.get(message.author.id) || []).slice(-10).reverse();
+    if (!list.length) return ok(message, "no recorded transactions yet.");
+    return message.reply({ embeds: [{ color: PINK, title: "Recent Transactions", description: list.map(t => `${t.type}: ${t.amount >= 0 ? "+" : ""}${t.amount} — <t:${Math.floor(t.ts / 1000)}:R>`).join("\n") }] });
+  }
+  if (command === "transfer") {
+    const target = message.mentions.users.first();
+    const amt = parseInt(args[2]);
+    if (!target || isNaN(amt) || amt <= 0) return err(message, "missing required argument: **user** and **amount**\nusage: `,transfer @user 100`");
+    if (target.id === message.author.id) return err(message, "you can't transfer to yourself.");
+    if (amt > _gdBal(message.author.id)) return err(message, "you don't have that much.");
+    _gdSetBal(message.author.id, _gdBal(message.author.id) - amt);
+    _gdSetBal(target.id, _gdBal(target.id) + amt);
+    _gdLedger(message.author.id, { type: "Sent", amount: -amt });
+    _gdLedger(target.id, { type: "Received", amount: amt });
+    return ok(message, `transferred **${amt}** to **${target.username}**.`);
+  }
+
+  // ── VOICE ──────────────────────────────────────────────────────────────
+  if (command === "voicemaster" || command === "vm") {
+    const sub = (args[1] || "").toLowerCase();
+    if (sub === "setup") {
+      if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return err(message, "Missing permissions.");
+      const cat = await message.guild.channels.create({ name: "Voice Channels", type: 4 }).catch(() => null);
+      const trigger = await message.guild.channels.create({ name: "➕ Join to Create", type: 2, parent: cat?.id }).catch(() => null);
+      if (!trigger) return err(message, "couldn't create the voice channels.");
+      joinToCreate.set(message.guild.id, { triggerVcId: trigger.id, categoryId: cat?.id || null });
+      return ok(message, `VoiceMaster set up — join **${trigger.name}** to get your own channel.`);
+    }
+    const vc = message.member.voice.channel;
+    if (!vc || !tempVoiceChannels.has(vc.id)) return err(message, "you need to be in a VoiceMaster-created channel to use this.");
+    const isOwner = tempVoiceOwners.get(vc.id) === message.author.id;
+
+    if (sub === "claim") {
+      const ownerId = tempVoiceOwners.get(vc.id);
+      const ownerStillHere = ownerId && vc.members.has(ownerId);
+      if (ownerStillHere) return err(message, "the current owner is still in the channel.");
+      tempVoiceOwners.set(vc.id, message.author.id);
+      return ok(message, "you're now the owner of this channel.");
+    }
+    if (!isOwner) return err(message, "only the channel owner can do that. Try `,voicemaster claim` if they left.");
+
+    if (sub === "lock") { await vc.permissionOverwrites.edit(message.guild.id, { Connect: false }).catch(() => {}); return ok(message, "channel locked."); }
+    if (sub === "unlock") { await vc.permissionOverwrites.edit(message.guild.id, { Connect: null }).catch(() => {}); return ok(message, "channel unlocked."); }
+    if (sub === "hide") { await vc.permissionOverwrites.edit(message.guild.id, { ViewChannel: false }).catch(() => {}); return ok(message, "channel hidden."); }
+    if (sub === "unhide") { await vc.permissionOverwrites.edit(message.guild.id, { ViewChannel: null }).catch(() => {}); return ok(message, "channel visible again."); }
+    if (sub === "permit") {
+      const u = message.mentions.users.first();
+      if (!u) return err(message, "usage: `,voicemaster permit @user`");
+      await vc.permissionOverwrites.edit(u.id, { Connect: true, ViewChannel: true }).catch(() => {});
+      return ok(message, `**${u.username}** can now join.`);
+    }
+    if (sub === "reject") {
+      const u = message.mentions.users.first();
+      if (!u) return err(message, "usage: `,voicemaster reject @user`");
+      await vc.permissionOverwrites.edit(u.id, { Connect: false }).catch(() => {});
+      if (vc.members.has(u.id)) await vc.members.get(u.id).voice.disconnect().catch(() => {});
+      return ok(message, `**${u.username}** can no longer join.`);
+    }
+    if (sub === "limit") {
+      const n = parseInt(args[2]);
+      if (isNaN(n) || n < 0 || n > 99) return err(message, "usage: `,voicemaster limit <0-99>` (0 = unlimited)");
+      await vc.setUserLimit(n).catch(() => {});
+      return ok(message, `user limit set to **${n === 0 ? "unlimited" : n}**.`);
+    }
+    if (sub === "rename") {
+      const name = args.slice(2).join(" ");
+      if (!name) return err(message, "usage: `,voicemaster rename <name>`");
+      await vc.setName(name.slice(0, 100)).catch(() => {});
+      return ok(message, `renamed to **${name}**.`);
+    }
+    if (sub === "transfer") {
+      const u = message.mentions.users.first();
+      if (!u || !vc.members.has(u.id)) return err(message, "usage: `,voicemaster transfer @user` (must be in the channel)");
+      tempVoiceOwners.set(vc.id, u.id);
+      return ok(message, `ownership transferred to **${u.username}**.`);
+    }
+    if (sub === "kick") {
+      const u = message.mentions.users.first();
+      if (!u || !vc.members.has(u.id)) return err(message, "usage: `,voicemaster kick @user` (must be in the channel)");
+      await vc.members.get(u.id).voice.disconnect().catch(() => {});
+      return ok(message, `kicked **${u.username}** from the channel.`);
+    }
+    return err(message, "usage: `,voicemaster <setup|claim|lock|unlock|hide|unhide|permit|reject|limit|rename|transfer|kick>`");
+  }
+
+  // -- MANIPULATION (image-processing effects -- see note below) --
+  if (command === "3d" || command === "ads" || command === "alert" || command === "bayer" || command === "bevel" || command === "billboard" || command === "blocks" || command === "blur" || command === "boil" || command === "bomb" || command === "bonks" || command === "calling" || command === "canny" || command === "captcha" || command === "cartoon" || command === "cinema" || command === "clock" || command === "console" || command === "cow" || command === "cracks" || command === "cube" || command === "didyoumean" || command === "dither" || command === "dizzy" || command === "drake" || command === "drip" || command === "earthquake" || command === "endless" || command === "equations" || command === "explicit" || command === "facts" || command === "fall" || command === "fan" || command === "fire" || command === "flush" || command === "gallery" || command === "gameboy" || command === "glitch" || command === "globe" || command === "gun" || command === "halfinvert" || command === "hearts" || command === "infinity" || command === "invert" || command === "ipcam" || command === "knit" || command === "lamp" || command === "laundry" || command === "layers" || command === "letters" || command === "lines" || command === "liquefy" || command === "logoff" || command === "lsd" || command === "magnify" || command === "matrix" || command === "melt" || command === "neon" || command === "oogway" || command === "optics" || command === "painting" || command === "paparazzi" || command === "patpat" || command === "pattern" || command === "phase" || command === "phone" || command === "plank" || command === "plates" || command === "poly" || command === "pooh" || command === "print" || command === "pyramid" || command === "radiate" || command === "rain" || command === "reflection" || command === "ripped" || command === "sadcat" || command === "sensitive" || command === "shear" || command === "shine" || command === "shock" || command === "shred" || command === "slice" || command === "soap" || command === "spin" || command === "stereo" || command === "stretch" || command === "supreme" || command === "tiles" || command === "tunnel" || command === "tv" || command === "wall" || command === "warp" || command === "wiggle" || command === "zonk") {
+    return err(message, "this image effect needs an image-processing library (e.g. Jimp or canvas) that isn't installed on this bot yet -- ask the developer to add it. Command scaffolding is ready, the pixel effect itself is not wired up.");
+  }
+  if (command === "caption" || command === "img2gif") {
+    return err(message, "this needs an image-processing library that isn't installed on this bot yet -- ask the developer to add one (e.g. Jimp).");
+  }
+
+  // -- MUSIC (real audio playback -- see note below) --
+  if (command === "247" || command === "automix" || command === "clearqueue" || command === "current" || command === "loop" || command === "pause" || command === "play" || command === "preset" || command === "queue" || command === "remove" || command === "resume" || command === "seek" || command === "skip" || command === "stop" || command === "volume") {
+    return err(message, "music playback needs `@discordjs/voice` plus an audio source resolver installed and configured on this bot -- ask the developer to set that up. This command is not wired to real audio yet.");
+  }
 });
 
 
