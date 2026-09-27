@@ -898,10 +898,15 @@ const MUSIC_PRESETS = {
 (async () => {
   try {
     await player.extractors.loadMulti(DefaultExtractors);
-    await player.extractors.register(YoutubeiExtractor, {});
-    log("[music] discord-player extractors loaded (SoundCloud/Spotify/Apple Music/Vimeo/Reverbnation/attachments + YouTube via discord-player-youtubei)", "success");
+    log("[music] DefaultExtractors loaded (SoundCloud/Spotify/Apple Music/Vimeo/Reverbnation/attachments).", "success");
   } catch (e) {
-    log(`[music] Failed to load extractors: ${e.message}`, "error");
+    log(`[music] Failed to load DefaultExtractors: ${e.stack ?? e.message}`, "error");
+  }
+  try {
+    await player.extractors.register(YoutubeiExtractor, {});
+    log("[music] YoutubeiExtractor registered (YouTube search/stream).", "success");
+  } catch (e) {
+    log(`[music] Failed to register YoutubeiExtractor: ${e.stack ?? e.message}`, "error");
   }
 })();
 player.events.on("playerStart", (queue, track) => {
@@ -20031,18 +20036,27 @@ MUSIC.play = async (message, args, rest) => {
   if (!vc) return err(message, "join a voice channel first.");
   if (!rest) return err(message, "usage: `,play <song name or URL>`");
   const p = useMainPlayer();
+  const loadedNames = [...p.extractors.store.keys()];
+  if (loadedNames.length === 0) {
+    return err(message, "no audio sources are registered on this bot at all (0 extractors loaded) -- check the Railway startup logs for a `[music] Failed to load/register ...` line, that's why every search comes back empty.");
+  }
   const is247 = MUSIC_247.has(message.guild.id);
-  const { track } = await p.play(vc, rest, {
-    nodeOptions: {
-      metadata: { channel: message.channel },
-      leaveOnEmpty: !is247,
-      leaveOnEmptyCooldown: 60000,
-      leaveOnEnd: !is247,
-      leaveOnEndCooldown: 60000,
-      volume: 70,
-    },
-    requestedBy: message.author,
-  });
+  let track;
+  try {
+    ({ track } = await p.play(vc, rest, {
+      nodeOptions: {
+        metadata: { channel: message.channel },
+        leaveOnEmpty: !is247,
+        leaveOnEmptyCooldown: 60000,
+        leaveOnEnd: !is247,
+        leaveOnEndCooldown: 60000,
+        volume: 70,
+      },
+      requestedBy: message.author,
+    }));
+  } catch (e) {
+    throw new Error(`${e.message} -- loaded extractors: ${loadedNames.join(", ")}`);
+  }
   return ok(message, `queued **${track.title}**.`);
 };
 MUSIC.pause = message => {
@@ -20146,9 +20160,23 @@ MUSIC["247"] = message => {
     return ok(message, "24/7 mode **disabled** -- I'll leave when the queue empties.");
   }
   MUSIC_247.add(gid);
-  q?.node?.setLeaveOnEmpty?.(false);
-  q?.node?.setLeaveOnEnd?.(false);
-  return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties. (Takes effect immediately for a queue already running; always applies from the next `,play` onward.)");
+  if (q) {
+    q.node?.setLeaveOnEmpty?.(false);
+    q.node?.setLeaveOnEnd?.(false);
+    return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties.");
+  }
+  // No active queue yet -- join right now instead of silently doing nothing until ,play.
+  const vc = message.member.voice.channel;
+  if (!vc) return ok(message, "24/7 mode **enabled** for next time -- join a voice channel and run `,play` (or `,247` again from inside one) to bring me in now.");
+  try {
+    const newQ = useMainPlayer().nodes.create(message.guild, {
+      metadata: { channel: message.channel }, leaveOnEmpty: false, leaveOnEnd: false, volume: 70,
+    });
+    if (!newQ.connection) newQ.connect(vc);
+    return ok(message, "24/7 mode **enabled** -- joined your voice channel and I'll stay connected.");
+  } catch (e) {
+    return ok(message, `24/7 mode **enabled**, but couldn't join your voice channel right now (${e.message}) -- it'll still apply as soon as you \`,play\` something.`);
+  }
 };
 MUSIC.preset = (message, args) => {
   const q = useQueue(message.guild.id);
