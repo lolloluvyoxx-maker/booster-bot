@@ -2,6 +2,15 @@ const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, Button
 const fs = require("fs");
 const path = require("path");
 
+// -- Real image processing (,blur, ,invert, ,glitch, etc. -- see IMAGE MANIPULATION ENGINE) --
+const Jimp = require("jimp");
+
+// -- Real music playback (,play, ,queue, ,skip, etc.) --
+const { Player, useMainPlayer, useQueue, QueueRepeatMode } = require("discord-player");
+const { DefaultExtractors } = require("@discord-player/extractor");
+const { YoutubeiExtractor } = require("discord-player-youtubei");
+require("ffmpeg-static"); // side-effect: registers a bundled ffmpeg binary for prism-media/discord-player to find
+
 // ── BUILD MARKER ─────────────────────────────────────────────────────────────
 // Prints immediately on boot, before the DB/login sequence. If you don't see
 // this exact line at the top of the Railway logs after "Starting Container",
@@ -845,12 +854,53 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildVoiceStates, // required for music playback (voice channel join/state)
   ],
   partials: ["CHANNEL"]
 });
 // Raise listener limit to suppress MaxListenersExceededWarning
 // (bot intentionally uses many separate handlers for modularity)
 client.setMaxListeners(50);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  MUSIC PLAYER (discord-player) -- real audio playback engine
+// ═══════════════════════════════════════════════════════════════════════════════
+// One Player instance for the whole bot (discord-player manages one queue per guild
+// internally). Extractors resolve search queries / URLs into playable audio:
+//   - DefaultExtractors (from @discord-player/extractor): SoundCloud, Spotify/Apple
+//     Music metadata bridging, Vimeo, Reverbnation, raw attachments, local files.
+//   - YoutubeiExtractor: YouTube search + streaming. This is a community extractor
+//     (discord-player dropped official YouTube support in v7 because Google changes
+//     break scrapers often) -- if YouTube playback ever stops working, that package
+//     needs a version bump, it's not something wrong with the command wiring below.
+const player = new Player(client);
+const MUSIC_247 = new Set(); // guild IDs with ,247 enabled (bot stays in VC / keeps the queue alive when empty)
+const MUSIC_PRESETS = {
+  bassboost: [{ name: "bassboost", band0: 0.85 }], // placeholder marker, real filter applied via queue.filters.ffmpeg below
+  nightcore: "nightcore",
+  vaporwave: "vaporwave",
+  "8d": "8D",
+  reverse: "reverse",
+  clear: null,
+};
+(async () => {
+  try {
+    await player.extractors.loadMulti(DefaultExtractors);
+    await player.extractors.register(YoutubeiExtractor, {});
+    log("[music] discord-player extractors loaded (SoundCloud/Spotify/Apple Music/Vimeo/Reverbnation/attachments + YouTube via discord-player-youtubei)", "success");
+  } catch (e) {
+    log(`[music] Failed to load extractors: ${e.message}`, "error");
+  }
+})();
+player.events.on("playerStart", (queue, track) => {
+  queue.metadata?.channel?.send({ embeds: [{ color: PINK, description: `🎶 now playing **${track.title}** by **${track.author}** -- requested by <@${track.requestedBy?.id}>` }] }).catch(() => {});
+});
+player.events.on("emptyQueue", (queue) => {
+  if (MUSIC_247.has(queue.guild.id)) return; // stay connected on 24/7
+  queue.metadata?.channel?.send({ embeds: [{ color: PINK, description: "queue finished -- leaving the voice channel." }] }).catch(() => {});
+});
+player.events.on("error", (queue, error) => log(`[music] queue error (${queue?.guild?.id}): ${error.message}`, "error"));
+player.events.on("playerError", (queue, error) => log(`[music] player error (${queue?.guild?.id}): ${error.message}`, "error"));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ██  CUSTOM EMOJI / INTERACTION-EDIT FIX (Discord platform bug)
@@ -19078,6 +19128,1027 @@ client.on("messageReactionAdd", async (reaction, user) => {
   } catch {}
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  IMAGE MANIPULATION ENGINE (real pixel processing via Jimp -- no external API)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Every effect below is genuine per-pixel image processing (color math, convolution,
+// coordinate remapping, or procedural drawing) run locally with Jimp. Nothing here
+// calls out to a third-party "meme API" and nothing needs template art -- EXCEPT the
+// handful of commands intentionally left out of FX (see the SKIPPED list at the very
+// bottom): those need an actual licensed/copyrighted character image (Drake, Winnie
+// the Pooh, Master Oogway, the "Sad Cat" photo, the "bonk"/"patpat" artwork, a real
+// gun-meme photo, or the Supreme box logo) that can't legitimately be generated here.
+
+const _fxFontCache = new Map();
+async function _fxFont(name) {
+  if (!_fxFontCache.has(name)) _fxFontCache.set(name, await Jimp.loadFont(name));
+  return _fxFontCache.get(name);
+}
+
+function _fxToBuffer(img) {
+  return new Promise((resolve, reject) => {
+    img.getBuffer(Jimp.MIME_PNG, (e, buf) => (e ? reject(e) : resolve(buf)));
+  });
+}
+
+async function _fxFetchBuffer(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`couldn't download the source image (HTTP ${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Resolves the image to operate on: an attached image > a mentioned user's avatar > the author's own avatar.
+async function _fxTargetURL(message) {
+  const att = message.attachments.find(a => (a.contentType || "").startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(a.name || ""));
+  if (att) return att.url;
+  const mentioned = message.mentions.users.first();
+  if (mentioned) return mentioned.displayAvatarURL({ extension: "png", size: 512 });
+  return message.author.displayAvatarURL({ extension: "png", size: 512 });
+}
+
+async function _fxLoadImage(message) {
+  const url = await _fxTargetURL(message);
+  const buf = await _fxFetchBuffer(url);
+  const img = await Jimp.read(buf);
+  // Cap size for performance/memory -- big avatars or attachments would make the
+  // per-pixel loops below (and Discord upload) slow for no visual benefit.
+  if (img.bitmap.width > 900 || img.bitmap.height > 900) img.scaleToFit(900, 900);
+  return img;
+}
+
+async function _fxReply(message, img, cmdName) {
+  const buf = await _fxToBuffer(img);
+  const file = new AttachmentBuilder(buf, { name: `${cmdName}.png` });
+  return message.reply({ files: [file] }).catch(() => message.channel.send({ files: [file] }).catch(() => {}));
+}
+
+// ── Drawing primitives (procedural -- no external assets) ──────────────────────
+function _fxNewCanvas(w, h, hex = 0x00000000) {
+  return new Promise((resolve, reject) => {
+    new Jimp(w, h, hex, (e, img) => (e ? reject(e) : resolve(img)));
+  });
+}
+// Alpha-blend a solid RGBA color into a single pixel of img.bitmap.data.
+function _fxBlendPixel(img, x, y, r, g, b, a) {
+  const { width, height, data } = img.bitmap;
+  if (x < 0 || y < 0 || x >= width || y >= height || a <= 0) return;
+  const i = (y * width + x) * 4;
+  const srcA = a / 255;
+  data[i] = data[i] * (1 - srcA) + r * srcA;
+  data[i + 1] = data[i + 1] * (1 - srcA) + g * srcA;
+  data[i + 2] = data[i + 2] * (1 - srcA) + b * srcA;
+  data[i + 3] = Math.min(255, data[i + 3] + a);
+}
+function _fxDrawLine(img, x0, y0, x1, y1, r, g, b, a = 255, thickness = 1) {
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy, x = x0, y = y0;
+  const half = Math.floor(thickness / 2);
+  for (;;) {
+    for (let ox = -half; ox <= half; ox++)
+      for (let oy = -half; oy <= half; oy++)
+        _fxBlendPixel(img, x + ox, y + oy, r, g, b, a);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x += sx; }
+    if (e2 <= dx) { err += dx; y += sy; }
+  }
+}
+function _fxDrawRect(img, x, y, w, h, r, g, b, a = 255) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) _fxBlendPixel(img, xx, yy, r, g, b, a);
+}
+function _fxDrawRectOutline(img, x, y, w, h, r, g, b, a = 255, thickness = 2) {
+  _fxDrawRect(img, x, y, w, thickness, r, g, b, a);
+  _fxDrawRect(img, x, y + h - thickness, w, thickness, r, g, b, a);
+  _fxDrawRect(img, x, y, thickness, h, r, g, b, a);
+  _fxDrawRect(img, x + w - thickness, y, thickness, h, r, g, b, a);
+}
+function _fxDrawCircle(img, cx, cy, radius, r, g, b, a = 255) {
+  const r2 = radius * radius;
+  for (let y = -radius; y <= radius; y++) {
+    for (let x = -radius; x <= radius; x++) {
+      if (x * x + y * y <= r2) _fxBlendPixel(img, cx + x, cy + y, r, g, b, a);
+    }
+  }
+}
+function _fxDrawHeart(img, cx, cy, size, r, g, b, a = 255) {
+  for (let ty = -size; ty <= size; ty++) {
+    const t = ty / size;
+    for (let tx = -size; tx <= size; tx++) {
+      const x = tx / size, y = -t; // flip so the point of the heart is at the bottom
+      const v = Math.pow(x * x + y * y - 1, 3) - x * x * y * y * y;
+      if (v <= 0) _fxBlendPixel(img, cx + tx, cy + ty, r, g, b, a);
+    }
+  }
+}
+async function _fxPrint(img, text, x, y, fontConst, maxWidth) {
+  const font = await _fxFont(fontConst);
+  if (maxWidth) img.print(font, x, y, text, maxWidth);
+  else img.print(font, x, y, text);
+}
+// Deterministic pseudo-random in [0,1) from an integer seed (no external RNG lib needed).
+function _fxNoise(seed) {
+  const v = Math.sin(seed * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+// ── Generic per-pixel coordinate remap engine (nearest-neighbor, edge-clamped) ──
+// sampleFn(x, y, w, h) => [sourceX, sourceY]. Used for every "distortion" style
+// effect (warp, swirl, barrel/fisheye, shear, kaleidoscope, jitter, etc.) --
+// each effect is really just a different math formula plugged into this one engine.
+function _fxRemap(img, sampleFn) {
+  const { width: w, height: h, data } = img.bitmap;
+  const out = Buffer.alloc(data.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let [sx, sy] = sampleFn(x, y, w, h);
+      sx = Math.max(0, Math.min(w - 1, Math.round(sx)));
+      sy = Math.max(0, Math.min(h - 1, Math.round(sy)));
+      const si = (sy * w + sx) * 4, di = (y * w + x) * 4;
+      out[di] = data[si]; out[di + 1] = data[si + 1]; out[di + 2] = data[si + 2]; out[di + 3] = data[si + 3];
+    }
+  }
+  img.bitmap.data = out;
+  return img;
+}
+// Same idea but averages N samples along the line from center to (x,y) -- real zoom-blur.
+function _fxRadialAverage(img, samples, strengthFn) {
+  const { width: w, height: h, data } = img.bitmap;
+  const out = Buffer.alloc(data.length);
+  const cx = w / 2, cy = h / 2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const strength = strengthFn(x, y, w, h);
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let s = 0; s < samples; s++) {
+        const t = 1 - (s / samples) * strength;
+        const sx = Math.max(0, Math.min(w - 1, Math.round(cx + (x - cx) * t)));
+        const sy = Math.max(0, Math.min(h - 1, Math.round(cy + (y - cy) * t)));
+        const si = (sy * w + sx) * 4;
+        r += data[si]; g += data[si + 1]; b += data[si + 2]; a += data[si + 3]; n++;
+      }
+      const di = (y * w + x) * 4;
+      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = a / n;
+    }
+  }
+  img.bitmap.data = out;
+  return img;
+}
+// Per-pixel color transform: fn(r,g,b,a,x,y,w,h) => [r,g,b,a]
+function _fxEachPixel(img, fn) {
+  const { width: w, height: h } = img.bitmap;
+  img.scan(0, 0, w, h, function (x, y, idx) {
+    const d = this.bitmap.data;
+    const [nr, ng, nb, na] = fn(d[idx], d[idx + 1], d[idx + 2], d[idx + 3], x, y, w, h);
+    d[idx] = nr; d[idx + 1] = ng; d[idx + 2] = nb; d[idx + 3] = na;
+  });
+  return img;
+}
+function _fxClamp(v) { return Math.max(0, Math.min(255, v)); }
+function _fxRgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let hh = 0;
+  if (d !== 0) {
+    if (max === r) hh = ((g - b) / d) % 6;
+    else if (max === g) hh = (b - r) / d + 2;
+    else hh = (r - g) / d + 4;
+    hh *= 60; if (hh < 0) hh += 360;
+  }
+  return [hh, max === 0 ? 0 : d / max, max];
+}
+function _fxHsvToRgb(h, s, v) {
+  const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [_fxClamp((r + m) * 255), _fxClamp((g + m) * 255), _fxClamp((b + m) * 255)];
+}
+// ── Parametrized distortion factories -- each returns a sampleFn for _fxRemap ──
+function mkSwirl(strength, growWithRadius = false) {
+  return (x, y, w, h) => {
+    const cx = w / 2, cy = h / 2, dx = x - cx, dy = y - cy;
+    const r = Math.sqrt(dx * dx + dy * dy);
+    const maxR = Math.sqrt(cx * cx + cy * cy) || 1;
+    const t = growWithRadius ? r / maxR : 1 - r / maxR;
+    const angle = Math.atan2(dy, dx) + strength * Math.max(0, t);
+    return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+  };
+}
+function mkWave(ax, fy_, ay, fx_, phase = 0) {
+  return (x, y) => [x + ax * Math.sin(y * fy_ + phase), y + ay * Math.sin(x * fx_ + phase)];
+}
+function mkBarrel(k) {
+  return (x, y, w, h) => {
+    const cx = w / 2, cy = h / 2;
+    const nx = (x - cx) / cx, ny = (y - cy) / cy;
+    const factor = 1 + k * (nx * nx + ny * ny);
+    return [cx + nx * factor * cx, cy + ny * factor * cy];
+  };
+}
+function mkZoom(factor) {
+  return (x, y, w, h) => {
+    const cx = w / 2, cy = h / 2;
+    return [cx + (x - cx) / factor, cy + (y - cy) / factor];
+  };
+}
+function mkShearX(strength) {
+  return (x, y, w, h) => [x + strength * (y - h / 2), y];
+}
+function mkKaleido(slices) {
+  return (x, y, w, h) => {
+    const cx = w / 2, cy = h / 2, dx = x - cx, dy = y - cy;
+    const r = Math.sqrt(dx * dx + dy * dy);
+    let angle = Math.atan2(dy, dx);
+    const seg = (Math.PI * 2) / slices;
+    angle = ((angle % seg) + seg) % seg;
+    if (angle > seg / 2) angle = seg - angle;
+    return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+  };
+}
+function mkTunnel(rings) {
+  return (x, y, w, h) => {
+    const cx = w / 2, cy = h / 2, dx = x - cx, dy = y - cy;
+    const r = Math.sqrt(dx * dx + dy * dy);
+    const maxR = Math.sqrt(cx * cx + cy * cy) || 1;
+    const angle = Math.atan2(dy, dx);
+    const r2 = (r * rings) % maxR;
+    return [cx + r2 * Math.cos(angle), cy + r2 * Math.sin(angle)];
+  };
+}
+function mkJitterBlocks(blockSize, intensity, seed = 0) {
+  return (x, y) => {
+    const bx = Math.floor(x / blockSize), by = Math.floor(y / blockSize);
+    const jx = (_fxNoise(bx * 928.3 + by * 17.7 + seed) - 0.5) * intensity;
+    const jy = (_fxNoise(bx * 12.9 + by * 331.1 + seed + 99) - 0.5) * intensity;
+    return [x + jx, y + jy];
+  };
+}
+// ── FX registry: command name -> async (img) => img ────────────────────────────
+const FX = {};
+
+// -- simple built-in-method filters --
+FX.blur = img => img.blur(6);
+FX.invert = img => img.invert();
+FX.blocks = img => img.pixelate(14);
+FX.painting = img => { img.posterize(6); img.blur(2); return img; };
+FX.bevel = img => img.convolute([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]]);
+FX.canny = img => { img.greyscale(); return img.convolute([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]]); };
+FX.cartoon = img => {
+  const edges = img.clone().greyscale().convolute([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]]);
+  img.posterize(5);
+  const w = img.bitmap.width;
+  return _fxEachPixel(img, (r, g, b, a, x, y) => {
+    const idx = (y * w + x) * 4;
+    return edges.bitmap.data[idx] > 40 ? [0, 0, 0, a] : [r, g, b, a];
+  });
+};
+
+// -- halfinvert / hue & tone --
+FX.halfinvert = img => _fxEachPixel(img, (r, g, b, a, x, y, w) => (x < w / 2 ? [255 - r, 255 - g, 255 - b, a] : [r, g, b, a]));
+FX.lsd = img => _fxEachPixel(img, (r, g, b, a, x, y) => {
+  const [hh, s, v] = _fxRgbToHsv(r, g, b);
+  const [nr, ng, nb] = _fxHsvToRgb((hh + (x + y) * 0.9) % 360, Math.min(1, s * 1.3 + 0.2), v);
+  return [nr, ng, nb, a];
+});
+
+// -- ordered dithering (Bayer 4x4) --
+const BAYER4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+function _fxBayerDither(img, levels) {
+  const step = 255 / (levels - 1);
+  return _fxEachPixel(img, (r, g, b, a, x, y) => {
+    const t = (BAYER4[y % 4][x % 4] / 16 - 0.5) * step;
+    const q = c => _fxClamp(Math.round((c + t) / step) * step);
+    return [q(r), q(g), q(b), a];
+  });
+}
+FX.dither = img => _fxBayerDither(img, 4);
+FX.bayer = img => _fxBayerDither(img, 3);
+
+// -- gameboy 4-shade green palette --
+const GB_PALETTE = [[15, 56, 15], [48, 98, 48], [139, 172, 15], [155, 188, 15]];
+FX.gameboy = img => {
+  img.greyscale();
+  return _fxEachPixel(img, (r, g, b, a) => {
+    const lvl = Math.min(3, Math.floor(r / 64));
+    const [pr, pg, pb] = GB_PALETTE[3 - lvl];
+    return [pr, pg, pb, a];
+  });
+};
+
+// -- matrix digital rain --
+FX.matrix = img => {
+  _fxEachPixel(img, (r, g, b, a) => {
+    const lum = (r + g + b) / 3;
+    return [_fxClamp(lum * 0.15), _fxClamp(lum * 0.9 + 30), _fxClamp(lum * 0.15), a];
+  });
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const cols = Math.floor(w / 10);
+  for (let c = 0; c < cols; c++) {
+    if (_fxNoise(c * 7.7) < 0.5) continue;
+    const x = Math.floor(c * 10 + _fxNoise(c * 3.1) * 6);
+    const len = Math.floor(h * (0.3 + _fxNoise(c * 9.9) * 0.7));
+    const y0 = Math.floor(_fxNoise(c * 5.3) * (h - len));
+    _fxDrawLine(img, x, y0, x, y0 + len, 60, 255, 90, 90, 2);
+  }
+  return img;
+};
+
+// -- neon edge glow --
+FX.neon = img => {
+  const edges = img.clone().greyscale().convolute([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]]);
+  return _fxEachPixel(edges, (r, g, b, a, x) => {
+    const m = (r + g + b) / 3;
+    if (m < 24) return [0, 0, 0, 255];
+    const [nr, ng, nb] = _fxHsvToRgb((x * 2) % 360, 1, Math.min(1, m / 150));
+    return [nr, ng, nb, 255];
+  });
+};
+
+// -- 3d anaglyph / stereo double-exposure --
+FX["3d"] = img => {
+  const shift = 6, w = img.bitmap.width;
+  const src = Buffer.from(img.bitmap.data);
+  return _fxEachPixel(img, (r, g, b, a, x, y) => {
+    const lx = Math.max(0, x - shift), rx = Math.min(w - 1, x + shift);
+    const li = (y * w + lx) * 4, ri = (y * w + rx) * 4, ci = (y * w + x) * 4;
+    return [src[ri], src[ci + 1], src[li + 2], a];
+  });
+};
+FX.stereo = img => { const ghost = img.clone(); ghost.opacity(0.45); img.composite(ghost, 12, 0); return img; };
+FX.optics = img => { _fxRemap(img, mkBarrel(0.35)); return FX["3d"](img); };
+
+// -- glitch / zonk --
+FX.glitch = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const src = Buffer.from(img.bitmap.data), data = img.bitmap.data;
+  let y = 0;
+  while (y < h) {
+    const bandH = 2 + Math.floor(_fxNoise(y * 3.1) * 14);
+    const shift = Math.floor((_fxNoise(y * 7.7) - 0.5) * 40);
+    const chan = _fxNoise(y * 11.3) > 0.75;
+    for (let yy = y; yy < Math.min(h, y + bandH); yy++) {
+      for (let x = 0; x < w; x++) {
+        const sx = Math.max(0, Math.min(w - 1, x - shift));
+        const si = (yy * w + sx) * 4, di = (yy * w + x) * 4;
+        data[di] = src[si]; data[di + 1] = src[si + 1]; data[di + 2] = src[si + 2]; data[di + 3] = src[si + 3];
+        if (chan) { const sx2 = Math.max(0, Math.min(w - 1, x - shift * 2)); data[di] = src[(yy * w + sx2) * 4]; }
+      }
+    }
+    y += bandH;
+  }
+  return img;
+};
+FX.zonk = async img => {
+  FX.glitch(img); FX.glitch(img);
+  const w = img.bitmap.width, h = img.bitmap.height;
+  await _fxPrint(img, "ZONK", Math.max(4, w / 2 - 60), h / 2 - 20, Jimp.FONT_SANS_32_WHITE);
+  return img;
+};
+
+// -- distortions via the remap engine --
+FX.earthquake = img => _fxRemap(img, mkJitterBlocks(24, 14, 1));
+FX.boil = img => _fxRemap(img, mkWave(10, 0.025, 10, 0.02, 1.3));
+FX.laundry = img => { _fxRemap(img, mkSwirl(2.4, false)); img.blur(2); return img; };
+FX.fall = img => _fxRemap(img, (x, y, w, h) => [x, Math.max(0, y - (_fxNoise(x * 0.13) * 0.5 + 0.5) * h * 0.4 * (y / h))]);
+FX.flush = img => _fxRemap(img, (x, y, w, h) => {
+  const cx = w / 2, cy = h * 0.85, dx = x - cx, dy = y - cy;
+  const r = Math.sqrt(dx * dx + dy * dy), maxR = Math.sqrt(cx * cx + h * h) || 1;
+  const pull = Math.max(0, 1 - r / (maxR * 0.6));
+  const angle = Math.atan2(dy, dx) + pull * 4, rr = r * (1 - pull * 0.5);
+  return [cx + rr * Math.cos(angle), cy + rr * Math.sin(angle)];
+});
+FX.melt = img => _fxRemap(img, (x, y, w, h) => {
+  const drip = _fxNoise(x * 0.07) * h * 0.5, t = y / h;
+  return [x, y * (1 - t * 0.3) - drip * t];
+});
+FX.liquefy = img => {
+  const centers = [0, 1, 2].map(i => ({
+    cx: _fxNoise(i * 3.1) * img.bitmap.width, cy: _fxNoise(i * 7.7) * img.bitmap.height,
+    strength: 1.5 + _fxNoise(i * 11) * 1.5, radius: 60 + _fxNoise(i * 17) * 60,
+  }));
+  return _fxRemap(img, (x, y) => {
+    let sx = x, sy = y;
+    for (const c of centers) {
+      const dx = sx - c.cx, dy = sy - c.cy, r = Math.sqrt(dx * dx + dy * dy);
+      if (r < c.radius) {
+        const t = (1 - r / c.radius) * c.strength, angle = Math.atan2(dy, dx) + t;
+        sx = c.cx + r * Math.cos(angle); sy = c.cy + r * Math.sin(angle);
+      }
+    }
+    return [sx, sy];
+  });
+};
+FX.warp = img => _fxRemap(img, mkWave(14, 0.03, 6, 0.06));
+FX.wiggle = img => _fxRemap(img, mkWave(8, 0.15, 8, 0.15, 0.7));
+FX.phase = img => _fxRemap(img, (x, y) => [x + 10 * Math.sin(y * 0.08) + 4 * Math.sin(y * 0.31), y]);
+FX.spin = img => _fxRemap(img, mkSwirl(3.2, false));
+FX.dizzy = img => _fxRemap(img, mkSwirl(-3.5, true));
+FX.fan = img => _fxRemap(img, mkSwirl(2.8, true));
+FX.globe = img => _fxRemap(img, mkBarrel(0.6));
+FX.magnify = img => _fxRemap(img, mkZoom(1.8));
+FX.radiate = img => _fxRadialAverage(img, 10, () => 0.35);
+FX.shear = img => _fxRemap(img, mkShearX(0.35));
+FX.stretch = img => _fxRemap(img, (x, y, w, h) => { const cy = h / 2; return [x, cy + (y - cy) / 1.6]; });
+FX.tunnel = img => _fxRemap(img, mkTunnel(3));
+FX.endless = img => _fxRemap(img, mkKaleido(10));
+FX.pyramid = img => _fxRemap(img, mkKaleido(4));
+FX.tiles = img => {
+  const w = img.bitmap.width, h = img.bitmap.height, n = 3;
+  const tw = Math.floor(w / n) || 1, th = Math.floor(h / n) || 1;
+  return _fxRemap(img, (x, y) => {
+    let lx = x % tw, ly = y % th;
+    if (Math.floor(x / tw) % 2 === 1) lx = tw - 1 - lx;
+    if (Math.floor(y / th) % 2 === 1) ly = th - 1 - ly;
+    return [lx, ly];
+  });
+};
+FX.poly = img => {
+  const cell = 18, w = img.bitmap.width, h = img.bitmap.height;
+  const src = Buffer.from(img.bitmap.data), data = img.bitmap.data;
+  for (let cy = 0; cy < h; cy += cell) for (let cx = 0; cx < w; cx += cell) {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = cy; y < Math.min(h, cy + cell); y++) for (let x = cx; x < Math.min(w, cx + cell); x++) { const i = (y * w + x) * 4; r += src[i]; g += src[i + 1]; b += src[i + 2]; n++; }
+    r /= n; g /= n; b /= n;
+    for (let y = cy; y < Math.min(h, cy + cell); y++) for (let x = cx; x < Math.min(w, cx + cell); x++) { const i = (y * w + x) * 4; data[i] = r; data[i + 1] = g; data[i + 2] = b; }
+  }
+  return img;
+};
+
+// -- infinity / cube (composite-based recursive / isometric) --
+FX.infinity = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  let layer = img.clone();
+  for (let i = 0; i < 5; i++) {
+    layer = layer.clone().scale(0.62);
+    img.composite(layer, Math.round((w - layer.bitmap.width) / 2), Math.round((h - layer.bitmap.height) / 2));
+  }
+  return img;
+};
+FX.cube = async img => {
+  const s = Math.min(img.bitmap.width, img.bitmap.height);
+  const face = img.clone().cover(Math.round(s / 1.4), Math.round(s / 1.4));
+  const fw = face.bitmap.width, fh = face.bitmap.height;
+  const top = face.clone(); _fxRemap(top, (x, y, w, h) => [x + (y - h) * 0.5, y * 0.6]);
+  const left = face.clone(); _fxRemap(left, (x, y, w, h) => [x * 0.9, y + (w - x) * 0.35]);
+  const right = face.clone(); _fxRemap(right, (x, y, w, h) => [x * 0.9 + w * 0.1, y + x * 0.35]);
+  const canvas = await _fxNewCanvas(Math.round(fw * 2), Math.round(fh * 1.8), 0x00000000);
+  canvas.composite(left, 0, Math.round(fh * 0.5));
+  canvas.composite(right, fw, Math.round(fh * 0.5));
+  canvas.composite(top, Math.round(fw * 0.5), 0);
+  return canvas;
+};
+FX.plank = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const thin = img.clone().resize(w, Math.max(2, Math.round(h * 0.12)));
+  const canvas = await _fxNewCanvas(w, h, 0x00000000);
+  canvas.composite(thin, 0, Math.round((h - thin.bitmap.height) / 2));
+  return canvas;
+};
+FX.plates = async img => {
+  const s = Math.min(img.bitmap.width, img.bitmap.height);
+  const canvas = await _fxNewCanvas(Math.round(s * 1.3), Math.round(s * 1.6), 0x00000000);
+  for (let i = 0; i < 3; i++) {
+    const scale = 1 - i * 0.18;
+    const plate = img.clone().cover(Math.round(s * scale), Math.round(s * scale * 0.4));
+    _fxEachPixel(plate, (r, g, b, a, x, y, ww, hh) => {
+      const dx = (x - ww / 2) / (ww / 2), dy = (y - hh / 2) / (hh / 2);
+      return dx * dx + dy * dy > 1 ? [r, g, b, 0] : [r, g, b, a];
+    });
+    canvas.composite(plate, Math.round((canvas.bitmap.width - plate.bitmap.width) / 2), Math.round(i * plate.bitmap.height * 0.5));
+  }
+  return canvas;
+};
+
+// -- overlay / composite effects --
+FX.reflection = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const flipped = img.clone().flip(false, true);
+  _fxEachPixel(flipped, (r, g, b, a, x, y, ww, hh) => [r, g, b, Math.round(a * (1 - y / hh) * 0.6)]);
+  const canvas = await _fxNewCanvas(w, h * 2, 0x000000ff);
+  canvas.composite(img, 0, 0);
+  canvas.composite(flipped, 0, h);
+  return canvas;
+};
+FX.ripped = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const tearY = Array.from({ length: w }, (_, x) => h - Math.round(_fxNoise(x * 0.5) * h * 0.2));
+  return _fxEachPixel(img, (r, g, b, a, x, y) => (y > tearY[x] ? [r, g, b, 0] : [r, g, b, a]));
+};
+FX.shred = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const src = Buffer.from(img.bitmap.data), data = img.bitmap.data, stripW = 14;
+  for (let sx = 0; sx < w; sx += stripW) {
+    const offset = Math.round((_fxNoise(sx * 0.3) - 0.5) * h * 0.25);
+    for (let y = 0; y < h; y++) {
+      const sy = Math.max(0, Math.min(h - 1, y - offset));
+      for (let x = sx; x < Math.min(w, sx + stripW - 1); x++) {
+        const si = (sy * w + x) * 4, di = (y * w + x) * 4;
+        data[di] = src[si]; data[di + 1] = src[si + 1]; data[di + 2] = src[si + 2]; data[di + 3] = src[si + 3];
+      }
+    }
+  }
+  return img;
+};
+FX.slice = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const src = Buffer.from(img.bitmap.data), data = img.bitmap.data;
+  const bandH = Math.round(h / 6) || 1;
+  let i = 0;
+  for (let by = 0; by < h; by += bandH, i++) {
+    const offset = Math.round((i % 2 === 0 ? 1 : -1) * bandH * 0.4);
+    for (let y = by; y < Math.min(h, by + bandH); y++) {
+      for (let x = 0; x < w; x++) {
+        const sx = Math.max(0, Math.min(w - 1, x - offset));
+        const si = (y * w + sx) * 4, di = (y * w + x) * 4;
+        data[di] = src[si]; data[di + 1] = src[si + 1]; data[di + 2] = src[si + 2]; data[di + 3] = src[si + 3];
+      }
+    }
+  }
+  return img;
+};
+FX.layers = img => { const base = img.clone(); base.opacity(0.45); img.composite(base, 10, 6); img.composite(base, 20, 12); return img; };
+FX.drip = img => _fxRemap(img, (x, y, w, h) => [x, y - (_fxNoise(x * 0.2) > 0.7 ? _fxNoise(x * 0.37) * h * 0.5 * (y / h) : 0)]);
+FX.bomb = img => _fxEachPixel(img, (r, g, b, a, x, y, w, h) => {
+  const dx = (x - w / 2) / (w / 2), dy = (y - h / 2) / (h / 2), d = Math.sqrt(dx * dx + dy * dy);
+  const flash = Math.max(0, 1 - d * 1.3);
+  const vig = d > 0.8 ? Math.max(0.2, 1 - (d - 0.8) * 2) : 1;
+  return [_fxClamp((r + flash * 180) * vig), _fxClamp((g + flash * 150) * vig), _fxClamp((b + flash * 90) * vig), a];
+});
+FX.shine = img => _fxEachPixel(img, (r, g, b, a, x, y, w, h) => {
+  const d = (x + y) / (w + h), band = Math.exp(-Math.pow((d - 0.5) * 10, 2)), boost = 1 + band * 0.9;
+  return [_fxClamp(r * boost), _fxClamp(g * boost), _fxClamp(b * boost), a];
+});
+FX.soap = img => {
+  img.blur(4);
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = 0; i < 8; i++) {
+    const x = Math.round(_fxNoise(i * 4.4) * w), y = Math.round(_fxNoise(i * 8.8) * h), r = 6 + Math.round(_fxNoise(i * 13) * 18);
+    _fxDrawCircle(img, x, y, r, 255, 255, 255, 60);
+    _fxDrawCircle(img, x - Math.round(r * 0.3), y - Math.round(r * 0.3), Math.round(r * 0.3), 255, 255, 255, 140);
+  }
+  return img;
+};
+FX.paparazzi = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  _fxEachPixel(img, (r, g, b, a) => [_fxClamp(r * 0.7), _fxClamp(g * 0.7), _fxClamp(b * 0.7), a]);
+  for (let i = 0; i < 6; i++) _fxDrawCircle(img, Math.round(_fxNoise(i * 5.1) * w), Math.round(_fxNoise(i * 9.3) * h), 10 + Math.round(_fxNoise(i) * 8), 255, 255, 255, 210);
+  return img;
+};
+FX.rain = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  _fxEachPixel(img, (r, g, b, a) => [_fxClamp(r * 0.8), _fxClamp(g * 0.8), _fxClamp(b * 0.9), a]);
+  for (let i = 0; i < 80; i++) {
+    const x = Math.round(_fxNoise(i * 3.7) * w), y = Math.round(_fxNoise(i * 8.1) * h), len = 6 + Math.round(_fxNoise(i * 13) * 14);
+    _fxDrawLine(img, x, y, x - 4, y + len, 180, 200, 255, 140, 1);
+  }
+  return img;
+};
+FX.cracks = img => {
+  for (let i = 0; i < 4; i++) {
+    let x = _fxNoise(i * 2.1) * img.bitmap.width, y = _fxNoise(i * 5.5) * img.bitmap.height;
+    for (let s = 0; s < 10; s++) {
+      const nx = x + (_fxNoise(i * 20 + s) - 0.5) * 40, ny = y + (_fxNoise(i * 30 + s) - 0.5) * 40;
+      _fxDrawLine(img, Math.round(x), Math.round(y), Math.round(nx), Math.round(ny), 15, 15, 15, 200, 2);
+      x = nx; y = ny;
+    }
+  }
+  return img;
+};
+FX.knit = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = -h; i < w; i += 6) { _fxDrawLine(img, i, 0, i + h, h, 0, 0, 0, 35, 1); _fxDrawLine(img, i + h, 0, i, h, 255, 255, 255, 35, 1); }
+  return img;
+};
+FX.lines = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = -h; i < w; i += 5) _fxDrawLine(img, i, 0, i + h, h, 0, 0, 0, 60, 1);
+  return img;
+};
+FX.print = img => {
+  const w = img.bitmap.width, h = img.bitmap.height, cell = 10;
+  const src = Buffer.from(img.bitmap.data);
+  for (let cy = 0; cy < h; cy += cell) for (let cx = 0; cx < w; cx += cell) {
+    let sum = 0, n = 0;
+    for (let y = cy; y < Math.min(h, cy + cell); y++) for (let x = cx; x < Math.min(w, cx + cell); x++) { const i = (y * w + x) * 4; sum += (src[i] + src[i + 1] + src[i + 2]) / 3; n++; }
+    const lum = n ? sum / n : 255, radius = Math.max(0, Math.round((1 - lum / 255) * cell * 0.55));
+    _fxDrawRect(img, cx, cy, cell, cell, 255, 255, 255, 255);
+    if (radius > 0) _fxDrawCircle(img, cx + Math.floor(cell / 2), cy + Math.floor(cell / 2), radius, 20, 20, 20, 255);
+  }
+  return img;
+};
+FX.cow = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  _fxEachPixel(img, (r, g, b, a) => { const lum = (r + g + b) / 3; return [_fxClamp(lum * 0.3 + 200), _fxClamp(lum * 0.3 + 200), _fxClamp(lum * 0.3 + 200), a]; });
+  for (let i = 0; i < 14; i++) {
+    const cx = Math.round(_fxNoise(i * 3.3) * w), cy = Math.round(_fxNoise(i * 7.7) * h), r = 10 + Math.round(_fxNoise(i * 11) * 26);
+    _fxDrawCircle(img, cx, cy, r, 25, 20, 20, 220);
+    _fxDrawCircle(img, cx + Math.round(r * 0.6), cy - Math.round(r * 0.4), Math.round(r * 0.5), 25, 20, 20, 200);
+  }
+  return img;
+};
+FX.hearts = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = 0; i < 7; i++) _fxDrawHeart(img, Math.round(_fxNoise(i * 2.2) * w), Math.round(_fxNoise(i * 6.6) * h), 6 + Math.round(_fxNoise(i * 9) * 10), 235, 70, 120, 220);
+  return img;
+};
+FX.gallery = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height, pad = Math.round(Math.min(w, h) * 0.12);
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2, 0xf5f2e9ff);
+  canvas.composite(img, pad, pad);
+  _fxDrawRectOutline(canvas, pad - 6, pad - 6, w + 12, h + 12, 30, 25, 20, 255, 6);
+  _fxDrawRectOutline(canvas, 4, 4, canvas.bitmap.width - 8, canvas.bitmap.height - 8, 120, 95, 55, 255, 4);
+  return canvas;
+};
+FX.wall = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const canvas = await _fxNewCanvas(w, h, 0xffffffff);
+  const brickW = 40, brickH = 18, mortar = 2;
+  for (let y = 0; y < h; y += brickH) {
+    const offset = Math.floor(y / brickH) % 2 * (brickW / 2);
+    for (let x = -brickW; x < w; x += brickW) {
+      const shade = 140 + Math.floor(_fxNoise((x + offset) * 0.7 + y) * 40);
+      _fxDrawRect(canvas, x + offset, y, brickW - mortar, brickH - mortar, shade, 90, 70, 255);
+    }
+  }
+  const framed = img.clone().scaleToFit(Math.round(w * 0.7), Math.round(h * 0.7));
+  const fx = Math.round((w - framed.bitmap.width) / 2), fy = Math.round((h - framed.bitmap.height) / 2);
+  _fxDrawRectOutline(canvas, fx - 8, fy - 8, framed.bitmap.width + 16, framed.bitmap.height + 16, 90, 60, 30, 255, 8);
+  canvas.composite(framed, fx, fy);
+  return canvas;
+};
+FX.cinema = img => {
+  const w = img.bitmap.width, h = img.bitmap.height, bar = Math.round(h * 0.12);
+  _fxDrawRect(img, 0, 0, w, bar, 0, 0, 0, 255);
+  _fxDrawRect(img, 0, h - bar, w, bar, 0, 0, 0, 255);
+  return img;
+};
+FX.tv = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let y = 0; y < h; y += 2) _fxDrawRect(img, 0, y, w, 1, 0, 0, 0, 60);
+  _fxEachPixel(img, (r, g, b, a, x, y, ww, hh) => {
+    const dx = (x - ww / 2) / (ww / 2), dy = (y - hh / 2) / (hh / 2), v = 1 - Math.min(1, (dx * dx + dy * dy) * 0.35);
+    return [_fxClamp(r * v), _fxClamp(g * v), _fxClamp(b * v), a];
+  });
+  const pad = Math.round(Math.min(w, h) * 0.08);
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2, 0x1a1a1aff);
+  canvas.composite(img, pad, pad);
+  _fxDrawRectOutline(canvas, Math.round(pad / 2), Math.round(pad / 2), canvas.bitmap.width - pad, canvas.bitmap.height - pad, 60, 60, 60, 255, 4);
+  return canvas;
+};
+FX.console = async img => {
+  const inner = img.clone().scaleToFit(500, 320);
+  const w = inner.bitmap.width, h = inner.bitmap.height, pad = 30, barH = 18;
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2 + barH + 16, 0x0c0c0cff);
+  canvas.composite(inner, pad, pad);
+  _fxDrawRect(canvas, pad, h + pad + 8, w, barH, 30, 30, 30, 255);
+  _fxDrawRect(canvas, pad, h + pad + 8, Math.round(w * 0.64), barH, 90, 220, 120, 255);
+  await _fxPrint(canvas, "LOADING...", pad, 6, Jimp.FONT_SANS_16_WHITE);
+  return canvas;
+};
+FX.phone = async img => {
+  const inner = img.clone().cover(300, 560);
+  const w = inner.bitmap.width, h = inner.bitmap.height, pad = 16;
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2 + 40, 0x111111ff);
+  canvas.composite(inner, pad, pad + 20);
+  _fxDrawRect(canvas, Math.round(canvas.bitmap.width / 2 - 30), 6, 60, 8, 40, 40, 40, 255);
+  _fxDrawRectOutline(canvas, 2, 2, canvas.bitmap.width - 4, canvas.bitmap.height - 4, 0, 0, 0, 255, 4);
+  return canvas;
+};
+FX.billboard = async img => {
+  const board = img.clone().cover(640, 320);
+  const w = board.bitmap.width, h = board.bitmap.height, pad = 20, legH = 60;
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2 + legH, 0x8fb8e0ff);
+  _fxDrawRectOutline(canvas, pad - 10, pad - 10, w + 20, h + 20, 90, 70, 40, 255, 10);
+  canvas.composite(board, pad, pad);
+  _fxDrawRect(canvas, Math.round(w * 0.25), h + pad * 2 - 10, 14, legH, 70, 55, 35, 255);
+  _fxDrawRect(canvas, Math.round(w * 0.7), h + pad * 2 - 10, 14, legH, 70, 55, 35, 255);
+  return canvas;
+};
+FX.ipcam = async img => {
+  _fxEachPixel(img, (r, g, b, a) => {
+    const lum = (r + g + b) / 3, n = (_fxNoise((r + g + b + a) * 0.31) - 0.5) * 30;
+    return [_fxClamp(lum * 0.1 + n), _fxClamp(lum * 0.85 + n), _fxClamp(lum * 0.1 + n), a];
+  });
+  const w = img.bitmap.width, h = img.bitmap.height;
+  _fxDrawRectOutline(img, 4, 4, w - 8, h - 8, 0, 255, 0, 180, 2);
+  await _fxPrint(img, "● REC", 8, 8, Jimp.FONT_SANS_16_WHITE);
+  await _fxPrint(img, new Date().toISOString().slice(0, 19).replace("T", " "), 8, h - 26, Jimp.FONT_SANS_16_WHITE);
+  return img;
+};
+FX.logoff = async img => {
+  img.greyscale(); img.opacity(0.35);
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const canvas = await _fxNewCanvas(w, h, 0x1c1c1cff);
+  canvas.composite(img, 0, 0);
+  await _fxPrint(canvas, "Session ended.", Math.round(w * 0.5 - 90), Math.round(h / 2 - 20), Jimp.FONT_SANS_32_WHITE);
+  await _fxPrint(canvas, "You have been logged off.", Math.round(w * 0.5 - 120), Math.round(h / 2 + 20), Jimp.FONT_SANS_16_WHITE);
+  return canvas;
+};
+FX.calling = async img => {
+  const avatar = img.clone().cover(160, 160);
+  const w = 320, h = 560, cx = w / 2, cy = 180;
+  const canvas = await _fxNewCanvas(w, h, 0x101418ff);
+  const masked = avatar.clone();
+  _fxEachPixel(masked, (r, g, b, a, x, y, ww, hh) => {
+    const dx = x - ww / 2, dy = y - hh / 2, rad = ww / 2;
+    return dx * dx + dy * dy > rad * rad ? [r, g, b, 0] : [r, g, b, a];
+  });
+  canvas.composite(masked, Math.round(cx - 80), Math.round(cy - 80));
+  await _fxPrint(canvas, "Incoming call...", Math.round(cx - 70), cy + 100, Jimp.FONT_SANS_16_WHITE);
+  _fxDrawCircle(canvas, Math.round(cx - 50), h - 70, 26, 60, 200, 90, 255);
+  _fxDrawCircle(canvas, Math.round(cx + 50), h - 70, 26, 220, 60, 60, 255);
+  return canvas;
+};
+FX.clock = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  const cx = Math.round(w * 0.82), cy = Math.round(h * 0.18), r = Math.round(Math.min(w, h) * 0.14);
+  _fxDrawCircle(img, cx, cy, r + 4, 255, 255, 255, 220);
+  _fxDrawCircle(img, cx, cy, r, 20, 20, 20, 255);
+  const now = new Date();
+  const hourA = ((now.getHours() % 12) / 12) * Math.PI * 2 - Math.PI / 2;
+  const minA = (now.getMinutes() / 60) * Math.PI * 2 - Math.PI / 2;
+  _fxDrawLine(img, cx, cy, cx + Math.cos(hourA) * r * 0.5, cy + Math.sin(hourA) * r * 0.5, 255, 255, 255, 255, 3);
+  _fxDrawLine(img, cx, cy, cx + Math.cos(minA) * r * 0.8, cy + Math.sin(minA) * r * 0.8, 255, 255, 255, 255, 2);
+  return img;
+};
+FX.lamp = img => _fxEachPixel(img, (r, g, b, a, x, y, w, h) => {
+  const dx = (x - w / 2) / w, dy = (y - h * 0.25) / h, d = Math.sqrt(dx * dx + dy * dy), v = Math.max(0.15, 1 - d * 1.6);
+  return [_fxClamp(r * v), _fxClamp(g * v), _fxClamp(b * v), a];
+});
+FX.captcha = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = 1; i < 3; i++) {
+    _fxDrawLine(img, Math.round(w * i / 3), 0, Math.round(w * i / 3), h, 255, 255, 255, 160, 2);
+    _fxDrawLine(img, 0, Math.round(h * i / 3), w, Math.round(h * i / 3), 255, 255, 255, 160, 2);
+  }
+  _fxDrawRect(img, 0, h - 28, w, 28, 0, 0, 0, 180);
+  await _fxPrint(img, "Select all squares", 6, h - 26, Jimp.FONT_SANS_16_WHITE);
+  _fxDrawRectOutline(img, w - 26, 6, 20, 20, 255, 255, 255, 255, 2);
+  return img;
+};
+FX.wanted = async img => {
+  const inner = img.clone();
+  _fxEachPixel(inner, (r, g, b, a) => { const lum = (r + g + b) / 3; return [_fxClamp(lum * 0.9 + 30), _fxClamp(lum * 0.7 + 15), _fxClamp(lum * 0.45), a]; });
+  const w = inner.bitmap.width, h = inner.bitmap.height, pad = 40;
+  const canvas = await _fxNewCanvas(w + pad * 2, h + pad * 2 + 60, 0xe8d6a8ff);
+  _fxDrawRectOutline(canvas, 10, 10, canvas.bitmap.width - 20, canvas.bitmap.height - 20, 30, 20, 10, 255, 6);
+  await _fxPrint(canvas, "WANTED", Math.round(canvas.bitmap.width / 2 - 70), 16, Jimp.FONT_SANS_32_BLACK);
+  canvas.composite(inner, pad, 60);
+  await _fxPrint(canvas, `REWARD $${1000 + Math.floor(_fxNoise(w) * 9000)}`, Math.round(canvas.bitmap.width / 2 - 90), h + 70, Jimp.FONT_SANS_16_BLACK);
+  return canvas;
+};
+FX.alert = async img => {
+  const w = img.bitmap.width;
+  _fxDrawRect(img, 0, 0, w, 34, 20, 20, 20, 230);
+  _fxDrawRect(img, 0, 0, w, 5, 235, 190, 20, 255);
+  _fxDrawRect(img, 0, 29, w, 5, 235, 190, 20, 255);
+  await _fxPrint(img, "⚠ ALERT", 10, 6, Jimp.FONT_SANS_16_WHITE);
+  return img;
+};
+FX.facts = async img => { _fxDrawRect(img, 0, 0, 150, 32, 255, 255, 255, 230); await _fxPrint(img, "FACT:", 8, 6, Jimp.FONT_SANS_16_BLACK); return img; };
+FX.didyoumean = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  _fxDrawRect(img, 0, h - 34, w, 34, 245, 245, 245, 235);
+  await _fxPrint(img, "Did you mean: this?", 8, h - 28, Jimp.FONT_SANS_16_BLACK);
+  return img;
+};
+FX.equations = async img => {
+  const eqs = ["E=mc²", "∫f(x)dx", "a²+b²=c²", "x=(-b±√Δ)/2a", "F=ma"];
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let i = 0; i < 5; i++) await _fxPrint(img, eqs[i], Math.round(_fxNoise(i * 3.3) * Math.max(1, w - 80)), Math.round(_fxNoise(i * 7.1) * Math.max(1, h - 24)), Jimp.FONT_SANS_16_WHITE);
+  return img;
+};
+FX.explicit = async img => {
+  const w = img.bitmap.width, h = img.bitmap.height, bw = Math.min(180, w - 10), bh = 40;
+  _fxDrawRect(img, w - bw - 6, h - bh - 6, bw, bh, 0, 0, 0, 255);
+  _fxDrawRectOutline(img, w - bw - 6, h - bh - 6, bw, bh, 255, 40, 40, 255, 3);
+  await _fxPrint(img, "EXPLICIT", w - bw + 6, h - bh + 4, Jimp.FONT_SANS_16_WHITE);
+  return img;
+};
+FX.sensitive = async img => {
+  img.blur(18);
+  const w = img.bitmap.width, h = img.bitmap.height;
+  await _fxPrint(img, "Sensitive Content", Math.round(w / 2 - 90), Math.round(h / 2 - 10), Jimp.FONT_SANS_16_WHITE);
+  return img;
+};
+FX.ads = async img => { const w = img.bitmap.width; _fxDrawRect(img, w - 90, 4, 86, 22, 255, 204, 0, 230); await _fxPrint(img, "Sponsored", w - 86, 6, Jimp.FONT_SANS_16_BLACK); return img; };
+FX.pattern = img => {
+  const w = img.bitmap.width, h = img.bitmap.height;
+  for (let y = 0; y < h; y += 16) for (let x = 0; x < w; x += 16) { _fxDrawLine(img, x, y + 8, x + 8, y, 255, 255, 255, 50, 1); _fxDrawLine(img, x + 8, y, x + 16, y + 8, 255, 255, 255, 50, 1); }
+  return img;
+};
+
+// -- grid/mosaic renders (letters/emojify) --
+FX.letters = async img => {
+  const ramp = " .:-=+*#%@", cell = 8, w = img.bitmap.width, h = img.bitmap.height;
+  const cols = Math.floor(w / cell) || 1, rows = Math.floor(h / cell) || 1;
+  const canvas = await _fxNewCanvas(cols * cell, rows * cell, 0x000000ff);
+  const font = await _fxFont(Jimp.FONT_SANS_8_WHITE);
+  const src = img.bitmap.data;
+  for (let ry = 0; ry < rows; ry++) {
+    for (let rx = 0; rx < cols; rx++) {
+      let sum = 0, n = 0;
+      for (let y = ry * cell; y < Math.min(h, (ry + 1) * cell); y++) for (let x = rx * cell; x < Math.min(w, (rx + 1) * cell); x++) { const i = (y * w + x) * 4; sum += (src[i] + src[i + 1] + src[i + 2]) / 3; n++; }
+      const lum = n ? sum / n : 0;
+      canvas.print(font, rx * cell, ry * cell, ramp[Math.min(ramp.length - 1, Math.floor((lum / 255) * (ramp.length - 1)))]);
+    }
+  }
+  return canvas;
+};
+FX.emojify = img => {
+  const cell = 20, w = img.bitmap.width, h = img.bitmap.height;
+  const src = Buffer.from(img.bitmap.data);
+  for (let cy = 0; cy < h; cy += cell) for (let cx = 0; cx < w; cx += cell) {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = cy; y < Math.min(h, cy + cell); y++) for (let x = cx; x < Math.min(w, cx + cell); x++) { const i = (y * w + x) * 4; r += src[i]; g += src[i + 1]; b += src[i + 2]; n++; }
+    r /= n; g /= n; b /= n;
+    _fxDrawRect(img, cx, cy, cell, cell, 255, 255, 255, 255);
+    _fxDrawCircle(img, cx + Math.floor(cell / 2), cy + Math.floor(cell / 2), Math.floor(cell * 0.42), Math.round(r), Math.round(g), Math.round(b), 255);
+  }
+  return img;
+};
+
+// -- fire --
+FX.fire = img => {
+  const w = img.bitmap.width, h = img.bitmap.height, flameH = Math.round(h * 0.4);
+  for (let y = h - flameH; y < h; y++) {
+    const t = (y - (h - flameH)) / flameH;
+    for (let x = 0; x < w; x++) {
+      const n = _fxNoise(x * 0.15 + y * 0.05);
+      if (n < 0.35 + t * 0.4) _fxBlendPixel(img, x, y, 255, Math.round(120 + n * 100), Math.round(20 * n), Math.round(120 * t));
+    }
+  }
+  return img;
+};
+FX.shock = img => {
+  for (let i = 0; i < 10; i++) {
+    let x = _fxNoise(i * 3.3) * img.bitmap.width, y = _fxNoise(i * 7.1) * img.bitmap.height;
+    for (let s = 0; s < 6; s++) {
+      const nx = x + (_fxNoise(i * 13 + s) - 0.5) * 60, ny = y + (_fxNoise(i * 19 + s) - 0.5) * 60;
+      _fxDrawLine(img, Math.round(x), Math.round(y), Math.round(nx), Math.round(ny), 255, 255, 255, 220, 2);
+      x = nx; y = ny;
+    }
+  }
+  return img;
+};
+
+// -- SKIPPED: needs a licensed/copyrighted character image (or a GIF encoder we don't have) --
+const FX_SKIPPED = {
+  drake: "the Drake meme photo is copyrighted -- can't generate or embed it here. Needs licensed template art from the developer.",
+  pooh: "the Winnie the Pooh meme images are copyrighted -- can't generate or embed them here. Needs licensed template art.",
+  oogway: "the Kung Fu Panda / Master Oogway image is copyrighted -- can't generate or embed it here. Needs licensed template art.",
+  sadcat: "the original 'sad cat' meme photo is copyrighted -- can't generate or embed it here. Needs licensed template art.",
+  gun: "this meme needs a specific licensed photo (the classic 'this is a gun' template) -- can't generate or embed it here. Needs template art from the developer.",
+  bonks: "the bonk meme artwork is copyrighted, and it's normally an animated GIF -- that also needs a GIF-encoding library that isn't installed. Needs both licensed art and a GIF library.",
+  patpat: "the pat-pat meme artwork is copyrighted, and it's normally an animated GIF -- that also needs a GIF-encoding library that isn't installed. Needs both licensed art and a GIF library.",
+  supreme: "this would need the Supreme box logo, which is a registered trademark -- won't reproduce that.",
+};
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  MUSIC COMMANDS (real playback via discord-player -- see player init near the
+// ██  top of the file for extractor setup / the "player" and "MUSIC_247" globals)
+// ═══════════════════════════════════════════════════════════════════════════════
+const MUSIC = {};
+
+MUSIC.play = async (message, args, rest) => {
+  const vc = message.member.voice.channel;
+  if (!vc) return err(message, "join a voice channel first.");
+  if (!rest) return err(message, "usage: `,play <song name or URL>`");
+  const p = useMainPlayer();
+  const is247 = MUSIC_247.has(message.guild.id);
+  const { track } = await p.play(vc, rest, {
+    nodeOptions: {
+      metadata: { channel: message.channel },
+      leaveOnEmpty: !is247,
+      leaveOnEmptyCooldown: 60000,
+      leaveOnEnd: !is247,
+      leaveOnEndCooldown: 60000,
+      volume: 70,
+    },
+    requestedBy: message.author,
+  });
+  return ok(message, `queued **${track.title}**.`);
+};
+MUSIC.pause = message => {
+  const q = useQueue(message.guild.id);
+  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
+  q.node.setPaused(true);
+  return ok(message, "paused.");
+};
+MUSIC.resume = message => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  q.node.setPaused(false);
+  return ok(message, "resumed.");
+};
+MUSIC.skip = message => {
+  const q = useQueue(message.guild.id);
+  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
+  const skipped = q.currentTrack.title;
+  q.node.skip();
+  return ok(message, `skipped **${skipped}**.`);
+};
+MUSIC.stop = message => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  q.delete();
+  return ok(message, "stopped and cleared the queue.");
+};
+MUSIC.clearqueue = message => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  q.tracks.clear();
+  return ok(message, "cleared the queue (current track keeps playing).");
+};
+MUSIC.queue = message => {
+  const q = useQueue(message.guild.id);
+  if (!q || (!q.currentTrack && q.tracks.size === 0)) return err(message, "queue is empty.");
+  const list = q.tracks.toArray().slice(0, 15).map((t, i) => `**${i + 1}.** ${t.title} -- ${t.requestedBy}`).join("\n") || "*(nothing queued up next)*";
+  const now = q.currentTrack ? `**Now Playing:** ${q.currentTrack.title}\n\n` : "";
+  return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "Queue", description: now + list }] });
+};
+MUSIC.current = message => {
+  const q = useQueue(message.guild.id);
+  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
+  const t = q.currentTrack;
+  return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: t.title, url: t.url, description: `by **${t.author}** -- requested by ${t.requestedBy}`, thumbnail: { url: t.thumbnail } }] });
+};
+MUSIC.volume = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  const n = parseInt(args[1]);
+  if (isNaN(n) || n < 0 || n > 150) return err(message, "usage: `,volume <0-150>`");
+  q.node.setVolume(n);
+  return ok(message, `volume set to **${n}%**.`);
+};
+MUSIC.seek = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
+  const parts = (args[1] || "").split(":").map(Number);
+  let ms;
+  if (parts.length === 2 && !parts.some(isNaN)) ms = (parts[0] * 60 + parts[1]) * 1000;
+  else if (parts.length === 1 && !isNaN(parts[0])) ms = parts[0] * 1000;
+  else return err(message, "usage: `,seek <seconds>` or `,seek <mm:ss>`");
+  q.node.seek(ms);
+  return ok(message, `seeked to **${args[1]}**.`);
+};
+MUSIC.shuffle = message => {
+  const q = useQueue(message.guild.id);
+  if (!q || q.tracks.size < 2) return err(message, "not enough tracks queued to shuffle.");
+  q.tracks.shuffle();
+  return ok(message, "shuffled the queue.");
+};
+MUSIC.remove = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  const n = parseInt(args[1]);
+  if (isNaN(n) || n < 1 || n > q.tracks.size) return err(message, `usage: \`,remove <1-${q.tracks.size || 0}>\``);
+  const track = q.tracks.at(n - 1);
+  q.node.remove(track);
+  return ok(message, `removed **${track.title}**.`);
+};
+MUSIC.loop = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  const mode = (args[1] || "").toLowerCase();
+  const modes = { off: QueueRepeatMode.OFF, track: QueueRepeatMode.TRACK, song: QueueRepeatMode.TRACK, queue: QueueRepeatMode.QUEUE, all: QueueRepeatMode.QUEUE };
+  if (!(mode in modes)) return err(message, "usage: `,loop <off|track|queue>`");
+  q.setRepeatMode(modes[mode]);
+  return ok(message, `loop mode set to **${mode}**.`);
+};
+MUSIC.automix = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  const on = (args[1] || "").toLowerCase() !== "off";
+  q.setRepeatMode(on ? QueueRepeatMode.AUTOPLAY : QueueRepeatMode.OFF);
+  return ok(message, `automix (autoplay related tracks) **${on ? "enabled" : "disabled"}**.`);
+};
+MUSIC["247"] = message => {
+  const gid = message.guild.id, q = useQueue(gid);
+  if (MUSIC_247.has(gid)) {
+    MUSIC_247.delete(gid);
+    return ok(message, "24/7 mode **disabled** -- I'll leave when the queue empties.");
+  }
+  MUSIC_247.add(gid);
+  q?.node?.setLeaveOnEmpty?.(false);
+  q?.node?.setLeaveOnEnd?.(false);
+  return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties. (Takes effect immediately for a queue already running; always applies from the next `,play` onward.)");
+};
+MUSIC.preset = (message, args) => {
+  const q = useQueue(message.guild.id);
+  if (!q) return err(message, "nothing is playing.");
+  const name = (args[1] || "").toLowerCase();
+  const filterMap = { bassboost: "bassboost", nightcore: "nightcore", vaporwave: "vaporwave", "8d": "8D", reverse: "reverse" };
+  if (name === "clear" || name === "off") { q.filters.ffmpeg.setFilters(false); return ok(message, "cleared audio filters."); }
+  if (!(name in filterMap)) return err(message, "usage: `,preset <bassboost|nightcore|vaporwave|8d|reverse|clear>`");
+  q.filters.ffmpeg.toggle(filterMap[name]);
+  return ok(message, `toggled the **${name}** filter.`);
+};
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(",")) return;
@@ -20213,17 +21284,32 @@ client.on("messageCreate", async (message) => {
     return err(message, "usage: `,voicemaster <setup|claim|lock|unlock|hide|unhide|permit|reject|limit|rename|transfer|kick>`");
   }
 
-  // -- MANIPULATION (image-processing effects -- see note below) --
-  if (command === "3d" || command === "ads" || command === "alert" || command === "bayer" || command === "bevel" || command === "billboard" || command === "blocks" || command === "blur" || command === "boil" || command === "bomb" || command === "bonks" || command === "calling" || command === "canny" || command === "captcha" || command === "cartoon" || command === "cinema" || command === "clock" || command === "console" || command === "cow" || command === "cracks" || command === "cube" || command === "didyoumean" || command === "dither" || command === "dizzy" || command === "drake" || command === "drip" || command === "earthquake" || command === "endless" || command === "equations" || command === "explicit" || command === "facts" || command === "fall" || command === "fan" || command === "fire" || command === "flush" || command === "gallery" || command === "gameboy" || command === "glitch" || command === "globe" || command === "gun" || command === "halfinvert" || command === "hearts" || command === "infinity" || command === "invert" || command === "ipcam" || command === "knit" || command === "lamp" || command === "laundry" || command === "layers" || command === "letters" || command === "lines" || command === "liquefy" || command === "logoff" || command === "lsd" || command === "magnify" || command === "matrix" || command === "melt" || command === "neon" || command === "oogway" || command === "optics" || command === "painting" || command === "paparazzi" || command === "patpat" || command === "pattern" || command === "phase" || command === "phone" || command === "plank" || command === "plates" || command === "poly" || command === "pooh" || command === "print" || command === "pyramid" || command === "radiate" || command === "rain" || command === "reflection" || command === "ripped" || command === "sadcat" || command === "sensitive" || command === "shear" || command === "shine" || command === "shock" || command === "shred" || command === "slice" || command === "soap" || command === "spin" || command === "stereo" || command === "stretch" || command === "supreme" || command === "tiles" || command === "tunnel" || command === "tv" || command === "wall" || command === "warp" || command === "wiggle" || command === "zonk") {
-    return err(message, "this image effect needs an image-processing library (e.g. Jimp or canvas) that isn't installed on this bot yet -- ask the developer to add it. Command scaffolding is ready, the pixel effect itself is not wired up.");
+  // -- MANIPULATION (real image-processing effects via Jimp -- see the engine block
+  // near the top of the file for FX / FX_SKIPPED) --
+  if (FX[command]) {
+    try {
+      let img = await _fxLoadImage(message);
+      img = (await FX[command](img)) || img;
+      return await _fxReply(message, img, command);
+    } catch (e) {
+      return err(message, `couldn't apply that effect: ${e.message}`);
+    }
+  }
+  if (FX_SKIPPED[command]) {
+    return err(message, `\`,${command}\` isn't available -- ${FX_SKIPPED[command]}`);
   }
   if (command === "caption" || command === "img2gif") {
     return err(message, "this needs an image-processing library that isn't installed on this bot yet -- ask the developer to add one (e.g. Jimp).");
   }
 
-  // -- MUSIC (real audio playback -- see note below) --
-  if (command === "247" || command === "automix" || command === "clearqueue" || command === "current" || command === "loop" || command === "pause" || command === "play" || command === "preset" || command === "queue" || command === "remove" || command === "resume" || command === "seek" || command === "skip" || command === "stop" || command === "volume") {
-    return err(message, "music playback needs `@discordjs/voice` plus an audio source resolver installed and configured on this bot -- ask the developer to set that up. This command is not wired to real audio yet.");
+  // -- MUSIC (real audio playback via discord-player -- see the MUSIC block near the
+  // top of the file) --
+  if (typeof MUSIC[command] === "function") {
+    try {
+      return await MUSIC[command](message, args, rest);
+    } catch (e) {
+      return err(message, `music error: ${e.message}`);
+    }
   }
 });
 
