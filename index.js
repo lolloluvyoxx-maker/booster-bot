@@ -1,3 +1,15 @@
+// ── Node 18 compatibility shim ────────────────────────────────────────────────
+// Node only made `File` a default global starting in v20. `undici` (pulled in
+// transitively by discord-player-youtubei / discord.js's REST layer) assumes
+// `File` already exists on globalThis and crashes on require() otherwise:
+//   ReferenceError: File is not defined  (undici/lib/web/webidl/index.js)
+// Node 18.13+ ships the same File class on the `buffer` module, just not
+// attached to globalThis by default -- so just attach it ourselves, first thing,
+// before anything else gets a chance to require() undici.
+if (typeof globalThis.File === "undefined") {
+  try { globalThis.File = require("node:buffer").File; } catch (_) { /* leave it; the real error will surface if this doesn't work */ }
+}
+
 const { Client, GatewayIntentBits, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ContainerBuilder, SectionBuilder, TextDisplayBuilder, SeparatorBuilder, SeparatorSpacingSize, ThumbnailBuilder, MessageFlags, MediaGalleryBuilder, MediaGalleryItemBuilder, AttachmentBuilder } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
