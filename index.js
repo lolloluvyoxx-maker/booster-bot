@@ -1,6 +1,6 @@
 // ── Node 18 compatibility shim ────────────────────────────────────────────────
 // Node only made `File` a default global starting in v20. `undici` (pulled in
-// transitively by discord-player-youtubei / discord.js's REST layer) assumes
+// transitively by discord.js's REST layer or other deps) assumes
 // `File` already exists on globalThis and crashes on require() otherwise:
 //   ReferenceError: File is not defined  (undici/lib/web/webidl/index.js)
 // Node 18.13+ ships the same File class on the `buffer` module, just not
@@ -17,11 +17,7 @@ const path = require("path");
 // -- Real image processing (,blur, ,invert, ,glitch, etc. -- see IMAGE MANIPULATION ENGINE) --
 const Jimp = require("jimp");
 
-// -- Real music playback (,play, ,queue, ,skip, etc.) --
-const { Player, useMainPlayer, useQueue, QueueRepeatMode, QueryType } = require("discord-player");
-const { DefaultExtractors } = require("@discord-player/extractor");
-const { YoutubeiExtractor } = require("discord-player-youtubei");
-require("ffmpeg-static"); // side-effect: registers a bundled ffmpeg binary for prism-media/discord-player to find
+// -- Real music playback: Lavalink via lavalink-client (required lazily inside the MUSIC PLAYER block) --
 
 // ── BUILD MARKER ─────────────────────────────────────────────────────────────
 // Prints immediately on boot, before the DB/login sequence. If you don't see
@@ -875,49 +871,225 @@ const client = new Client({
 client.setMaxListeners(50);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MUSIC PLAYER (discord-player) -- real audio playback engine
+// ██  MUSIC PLAYER (Lavalink via lavalink-client) -- ported from the Yukihana bot
 // ═══════════════════════════════════════════════════════════════════════════════
-// One Player instance for the whole bot (discord-player manages one queue per guild
-// internally). Extractors resolve search queries / URLs into playable audio:
-//   - DefaultExtractors (from @discord-player/extractor): SoundCloud, Spotify/Apple
-//     Music metadata bridging, Vimeo, Reverbnation, raw attachments, local files.
-//   - YoutubeiExtractor: YouTube search + streaming. This is a community extractor
-//     (discord-player dropped official YouTube support in v7 because Google changes
-//     break scrapers often) -- if YouTube playback ever stops working, that package
-//     needs a version bump, it's not something wrong with the command wiring below.
-const player = new Player(client);
-const MUSIC_247 = new Set(); // guild IDs with ,247 enabled (bot stays in VC / keeps the queue alive when empty)
-const MUSIC_PRESETS = {
-  bassboost: [{ name: "bassboost", band0: 0.85 }], // placeholder marker, real filter applied via queue.filters.ffmpeg below
-  nightcore: "nightcore",
-  vaporwave: "vaporwave",
-  "8d": "8D",
-  reverse: "reverse",
-  clear: null,
+// Audio is resolved and streamed by an external Lavalink server (a separate Java audio
+// node), NOT inside this process. That's why it's reliable: YouTube/Spotify/SoundCloud/
+// Apple Music/Deezer resolution happens on the node, so there are no in-process scrapers
+// to break and nothing here gets blocked for coming from a datacenter IP.
+//
+// Configure with env vars (Railway -> Variables):
+//   LAVALINK_HOST      e.g. lava-v4.example.org
+//   LAVALINK_PORT      e.g. 443   (default 2333)
+//   LAVALINK_PASSWORD  the node's password
+//   LAVALINK_SECURE    "true" for wss:// nodes (port 443), otherwise omit
+//   LASTFM_API_KEY     optional -- better ,autoplay recommendations (falls back to
+//                      "more from the same artist" without it)
+const MUSIC_247 = new Set(); // guild IDs with ,247 on -- bot stays in VC even when the queue empties
+const MUSIC_MAX_QUEUE = 200;
+const LAVALINK_CFG = {
+  host: process.env.LAVALINK_HOST,
+  port: parseInt(process.env.LAVALINK_PORT) || 2333,
+  password: process.env.LAVALINK_PASSWORD,
+  secure: String(process.env.LAVALINK_SECURE).toLowerCase() === "true",
 };
-(async () => {
-  try {
-    await player.extractors.loadMulti(DefaultExtractors);
-    log("[music] DefaultExtractors loaded (SoundCloud/Spotify/Apple Music/Vimeo/Reverbnation/attachments).", "success");
-  } catch (e) {
-    log(`[music] Failed to load DefaultExtractors: ${e.stack ?? e.message}`, "error");
+let lavalink = null;
+
+const _mFmt = ms => {
+  if (!ms || ms < 0) return "LIVE";
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+};
+const _mBar = (pos, dur, len = 15) => {
+  if (!dur || dur <= 0) return "░".repeat(len);
+  const filled = Math.max(0, Math.min(len, Math.round((pos / dur) * len)));
+  return "█".repeat(filled) + "░".repeat(len - filled);
+};
+function _mNodeReady() {
+  try { return !!lavalink && [...lavalink.nodeManager.nodes.values()].some(n => n.connected); } catch { return false; }
+}
+// search-prefix names Lavalink understands (LavaSrc / youtube-source plugins on the node)
+const _M_SOURCES = { yt: "ytsearch", youtube: "ytsearch", sp: "spsearch", spotify: "spsearch", am: "amsearch", apple: "amsearch", sc: "scsearch", soundcloud: "scsearch", dz: "dzsearch", deezer: "dzsearch", js: "jssearch", jiosaavn: "jssearch" };
+// Resolve a query/URL into Lavalink tracks. URLs go straight through; plain text tries the
+// requested source, or spotify -> youtube -> soundcloud in order until one returns results.
+async function _mResolve(query, requester, srcFlag) {
+  const node = lavalink.nodeManager.leastUsedNodes("memory")[0];
+  if (!node) throw new Error("no Lavalink node is connected");
+  const isUrl = /^https?:\/\//i.test(query);
+  const forced = srcFlag ? _M_SOURCES[String(srcFlag).toLowerCase()] : null;
+  const sources = isUrl ? ["spsearch"] : forced ? [forced] : ["spsearch", "ytsearch", "scsearch"];
+  for (const source of sources) {
+    try {
+      const res = await node.search({ query, source }, requester);
+      if (res && res.tracks?.length && res.loadType !== "error") return res;
+    } catch (e) {
+      log(`[music] search via ${source} failed for "${query}": ${e.message}`, "error");
+    }
   }
-  try {
-    await player.extractors.register(YoutubeiExtractor, {});
-    log("[music] YoutubeiExtractor registered (YouTube search/stream).", "success");
-  } catch (e) {
-    log(`[music] Failed to register YoutubeiExtractor: ${e.stack ?? e.message}`, "error");
+  return null;
+}
+function _mClearIdle(player) {
+  const t = player.get("idleTimeout");
+  if (t) { clearTimeout(t); player.set("idleTimeout", null); }
+}
+// Autoplay: queue a related track when the queue runs dry. Uses Last.fm similar-tracks when
+// LASTFM_API_KEY is set, otherwise pulls more from the same artist. Skips anything already played.
+async function _mAutoplay(player, lastTrack) {
+  const last = lastTrack || player.queue.previous?.[0];
+  if (!last?.info) return false;
+  const requester = player.get("autoplayBy") || last.requester;
+  const seen = new Set([last.info.identifier, ...(player.queue.previous || []).map(t => t.info?.identifier)]);
+  const queries = [];
+  const key = process.env.LASTFM_API_KEY;
+  if (key && last.info.author && last.info.title) {
+    try {
+      const url = `https://ws.audioscrobbler.com/2.0/?method=track.getsimilar&artist=${encodeURIComponent(last.info.author)}&track=${encodeURIComponent(last.info.title)}&api_key=${key}&format=json&limit=10`;
+      const data = await (await fetch(url)).json();
+      for (const t of data?.similartracks?.track || []) queries.push(`${t.artist?.name} - ${t.name}`);
+    } catch (e) { log(`[music] last.fm autoplay lookup failed: ${e.message}`, "error"); }
   }
-})();
-player.events.on("playerStart", (queue, track) => {
-  queue.metadata?.channel?.send({ embeds: [{ color: PINK, description: `🎶 now playing **${track.title}** by **${track.author}** -- requested by <@${track.requestedBy?.id}>` }] }).catch(() => {});
-});
-player.events.on("emptyQueue", (queue) => {
-  if (MUSIC_247.has(queue.guild.id)) return; // stay connected on 24/7
-  queue.metadata?.channel?.send({ embeds: [{ color: PINK, description: "queue finished -- leaving the voice channel." }] }).catch(() => {});
-});
-player.events.on("error", (queue, error) => log(`[music] queue error (${queue?.guild?.id}): ${error.message}`, "error"));
-player.events.on("playerError", (queue, error) => log(`[music] player error (${queue?.guild?.id}): ${error.message}`, "error"));
+  if (!queries.length && last.info.author) queries.push(last.info.author);
+  for (const q of queries.slice(0, 8)) {
+    const res = await _mResolve(q, requester).catch(() => null);
+    const pool = (res?.tracks || []).filter(t => !seen.has(t.info?.identifier));
+    if (!pool.length) continue;
+    const pick = key ? pool[0] : pool[Math.floor(Math.random() * Math.min(pool.length, 8))];
+    await player.queue.add(pick);
+    await player.play({});
+    return true;
+  }
+  return false;
+}
+
+// Builds the manager + wires all events. Split out so it can run after either a require() or a
+// dynamic import() of lavalink-client (covers both CJS and ESM-only builds of the package).
+function _setupLavalink(LavalinkManager) {
+    lavalink = new LavalinkManager({
+      nodes: [{
+        id: "main-node",
+        host: LAVALINK_CFG.host,
+        port: LAVALINK_CFG.port,
+        authorization: LAVALINK_CFG.password,
+        secure: LAVALINK_CFG.secure,
+        retryAmount: 5,
+        retryDelay: 3000,
+      }],
+      sendToShard: (guildId, payload) => client.guilds.cache.get(guildId)?.shard?.send(payload),
+      autoSkip: true,
+      client: { id: process.env.CLIENT_ID || "pending", username: "music" }, // real id/username supplied by init() on ready
+      autoSkipOnResolveError: true,
+      emitNewSongsOnly: false,
+      playerOptions: {
+        maxErrorsPerTime: { threshold: 10_000, maxAmount: 3 },
+        minAutoPlayMs: 10_000,
+        applyVolumeAsFilter: false,
+        clientBasedPositionUpdateInterval: 50,
+        defaultSearchPlatform: "spsearch",
+        onDisconnect: { autoReconnect: true, destroyPlayer: false },
+        useUnresolvedData: true,
+      },
+      queueOptions: { maxPreviousTracks: 10 },
+      linksAllowed: true,
+    });
+
+    // Voice gateway packets must be forwarded to Lavalink or it can never join a channel.
+    client.on("raw", d => { try { lavalink.sendRawData(d); } catch (e) { /* ignore malformed packets */ } });
+    let _lavalinkInited = false;
+    const _initLavalink = () => {
+      if (_lavalinkInited) return;
+      _lavalinkInited = true;
+      lavalink.init(client.user);
+      log(`[music] Lavalink manager initialised (${LAVALINK_CFG.secure ? "wss" : "ws"}://${LAVALINK_CFG.host}:${LAVALINK_CFG.port})`, "success");
+    };
+    client.once("clientReady", _initLavalink);
+    client.once("ready", _initLavalink);
+    if (client.isReady?.()) _initLavalink();
+
+    lavalink.nodeManager.on("connect", node => log(`[music] Lavalink node ${node.id} connected (${node.options.host}:${node.options.port})`, "success"));
+    lavalink.nodeManager.on("error", (node, error) => log(`[music] Lavalink node ${node.id} error: ${error?.message ?? error}`, "error"));
+    lavalink.nodeManager.on("disconnect", (node, reason) => log(`[music] Lavalink node ${node.id} disconnected: ${typeof reason === "string" ? reason : JSON.stringify(reason)}`, "error"));
+
+    lavalink.on("trackStart", async (player, track) => {
+      try {
+        _mClearIdle(player);
+        const ch = client.channels.cache.get(player.textChannelId);
+        if (!ch || !track?.info) return;
+        const old = player.get("npMessage");
+        if (old) old.delete().catch(() => {});
+        const msg = await ch.send({ embeds: [{
+          color: guildColor(player.guildId),
+          title: "Now Playing",
+          description: `**[${track.info.title}](${track.info.uri})**\nby ${track.info.author || "Unknown"}`,
+          fields: [
+            { name: "Duration", value: `\`${track.info.isStream ? "LIVE" : _mFmt(track.info.duration)}\``, inline: true },
+            { name: "Requested by", value: track.requester?.id ? `<@${track.requester.id}>` : "Unknown", inline: true },
+          ],
+          ...(track.info.artworkUrl ? { thumbnail: { url: track.info.artworkUrl } } : {}),
+        }] }).catch(() => null);
+        player.set("npMessage", msg);
+      } catch (e) { log(`[music] trackStart handler error: ${e.message}`, "error"); }
+    });
+    lavalink.on("trackError", (player, track, payload) => {
+      log(`[music] track error on "${track?.info?.title}": ${payload?.exception?.message ?? JSON.stringify(payload)}`, "error");
+      client.channels.cache.get(player.textChannelId)?.send({ embeds: [{ color: PINK, description: `couldn't play **${track?.info?.title ?? "that track"}** -- ${payload?.exception?.message ?? "the node failed to load it"}. skipping.` }] }).catch(() => {});
+    });
+    lavalink.on("trackStuck", (player, track) => {
+      log(`[music] track stuck: "${track?.info?.title}"`, "error");
+      client.channels.cache.get(player.textChannelId)?.send({ embeds: [{ color: PINK, description: `**${track?.info?.title ?? "that track"}** got stuck -- skipping.` }] }).catch(() => {});
+    });
+    lavalink.on("queueEnd", async (player, track) => {
+      const ch = client.channels.cache.get(player.textChannelId);
+      if (player.get("autoplay")) {
+        try { if (await _mAutoplay(player, track)) return; }
+        catch (e) { log(`[music] autoplay failed: ${e.message}`, "error"); }
+      }
+      if (MUSIC_247.has(player.guildId)) return; // 24/7: stay put
+      ch?.send({ embeds: [{ color: PINK, description: "queue finished -- leaving in 30s unless something else is queued." }] }).catch(() => {});
+      _mClearIdle(player);
+      player.set("idleTimeout", setTimeout(() => {
+        const p = lavalink.getPlayer(player.guildId);
+        if (p && !p.playing && !p.queue.current && !MUSIC_247.has(p.guildId)) p.destroy("queue ended").catch(() => {});
+      }, 30_000));
+    });
+    // Leave when everyone else has left the channel (unless 24/7).
+    client.on("voiceStateUpdate", (oldS, newS) => {
+      try {
+        const p = lavalink.getPlayer(oldS.guild.id);
+        if (!p || !p.voiceChannelId || MUSIC_247.has(p.guildId)) return;
+        const ch = oldS.guild.channels.cache.get(p.voiceChannelId);
+        if (!ch) return;
+        const humans = ch.members.filter(m => !m.user.bot).size;
+        if (humans === 0 && !p.get("aloneTimeout")) {
+          p.set("aloneTimeout", setTimeout(() => {
+            const pp = lavalink.getPlayer(p.guildId);
+            const c2 = oldS.guild.channels.cache.get(pp?.voiceChannelId);
+            if (pp && c2 && c2.members.filter(m => !m.user.bot).size === 0 && !MUSIC_247.has(pp.guildId)) pp.destroy("alone in vc").catch(() => {});
+            pp?.set("aloneTimeout", null);
+          }, 60_000));
+        } else if (humans > 0 && p.get("aloneTimeout")) {
+          clearTimeout(p.get("aloneTimeout")); p.set("aloneTimeout", null);
+        }
+      } catch (e) { /* non-fatal */ }
+    });
+}
+try {
+  if (LAVALINK_CFG.host && LAVALINK_CFG.password) {
+    let LM = null;
+    try { LM = require("lavalink-client").LavalinkManager; }
+    catch (e) {
+      if (e?.code !== "ERR_REQUIRE_ESM") throw e;
+      import("lavalink-client")
+        .then(m => _setupLavalink(m.LavalinkManager))
+        .catch(e2 => { log(`[music] Failed to load lavalink-client: ${e2.stack ?? e2.message}`, "error"); lavalink = null; });
+    }
+    if (LM) _setupLavalink(LM);
+  } else {
+    log("[music] LAVALINK_HOST / LAVALINK_PASSWORD not set -- music commands are disabled until they are (see the MUSIC PLAYER block for the env vars).", "error");
+  }
+} catch (e) {
+  log(`[music] Failed to initialise Lavalink: ${e.stack ?? e.message}`, "error");
+  lavalink = null;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ██  CUSTOM EMOJI / INTERACTION-EDIT FIX (Discord platform bug)
@@ -3554,13 +3726,21 @@ client.on("messageCreate", async (message) => {
           [",automix", ""],
           [",clearqueue", ""],
           [",current", ""],
+          [",disconnect", ""],
+          [",forward", ""],
           [",loop", ""],
+          [",movetrack", ""],
           [",pause", ""],
           [",play", ""],
+          [",playnow", ""],
           [",preset", ""],
+          [",previous", ""],
           [",queue", ""],
+          [",recent", ""],
           [",remove", ""],
+          [",replay", ""],
           [",resume", ""],
+          [",rewind", ""],
           [",seek", ""],
           [",shuffle", ""],
           [",skip", ""],
@@ -9627,6 +9807,7 @@ client.on("messageCreate", async (message) => {
 
   // ,shuffle <item1> | <item2> | ...
   if (command === "shuffle") {
+    if (lavalink?.getPlayer(message.guild.id) && !args.slice(1).join(" ").includes("|")) return MUSIC.shuffle(message, args);
     const items = args.slice(1).join(" ").split("|").map(i => i.trim()).filter(Boolean);
     if (items.length < 2) return err(message, "missing required argument");
 
@@ -20026,176 +20207,347 @@ const FX_SKIPPED = {
   supreme: "this would need the Supreme box logo, which is a registered trademark -- won't reproduce that.",
 };
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MUSIC COMMANDS (real playback via discord-player -- see player init near the
-// ██  top of the file for extractor setup / the "player" and "MUSIC_247" globals)
+// ██  MUSIC COMMANDS (Lavalink -- ported from Yukihana). Dispatched from the big
+// ██  message handler below; the guard there replies with a specific reason when
+// ██  Lavalink isn't configured or no node is connected.
 // ═══════════════════════════════════════════════════════════════════════════════
 const MUSIC = {};
 
-MUSIC.play = async (message, args, rest) => {
+// Yukihana's 22 EQ presets (14-band gains, band index = array position).
+const MUSIC_EQ = {
+  pop: [-0.25,0.48,0.59,0.72,0.56,0.15,-0.24,-0.24,-0.16,-0.16,0,0,0,0],
+  rock: [0.4,0.3,-0.1,0.2,0.5,0.7,0.6,0.4,0.2,0.1,0.3,0.4,0.5,0.3],
+  electronic: [0.8,0.6,0.2,-0.1,0.1,0.3,0.5,0.7,0.8,0.6,0.4,0.3,0.2,0.1],
+  jazz: [0.2,0.1,0.3,0.4,0.5,0.3,0.2,0.1,-0.1,0,0.1,0.2,0.3,0.2],
+  classical: [0,0,0,0,0,0,-0.7,-0.7,-0.7,-0.9,-0.1,-0.1,0,-0.2],
+  hiphop: [0.6,0.5,0.2,0.3,-0.2,-0.1,0.2,-0.1,-0.1,0.1,0.3,0.4,0.4,0.2],
+  reggae: [0,0,0,-0.5,-0.1,0.2,0.3,0,0,0,0,0,0,0],
+  bassboost: [0.6,0.67,0.67,0,-0.5,0.15,-0.45,0.23,0.35,0.45,0.55,0.6,0.55,0],
+  superbass: [0.8,0.8,0.5,0.2,-0.2,-0.1,0,0.1,0.2,0.3,0.4,0.5,0.4,0.2],
+  deepbass: [1,0.7,0.4,0.1,-0.3,-0.2,-0.1,0,0,0,0,0,0,0],
+  vocals: [-0.2,-0.3,-0.3,0.1,0.9,0.9,0.5,0.2,-0.1,-0.2,-0.3,0,0.4,0.6],
+  treble: [-0.8,-0.8,-0.8,-0.4,0.3,1,0.8,0.8,0.8,0.8,0.8,0.8,0.8,0.8],
+  bright: [-0.2,-0.1,0,0.1,0.2,0.4,0.6,0.7,0.8,0.7,0.6,0.5,0.4,0.3],
+  gaming: [0.4,0.3,0.2,0.3,0.4,0.5,0.6,0.7,0.6,0.5,0.4,0.3,0.2,0.1],
+  nightcore: [0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,0.9,0.8,0.7,0.6,0.5,0.4],
+  vaporwave: [0.6,0.4,0.2,-0.1,-0.3,-0.2,0,0.2,0.1,-0.1,-0.2,-0.1,0,0.1],
+  boost: [0.2,0.3,0.4,0.5,0.6,0.5,0.4,0.3,0.2,0.1,0.2,0.3,0.4,0.3],
+  soft: [0,0.1,0.1,0.2,0.3,0.2,0.1,0,-0.1,-0.2,-0.1,0,0.1,0],
+  flat: [0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  warm: [0.4,0.3,0.2,0.3,0.4,0.2,0,-0.1,-0.2,-0.1,0,0.1,0.2,0.1],
+  metal: [0,0.1,0.15,0.2,0.3,0.5,0.75,0.65,0.55,0.4,0.25,0.2,0.15,0.1],
+  oldschool: [0.1,0.05,0,-0.05,-0.1,-0.15,-0.2,-0.25,-0.3,-0.35,-0.4,-0.45,-0.5,-0.55]
+};
+const _mEq = name => MUSIC_EQ[name].map((gain, band) => ({ band, gain }));
+
+function _mParseTime(str) {
+  if (!str) return null;
+  if (str.includes(":")) {
+    const p = str.split(":").map(n => parseInt(n, 10));
+    if (p.some(isNaN)) return null;
+    if (p.length === 2) return (p[0] * 60 + p[1]) * 1000;
+    if (p.length === 3) return (p[0] * 3600 + p[1] * 60 + p[2]) * 1000;
+    return null;
+  }
+  let total = 0, hit = false, m;
+  const re = /(\d+)\s*(h|m|s)/gi;
+  while ((m = re.exec(str))) { hit = true; const v = parseInt(m[1], 10), u = m[2].toLowerCase(); total += u === "h" ? v * 3600000 : u === "m" ? v * 60000 : v * 1000; }
+  if (hit) return total;
+  const n = parseInt(str, 10);
+  return isNaN(n) ? null : n * 1000;
+}
+// Player for this guild, or replies with why not. Returns undefined after replying.
+function _mNeedPlayer(message, needTrack = false) {
+  const p = lavalink.getPlayer(message.guild.id);
+  if (!p) { err(message, "nothing is playing."); return; }
+  if (needTrack && !p.queue.current) { err(message, "nothing is playing."); return; }
+  return p;
+}
+
+async function _mPlay(message, args, rest, { now = false } = {}) {
+  const gid = message.guild.id;
   const vc = message.member.voice.channel;
   if (!vc) return err(message, "join a voice channel first.");
-  if (!rest) return err(message, "usage: `,play <song name or URL>`");
-  const p = useMainPlayer();
-  const loadedNames = [...p.extractors.store.keys()];
-  if (loadedNames.length === 0) {
-    return err(message, "no audio sources are registered on this bot at all (0 extractors loaded) -- check the Railway startup logs for a `[music] Failed to load/register ...` line, that's why every search comes back empty.");
+  const perms = vc.permissionsFor(message.guild.members.me);
+  if (!perms?.has(["Connect", "Speak"])) return err(message, "I need permission to join and speak in your voice channel.");
+
+  let source = null, position = null;
+  const words = [], a = args.slice(1);
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === "--src" || a[i] === "--source") source = a[++i];
+    else if (a[i] === "--pos" || a[i] === "--position") { const n = parseInt(a[++i], 10); if (n > 0) position = n; }
+    else words.push(a[i]);
   }
-  const is247 = MUSIC_247.has(message.guild.id);
-  // SoundCloud is registered before Youtubei, and discord-player's AUTO query resolution
-  // tries extractors in registration order -- for a plain text query (not a URL) SoundCloud
-  // was claiming it, searching its own catalog, coming up empty, and never falling through
-  // to YouTube. Force plain-text searches straight to Youtubei; still let real URLs (Spotify,
-  // SoundCloud, Vimeo links, etc.) auto-resolve to whichever extractor actually owns them.
-  const isUrl = /^https?:\/\//i.test(rest);
-  const searchEngine = isUrl ? QueryType.AUTO : `ext:${YoutubeiExtractor.identifier}`;
-  let track;
-  try {
-    ({ track } = await p.play(vc, rest, {
-      searchEngine,
-      nodeOptions: {
-        metadata: { channel: message.channel },
-        leaveOnEmpty: !is247,
-        leaveOnEmptyCooldown: 60000,
-        leaveOnEnd: !is247,
-        leaveOnEndCooldown: 60000,
-        volume: 70,
-      },
-      requestedBy: message.author,
-    }));
-  } catch (e) {
-    throw new Error(`${e.message} -- loaded extractors: ${loadedNames.join(", ")}`);
+  const query = words.join(" ").trim();
+  if (!query) return err(message, `usage: \`,${now ? "playnow" : "play"} <song name or URL> [--src yt|sp|sc|am|dz]${now ? "" : " [--pos N]"}\``);
+
+  let player = lavalink.getPlayer(gid);
+  if (player?.voiceChannelId && player.voiceChannelId !== vc.id && (player.playing || player.queue.tracks.length)) {
+    return err(message, `I'm already playing in <#${player.voiceChannelId}>.`);
   }
-  return ok(message, `queued **${track.title}**.`);
-};
-MUSIC.pause = message => {
-  const q = useQueue(message.guild.id);
-  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
-  q.node.setPaused(true);
+  if (!player) {
+    player = lavalink.createPlayer({
+      guildId: gid, voiceChannelId: vc.id, textChannelId: message.channel.id,
+      selfDeaf: true, selfMute: false, volume: 100,
+      instaUpdateFiltersFix: true, applyVolumeAsFilter: false,
+    });
+  } else if (player.textChannelId !== message.channel.id) {
+    player.textChannelId = message.channel.id; // now-playing cards follow the channel you last used
+  }
+  if (!player.connected) await player.connect();
+  _mClearIdle(player);
+
+  const res = await _mResolve(query, message.author, source);
+  if (!res) return err(message, `no results found for **${query}**.`);
+
+  const idle = !player.playing && !player.paused && !player.queue.current;
+  const room = MUSIC_MAX_QUEUE - player.queue.tracks.length;
+  if (room <= 0) return err(message, `the queue is full (max ${MUSIC_MAX_QUEUE} tracks).`);
+
+  if (res.loadType === "playlist") {
+    const tracks = res.tracks.slice(0, room);
+    await player.queue.add(tracks, now ? 0 : position ? position - 1 : undefined);
+    if (idle) await player.play({});
+    else if (now) await player.skip();
+    return message.reply({ embeds: [{
+      color: guildColor(gid), title: idle ? "Playing Playlist" : "Queued Playlist",
+      description: `**${res.playlist?.name || "Playlist"}**\n${tracks.length} track${tracks.length === 1 ? "" : "s"} added${tracks.length < res.tracks.length ? ` (queue limit reached, ${res.tracks.length - tracks.length} skipped)` : ""}`,
+      ...(tracks[0]?.info?.artworkUrl ? { thumbnail: { url: tracks[0].info.artworkUrl } } : {}),
+    }] }).catch(() => {});
+  }
+
+  const track = res.tracks[0];
+  await player.queue.add(track, now ? 0 : position ? position - 1 : undefined);
+  if (idle) { await player.play({}); return; } // the now-playing card is sent by the trackStart event
+  if (now) { await player.skip(); return; }
+  const pos = position || player.queue.tracks.length;
+  return message.reply({ embeds: [{
+    color: guildColor(gid), title: "Added to Queue",
+    description: `**[${track.info.title}](${track.info.uri})**\nby ${track.info.author || "Unknown"}`,
+    fields: [
+      { name: "Position", value: `\`${pos}\``, inline: true },
+      { name: "Duration", value: `\`${track.info.isStream ? "LIVE" : _mFmt(track.info.duration)}\``, inline: true },
+    ],
+    ...(track.info.artworkUrl ? { thumbnail: { url: track.info.artworkUrl } } : {}),
+  }] }).catch(() => {});
+}
+MUSIC.play = (message, args, rest) => _mPlay(message, args, rest);
+MUSIC.playnow = (message, args, rest) => _mPlay(message, args, rest, { now: true });
+
+MUSIC.pause = async message => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  if (p.paused) return err(message, "already paused.");
+  await p.pause();
   return ok(message, "paused.");
 };
-MUSIC.resume = message => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  q.node.setPaused(false);
+MUSIC.resume = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  if (!p.paused) return err(message, "not paused.");
+  await p.resume();
   return ok(message, "resumed.");
 };
-MUSIC.skip = message => {
-  const q = useQueue(message.guild.id);
-  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
-  const skipped = q.currentTrack.title;
-  q.node.skip();
-  return ok(message, `skipped **${skipped}**.`);
+MUSIC.skip = async (message, args) => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  const title = p.queue.current.info.title;
+  const amount = parseInt(args[1], 10);
+  const dur = p.queue.current.info.duration ?? 0;
+  if (p.repeatMode === "track" && dur > 0) await p.seek(dur);            // loop-track: jump to end so the loop advances
+  else if (p.repeatMode === "queue" && !p.queue.tracks.length && dur > 0) await p.seek(dur);
+  else if (p.queue.tracks.length) await p.skip(amount > 1 ? amount : undefined);
+  else {
+    if (MUSIC_247.has(message.guild.id)) await p.stopPlaying(true, false);
+    else await p.destroy("skipped last track");
+  }
+  return ok(message, `skipped **${title}**.`);
 };
-MUSIC.stop = message => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  q.delete();
+MUSIC.previous = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const prev = await p.queue.shiftPrevious();
+  if (!prev) return err(message, "no previous track.");
+  await p.play({ clientTrack: prev });
+  return ok(message, `back to **${prev.info.title}**.`);
+};
+MUSIC.stop = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  p.set("autoplay", false);
+  if (MUSIC_247.has(message.guild.id)) await p.stopPlaying(true, false);
+  else await p.destroy("stop command");
   return ok(message, "stopped and cleared the queue.");
 };
-MUSIC.clearqueue = message => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  q.tracks.clear();
-  return ok(message, "cleared the queue (current track keeps playing).");
+MUSIC.disconnect = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  await p.destroy("disconnect command");
+  return ok(message, "disconnected.");
 };
-MUSIC.queue = message => {
-  const q = useQueue(message.guild.id);
-  if (!q || (!q.currentTrack && q.tracks.size === 0)) return err(message, "queue is empty.");
-  const list = q.tracks.toArray().slice(0, 15).map((t, i) => `**${i + 1}.** ${t.title} -- ${t.requestedBy}`).join("\n") || "*(nothing queued up next)*";
-  const now = q.currentTrack ? `**Now Playing:** ${q.currentTrack.title}\n\n` : "";
-  return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: "Queue", description: now + list }] });
+
+MUSIC.queue = async (message, args) => {
+  const p = lavalink.getPlayer(message.guild.id);
+  if (!p || (!p.queue.current && !p.queue.tracks.length)) return err(message, "queue is empty.");
+  const per = 10, total = p.queue.tracks.length;
+  const pages = Math.max(1, Math.ceil(total / per));
+  const page = Math.min(pages, Math.max(1, parseInt(args[1], 10) || 1));
+  const slice = p.queue.tracks.slice((page - 1) * per, page * per);
+  const lines = slice.map((t, i) => `**${(page - 1) * per + i + 1}.** [${t.info.title.slice(0, 55)}](${t.info.uri}) -- ${t.info.author || "Unknown"} \`${_mFmt(t.info.duration)}\``).join("\n") || "*(nothing queued up next)*";
+  const cur = p.queue.current ? `**Now Playing:** [${p.queue.current.info.title}](${p.queue.current.info.uri})\n\n` : "";
+  const totalMs = p.queue.tracks.reduce((s, t) => s + (t.info.isStream ? 0 : t.info.duration || 0), 0);
+  return message.reply({ embeds: [{
+    color: guildColor(message.guild.id), title: "Queue",
+    description: cur + lines,
+    footer: { text: `Page ${page}/${pages} • ${total} track${total === 1 ? "" : "s"} • ${_mFmt(totalMs)} total` },
+  }] });
 };
-MUSIC.current = message => {
-  const q = useQueue(message.guild.id);
-  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
-  const t = q.currentTrack;
-  return message.reply({ embeds: [{ color: guildColor(message.guild.id), title: t.title, url: t.url, description: `by **${t.author}** -- requested by ${t.requestedBy}`, thumbnail: { url: t.thumbnail } }] });
+MUSIC.current = async message => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  const t = p.queue.current, dur = t.info.duration || 0;
+  return message.reply({ embeds: [{
+    color: guildColor(message.guild.id), title: t.info.title, url: t.info.uri,
+    description: `by **${t.info.author || "Unknown"}** -- requested by ${t.requester?.id ? `<@${t.requester.id}>` : "Unknown"}\n\n\`${_mFmt(p.position)}\` ${_mBar(p.position, dur)} \`${t.info.isStream ? "LIVE" : _mFmt(dur)}\`\n-# volume ${p.volume}% • loop ${p.repeatMode}${p.get("autoplay") ? " • autoplay on" : ""}${MUSIC_247.has(message.guild.id) ? " • 24/7" : ""}`,
+    ...(t.info.artworkUrl ? { thumbnail: { url: t.info.artworkUrl } } : {}),
+  }] });
 };
-MUSIC.volume = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  const n = parseInt(args[1]);
-  if (isNaN(n) || n < 0 || n > 150) return err(message, "usage: `,volume <0-150>`");
-  q.node.setVolume(n);
+MUSIC.recent = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const prev = p.queue.previous || [];
+  if (!prev.length) return err(message, "no play history yet.");
+  return message.reply({ embeds: [{
+    color: guildColor(message.guild.id), title: "Recently Played",
+    description: prev.slice(0, 10).map((t, i) => `**${i + 1}.** [${t.info.title.slice(0, 55)}](${t.info.uri}) -- ${t.info.author || "Unknown"}`).join("\n"),
+  }] });
+};
+
+MUSIC.volume = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  if (!args[1]) return ok(message, `volume is **${p.volume}%**.`);
+  const n = parseInt(args[1], 10);
+  if (isNaN(n) || n < 1 || n > 150) return err(message, "usage: `,volume <1-150>`");
+  await p.setVolume(n);
   return ok(message, `volume set to **${n}%**.`);
 };
-MUSIC.seek = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q || !q.currentTrack) return err(message, "nothing is playing.");
-  const parts = (args[1] || "").split(":").map(Number);
-  let ms;
-  if (parts.length === 2 && !parts.some(isNaN)) ms = (parts[0] * 60 + parts[1]) * 1000;
-  else if (parts.length === 1 && !isNaN(parts[0])) ms = parts[0] * 1000;
-  else return err(message, "usage: `,seek <seconds>` or `,seek <mm:ss>`");
-  q.node.seek(ms);
-  return ok(message, `seeked to **${args[1]}**.`);
+MUSIC.seek = async (message, args) => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  if (p.queue.current.info.isStream || p.queue.current.info.isSeekable === false) return err(message, "can't seek in this track.");
+  const ms = _mParseTime(args.slice(1).join(" "));
+  if (ms == null) return err(message, "usage: `,seek <seconds | mm:ss | 1m30s>`");
+  const to = Math.min(ms, p.queue.current.info.duration);
+  await p.seek(to);
+  return ok(message, `seeked to **${_mFmt(to)}**.`);
 };
-MUSIC.shuffle = message => {
-  const q = useQueue(message.guild.id);
-  if (!q || q.tracks.size < 2) return err(message, "not enough tracks queued to shuffle.");
-  q.tracks.shuffle();
+MUSIC.forward = async (message, args) => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  if (p.queue.current.info.isStream) return err(message, "can't seek in a live stream.");
+  const step = (parseInt(args[1], 10) || 10) * 1000;
+  const to = Math.min(p.position + step, p.queue.current.info.duration);
+  await p.seek(to);
+  return ok(message, `skipped ahead to **${_mFmt(to)}**.`);
+};
+MUSIC.rewind = async (message, args) => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  const step = (parseInt(args[1], 10) || 10) * 1000;
+  const to = Math.max(p.position - step, 0);
+  await p.seek(to);
+  return ok(message, `rewound to **${_mFmt(to)}**.`);
+};
+MUSIC.replay = async message => {
+  const p = _mNeedPlayer(message, true); if (!p) return;
+  await p.seek(0);
+  return ok(message, "restarted the track.");
+};
+
+MUSIC.shuffle = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  if (p.queue.tracks.length < 2) return err(message, "not enough tracks queued to shuffle.");
+  await p.queue.shuffle();
   return ok(message, "shuffled the queue.");
 };
-MUSIC.remove = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  const n = parseInt(args[1]);
-  if (isNaN(n) || n < 1 || n > q.tracks.size) return err(message, `usage: \`,remove <1-${q.tracks.size || 0}>\``);
-  const track = q.tracks.at(n - 1);
-  q.node.remove(track);
-  return ok(message, `removed **${track.title}**.`);
+MUSIC.remove = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const n = p.queue.tracks.length;
+  const m = /^(\d+)(?:-(\d+))?$/.exec(args[1] || "");
+  if (!m) return err(message, `usage: \`,remove <1-${n || 1}>\` or a range like \`,remove 2-5\``);
+  let a = parseInt(m[1], 10), b = m[2] ? parseInt(m[2], 10) : a;
+  if (b < a) [a, b] = [b, a];
+  if (a < 1 || b > n) return err(message, `out of range -- the queue has ${n} track${n === 1 ? "" : "s"}.`);
+  const removed = p.queue.tracks[a - 1];
+  await p.queue.splice(a - 1, b - a + 1);
+  return ok(message, a === b ? `removed **${removed.info.title}**.` : `removed **${b - a + 1}** tracks.`);
 };
-MUSIC.loop = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  const mode = (args[1] || "").toLowerCase();
-  const modes = { off: QueueRepeatMode.OFF, track: QueueRepeatMode.TRACK, song: QueueRepeatMode.TRACK, queue: QueueRepeatMode.QUEUE, all: QueueRepeatMode.QUEUE };
-  if (!(mode in modes)) return err(message, "usage: `,loop <off|track|queue>`");
-  q.setRepeatMode(modes[mode]);
+MUSIC.movetrack = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const from = parseInt(args[1], 10), to = parseInt(args[2], 10), n = p.queue.tracks.length;
+  if (isNaN(from) || isNaN(to) || from < 1 || to < 1 || from > n || to > n) return err(message, `usage: \`,movetrack <from> <to>\` (1-${n || 1})`);
+  const [t] = p.queue.tracks.splice(from - 1, 1);
+  p.queue.tracks.splice(to - 1, 0, t);
+  await p.queue.utils.save?.();
+  return ok(message, `moved **${t.info.title}** to position **${to}**.`);
+};
+MUSIC.clearqueue = async message => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const n = p.queue.tracks.length;
+  if (!n) return err(message, "the queue is already empty.");
+  await p.queue.splice(0, n);
+  return ok(message, `cleared **${n}** track${n === 1 ? "" : "s"} (current track keeps playing).`);
+};
+MUSIC.loop = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const modes = { off: "off", none: "off", track: "track", song: "track", one: "track", queue: "queue", all: "queue" };
+  let mode = modes[(args[1] || "").toLowerCase()];
+  if (!mode) mode = p.repeatMode === "off" ? "track" : p.repeatMode === "track" ? "queue" : "off"; // no arg: cycle
+  await p.setRepeatMode(mode);
   return ok(message, `loop mode set to **${mode}**.`);
 };
-MUSIC.automix = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
-  const on = (args[1] || "").toLowerCase() !== "off";
-  q.setRepeatMode(on ? QueueRepeatMode.AUTOPLAY : QueueRepeatMode.OFF);
-  return ok(message, `automix (autoplay related tracks) **${on ? "enabled" : "disabled"}**.`);
+MUSIC.automix = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
+  const arg = (args[1] || "").toLowerCase();
+  const on = arg ? !["off", "false", "disable"].includes(arg) : !p.get("autoplay");
+  p.set("autoplay", on);
+  if (on) p.set("autoplayBy", message.author);
+  return ok(message, `autoplay **${on ? "enabled" : "disabled"}** -- ${on ? "I'll queue related tracks when the queue runs out." : "the queue will just end."}`);
 };
-MUSIC["247"] = message => {
-  const gid = message.guild.id, q = useQueue(gid);
+
+MUSIC["247"] = async message => {
+  const gid = message.guild.id;
   if (MUSIC_247.has(gid)) {
     MUSIC_247.delete(gid);
     return ok(message, "24/7 mode **disabled** -- I'll leave when the queue empties.");
   }
   MUSIC_247.add(gid);
-  if (q) {
-    q.node?.setLeaveOnEmpty?.(false);
-    q.node?.setLeaveOnEnd?.(false);
-    return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties.");
-  }
-  // No active queue yet -- join right now instead of silently doing nothing until ,play.
+  const existing = lavalink.getPlayer(gid);
+  if (existing) { _mClearIdle(existing); return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties."); }
   const vc = message.member.voice.channel;
-  if (!vc) return ok(message, "24/7 mode **enabled** for next time -- join a voice channel and run `,play` (or `,247` again from inside one) to bring me in now.");
+  if (!vc) return ok(message, "24/7 mode **enabled** -- join a voice channel and run `,247` again (or `,play`) to bring me in.");
   try {
-    const newQ = useMainPlayer().nodes.create(message.guild, {
-      metadata: { channel: message.channel }, leaveOnEmpty: false, leaveOnEnd: false, volume: 70,
+    const p = lavalink.createPlayer({
+      guildId: gid, voiceChannelId: vc.id, textChannelId: message.channel.id,
+      selfDeaf: true, selfMute: false, volume: 100, instaUpdateFiltersFix: true, applyVolumeAsFilter: false,
     });
-    if (!newQ.connection) newQ.connect(vc);
+    await p.connect();
     return ok(message, "24/7 mode **enabled** -- joined your voice channel and I'll stay connected.");
   } catch (e) {
-    return ok(message, `24/7 mode **enabled**, but couldn't join your voice channel right now (${e.message}) -- it'll still apply as soon as you \`,play\` something.`);
+    return ok(message, `24/7 mode **enabled**, but I couldn't join right now (${e.message}) -- it'll apply as soon as you \`,play\` something.`);
   }
 };
-MUSIC.preset = (message, args) => {
-  const q = useQueue(message.guild.id);
-  if (!q) return err(message, "nothing is playing.");
+
+MUSIC.preset = async (message, args) => {
+  const p = _mNeedPlayer(message); if (!p) return;
   const name = (args[1] || "").toLowerCase();
-  const filterMap = { bassboost: "bassboost", nightcore: "nightcore", vaporwave: "vaporwave", "8d": "8D", reverse: "reverse" };
-  if (name === "clear" || name === "off") { q.filters.ffmpeg.setFilters(false); return ok(message, "cleared audio filters."); }
-  if (!(name in filterMap)) return err(message, "usage: `,preset <bassboost|nightcore|vaporwave|8d|reverse|clear>`");
-  q.filters.ffmpeg.toggle(filterMap[name]);
-  return ok(message, `toggled the **${name}** filter.`);
+  const names = Object.keys(MUSIC_EQ);
+  if (!name) return ok(message, `usage: \`,preset <name>\` or \`,preset clear\`\npresets: ${names.map(n => `\`${n}\``).join(" ")} \`8d\``);
+  if (["clear", "off", "reset", "none"].includes(name)) {
+    await p.filterManager.clearEQ();
+    await p.filterManager.resetFilters?.();
+    return ok(message, "cleared all audio filters.");
+  }
+  if (name === "8d") {
+    await p.filterManager.toggleRotation();
+    return ok(message, `**8d** filter ${p.filterManager.filters.rotation ? "enabled" : "disabled"}.`);
+  }
+  if (!MUSIC_EQ[name]) return err(message, `unknown preset. try: ${names.map(n => `\`${n}\``).join(" ")} \`8d\` \`clear\``);
+  await p.filterManager.setEQ(_mEq(name));
+  return ok(message, `applied the **${name}** preset.`);
 };
+
+// short aliases (only ones that don't collide with other commands in this bot)
+for (const [alias, target] of Object.entries({ p: "play", pn: "playnow", next: "skip", prev: "previous", back: "previous", q: "queue", playing: "current", vol: "volume", ff: "forward", rw: "rewind", cq: "clearqueue", autoplay: "automix", dc: "disconnect", filters: "preset", mt: "movetrack" })) MUSIC[alias] = MUSIC[target];
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -21334,7 +21686,7 @@ client.on("messageCreate", async (message) => {
 
   // -- MANIPULATION (real image-processing effects via Jimp -- see the engine block
   // near the top of the file for FX / FX_SKIPPED) --
-  if (FX[command]) {
+  if (Object.hasOwn(FX, command)) {
     try {
       let img = await _fxLoadImage(message);
       img = (await FX[command](img)) || img;
@@ -21343,19 +21695,21 @@ client.on("messageCreate", async (message) => {
       return err(message, `couldn't apply that effect: ${e.message}`);
     }
   }
-  if (FX_SKIPPED[command]) {
+  if (Object.hasOwn(FX_SKIPPED, command)) {
     return err(message, `\`,${command}\` isn't available -- ${FX_SKIPPED[command]}`);
   }
   if (command === "caption" || command === "img2gif") {
     return err(message, "this needs an image-processing library that isn't installed on this bot yet -- ask the developer to add one (e.g. Jimp).");
   }
 
-  // -- MUSIC (real audio playback via discord-player -- see the MUSIC block near the
-  // top of the file) --
-  if (typeof MUSIC[command] === "function") {
+  // -- MUSIC (Lavalink -- see the MUSIC PLAYER / MUSIC COMMANDS blocks above) --
+  if (Object.hasOwn(MUSIC, command)) {
+    if (!lavalink) return err(message, "music isn't configured -- set `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD` (and `LAVALINK_SECURE=true` for wss nodes) in the bot's environment variables, then redeploy.");
+    if (!_mNodeReady()) return err(message, "the Lavalink audio node isn't connected right now -- check the logs for a `[music] Lavalink node ... error` line (wrong host/port/password, or the node itself is down).");
     try {
       return await MUSIC[command](message, args, rest);
     } catch (e) {
+      log(`[music] ,${command} failed: ${e.stack ?? e.message}`, "error");
       return err(message, `music error: ${e.message}`);
     }
   }
