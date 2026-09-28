@@ -188,6 +188,8 @@ const DB = {
   TWITTER_CFG:   'twitter_cfg',      // twitter repost config
   TWITTER_CURSOR:'twitter_cursor',   // last tweet ID per account (dedup cursor)
   NOTIFY:        'notify_jobs',      // scheduled multi-server webhook notify jobs
+  INVITES:       'invite_tracker',   // per-guild invite-use cache + join attribution
+  PREMIUM:       'premium_system',   // premium users / booster credits
 };
 
 // ── Build the full guild config snapshot ─────────────────────────────────────
@@ -243,6 +245,8 @@ function saveMuteHist()    { scheduleSave(DB.MUTE_HIST,  () => muteHistory); }
 function saveChPerms()        { scheduleSave(DB.CH_PERMS,       () => channelPerms); }
 function saveTwitterCfg()     { scheduleSave(DB.TWITTER_CFG,    () => twitterRepostCfg, 2000); }
 function saveTwitterCursors() { scheduleSave(DB.TWITTER_CURSOR, () => twitterCursors,   3000); }
+function saveInvites()        { scheduleSave(DB.INVITES,        () => inviteJoins,      3000); }
+function savePremium()        { scheduleSave(DB.PREMIUM,        () => ({ premiumUsers, userBoosts, guildBoosts }), 2000); }
 
 // ── Load ALL data from DB on startup ─────────────────────────────────────────
 async function loadAllData() {
@@ -273,7 +277,7 @@ async function loadAllData() {
   const cfg = d[DB.GUILD_CFG];
   if (cfg) {
     if (cfg.antiMinorsConfig instanceof Map)  { antiMinorsConfig.clear();  cfg.antiMinorsConfig.forEach((v,k) => antiMinorsConfig.set(k, fixSetFields(v,'channels','requireAttach','whitelist'))); }
-    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => antinukeConfig.set(k, fixSetFields(v, 'whitelist'))); }
+    if (cfg.antinukeConfig instanceof Map)    { antinukeConfig.clear();    cfg.antinukeConfig.forEach((v,k)   => { v = fixSetFields(v, 'whitelist', 'extraOwners'); if (!v.modules) v.modules = defaultAntiNukeModules(); antinukeConfig.set(k, v); }); }
     if (cfg.antiraidConfig instanceof Map)    { antiraidConfig.clear();    cfg.antiraidConfig.forEach((v,k)   => antiraidConfig.set(k, v)); }
     if (cfg.autoroles instanceof Map)         { autoroles.clear();         cfg.autoroles.forEach((v,k)        => autoroles.set(k, v)); }
     if (cfg.welcomeConfig instanceof Map)     { welcomeConfig.clear();     cfg.welcomeConfig.forEach((v,k)    => welcomeConfig.set(k, v)); }
@@ -615,6 +619,24 @@ async function loadAllData() {
     }
   }
 
+  // ── Invite tracker ─────────────────────────────────────────────────────────
+  if (d[DB.INVITES] instanceof Map) {
+    inviteJoins.clear();
+    d[DB.INVITES].forEach((v, guildId) => {
+      inviteJoins.set(guildId, v instanceof Map ? v : new Map(Object.entries(v ?? {})));
+    });
+    console.log(`[DB] invite_tracker restored (${inviteJoins.size} guild(s))`);
+  }
+
+  // ── Premium system ─────────────────────────────────────────────────────────
+  if (d[DB.PREMIUM]) {
+    const p = d[DB.PREMIUM];
+    if (p.premiumUsers instanceof Map) { premiumUsers.clear(); p.premiumUsers.forEach((v, k) => premiumUsers.set(k, v)); }
+    if (p.userBoosts  instanceof Map) { userBoosts.clear();  p.userBoosts.forEach((v, k)  => userBoosts.set(k, v)); }
+    if (p.guildBoosts instanceof Map) { guildBoosts.clear(); p.guildBoosts.forEach((v, k) => guildBoosts.set(k, v)); }
+    console.log(`[DB] premium_system restored (${premiumUsers.size} premium user(s))`);
+  }
+
   console.log('[DB] All data loaded from Railway PostgreSQL');
 }
 
@@ -634,6 +656,8 @@ setInterval(async () => {
   if (!_saveQueue.has(DB.BOT_CFG))    saveBotCfg();
   if (!_saveQueue.has(DB.CASES))      saveCases();
   if (!_saveQueue.has(DB.ECONOMY))    saveEconomy();
+  if (!_saveQueue.has(DB.INVITES))    saveInvites();
+  if (!_saveQueue.has(DB.PREMIUM))    savePremium();
   if (!_saveQueue.has(DB.AFK))        saveAFK();
   if (!_saveQueue.has(DB.POLLS))      savePolls();
   if (!_saveQueue.has(DB.TODOS))      saveTodos();
@@ -863,6 +887,7 @@ const client = new Client({
     GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildVoiceStates, // required for music playback (voice channel join/state)
+    GatewayIntentBits.GuildInvites,     // required for invite tracker (inviteCreate/inviteDelete)
   ],
   partials: ["CHANNEL"]
 });
@@ -2934,7 +2959,7 @@ client.on("messageCreate", async (message) => {
 
   // ,videocount [#channel]
   // Counts videos across the server — attachments + CDN links + embed videos
-  if (command === "videocount" || command === "vc") {
+  if (command === "videocount") {
     const targetChannel = message.mentions.channels.first() || null;
     const VIDEO_PAT = /\.(mp4|mov|webm|mkv|avi|gif)($|\?)/i;
     const CDN_RE    = /https?:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/[^\s<>"')\]]+/gi;
@@ -3074,8 +3099,9 @@ client.on("messageCreate", async (message) => {
     return info(message, `I choose: **${options[Math.floor(Math.random() * options.length)]}**`);
   }
 
-  // ,poll <question>
-  if (command === "poll") {
+  // ,poll <question> -- simple 👍/👎 poll. Guarded so it doesn't also fire for
+  // ,poll create / ,poll end, which are handled by the multi-option poll system below.
+  if (command === "poll" && !["create", "end"].includes(args[1]?.toLowerCase())) {
     const question = args.slice(1).join(" ");
     if (!question) return err(message, "missing required argument");
 
@@ -5721,12 +5747,46 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,invites [user]
+  // ,invites [@user] -- real join-attribution count (falls back to live invite-use sum if tracker has no data yet)
   if (command === "invites") {
     const target = message.mentions.members.first() || message.member;
+    const tracked = getInviterJoinCount(message.guild.id, target.id);
+    if (tracked > 0 || (inviteJoins.get(message.guild.id)?.size ?? 0) > 0) {
+      return info(message, `**${target.user.username}** has **${tracked}** tracked invite(s).`);
+    }
     const invites = await message.guild.invites.fetch().catch(() => null);
     if (!invites) return err(message, "Could not fetch invites.");
     const count = invites.filter(i => i.inviter?.id === target.id).reduce((sum, i) => sum + (i.uses || 0), 0);
     return info(message, `**${target.user.username}** has **${count}** invite uses.`);
+  }
+
+  // ,inviter [@user] -- who invited this member
+  if (command === "inviter") {
+    const target = message.mentions.members.first() || message.member;
+    const rec = inviteJoins.get(message.guild.id)?.get(target.id);
+    if (!rec) return info(message, `No invite data recorded for **${target.user.username}** (they may have joined before the tracker was set up, or via vanity URL).`);
+    return message.reply({ embeds: [{ color: PINK, title: "Inviter Info", description: `**${target.user.username}** was invited by <@${rec.inviterId}>\nInvite code: \`${rec.code}\`\nJoined: <t:${Math.floor(rec.joinedAt / 1000)}:R>` }] });
+  }
+
+  // ,invited [@user] -- list of members this user invited
+  if (command === "invited") {
+    const target = message.mentions.members.first() || message.member;
+    const guildJoins = inviteJoins.get(message.guild.id);
+    const list = guildJoins ? [...guildJoins.entries()].filter(([, v]) => v.inviterId === target.id) : [];
+    if (list.length === 0) return info(message, `**${target.user.username}** hasn't invited anyone tracked yet.`);
+    const desc = list.slice(0, 25).map(([uid]) => `<@${uid}>`).join(", ");
+    return message.reply({ embeds: [{ color: PINK, title: `Invited by ${target.user.username}`, description: desc, footer: { text: `${list.length} total` } }] });
+  }
+
+  // ,invitetop -- leaderboard
+  if (command === "invitetop" || command === "topinvites") {
+    const guildJoins = inviteJoins.get(message.guild.id);
+    if (!guildJoins || guildJoins.size === 0) return info(message, "No invite data tracked yet.");
+    const counts = new Map();
+    for (const rec of guildJoins.values()) counts.set(rec.inviterId, (counts.get(rec.inviterId) || 0) + 1);
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const desc = sorted.map(([uid, c], i) => `**${i + 1}.** <@${uid}> — ${c} invite(s)`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: "Invite Leaderboard", description: desc || "No data." }] });
   }
 
   // ,createinvite [maxUses] [expiresIn hours]
@@ -5776,7 +5836,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // ,urban <word>
-  if (command === "urban") {
+  if (command === "urban" || command === "urbandictionary") {
     await message.channel.sendTyping().catch(() => {});
     const word = args.slice(1).join(" ");
     if (!word) return err(message, "missing required argument");
@@ -5805,6 +5865,15 @@ const recentJoins = new Map();     // guildId => [{ userId, time }]
 const recentActions = new Map();   // guildId-modId-actionType => [timestamps]
 const lockedGuilds = new Set();    // guildIds currently under raid lockdown
 
+// Every granular AntiNuke watcher, default-on when AntiNuke itself is enabled.
+function defaultAntiNukeModules() {
+  return {
+    ban: true, kick: true, channelDelete: true, channelCreate: true,
+    roleDelete: true, roleCreate: true, webhook: true, dangerousRole: true,
+    botAdd: true, prune: true, everyoneMention: true, guildUpdate: true,
+    integrationUpdate: true,
+  };
+}
 function getAntiNuke(guildId) {
   if (!antinukeConfig.has(guildId)) {
     antinukeConfig.set(guildId, {
@@ -5812,9 +5881,25 @@ function getAntiNuke(guildId) {
       punishment: "ban",       // ban | kick | strip
       threshold: 3,            // actions before triggering
       whitelist: new Set(),    // whitelisted user IDs
+      extraOwners: new Set(),  // trusted users treated like the server owner — exempt + can manage AntiNuke
+      modules: defaultAntiNukeModules(),
+      recovery: true,          // attempt to undo the damage (recreate channel/role, unban) where possible
     });
   }
-  return antinukeConfig.get(guildId);
+  const cfg = antinukeConfig.get(guildId);
+  if (!cfg.extraOwners) cfg.extraOwners = new Set();
+  if (!cfg.modules) cfg.modules = defaultAntiNukeModules();
+  if (cfg.recovery === undefined) cfg.recovery = true;
+  return cfg;
+}
+// True if `userId` should never be touched by AntiNuke (real owner, extra owner, whitelist, or the bot itself)
+function isAntiNukeExempt(guild, cfg, userId) {
+  if (!userId) return true;
+  if (userId === client.user.id) return true;
+  if (userId === guild.ownerId) return true;
+  if (cfg.whitelist.has(userId)) return true;
+  if (cfg.extraOwners.has(userId)) return true;
+  return false;
 }
 
 function getAntiRaid(guildId) {
@@ -5859,16 +5944,20 @@ function trackAction(guildId, userId, actionType, threshold) {
 // Detect mass bans
 client.on("guildBanAdd", async (ban) => {
   const cfg = getAntiNuke(ban.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.ban === false) return;
   try {
     const logs = await ban.guild.fetchAuditLogs({ type: 22, limit: 1 });
     const entry = logs.entries.first();
     if (!entry || !entry.executor) return;
-    if (entry.executor.id === client.user.id) return;
-    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (isAntiNukeExempt(ban.guild, cfg, entry.executor.id)) return;
+    if (entry.target?.id !== ban.user.id) return;
     if (trackAction(ban.guild.id, entry.executor.id, "ban", cfg.threshold)) {
+      let recovered = false;
+      if (cfg.recovery) {
+        recovered = await ban.guild.bans.remove(ban.user.id, "[AntiNuke] Recovery: reversing unauthorized ban").then(() => true).catch(() => false);
+      }
       await punishUser(ban.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass ban detected`);
-      notifyOwner(ban.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Ban\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(ban.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Ban\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** target unbanned" : ""}`);
     }
   } catch {}
 });
@@ -5876,13 +5965,12 @@ client.on("guildBanAdd", async (ban) => {
 // Detect mass kicks
 client.on("guildMemberRemove", async (member) => {
   const cfg = getAntiNuke(member.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.kick === false) return;
   try {
     const logs = await member.guild.fetchAuditLogs({ type: 20, limit: 1 });
     const entry = logs.entries.first();
     if (!entry || !entry.executor) return;
-    if (entry.executor.id === client.user.id) return;
-    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (isAntiNukeExempt(member.guild, cfg, entry.executor.id)) return;
     if (entry.target?.id !== member.id) return;
     if (trackAction(member.guild.id, entry.executor.id, "kick", cfg.threshold)) {
       await punishUser(member.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass kick detected`);
@@ -5895,16 +5983,21 @@ client.on("guildMemberRemove", async (member) => {
 client.on("channelDelete", async (channel) => {
   if (!channel.guild) return;
   const cfg = getAntiNuke(channel.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.channelDelete === false) return;
   try {
     const logs = await channel.guild.fetchAuditLogs({ type: 12, limit: 1 });
     const entry = logs.entries.first();
     if (!entry || !entry.executor) return;
-    if (entry.executor.id === client.user.id) return;
-    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (isAntiNukeExempt(channel.guild, cfg, entry.executor.id)) return;
     if (trackAction(channel.guild.id, entry.executor.id, "channelDelete", cfg.threshold)) {
+      let recovered = false;
+      if (cfg.recovery && typeof channel.clone === "function") {
+        recovered = await channel.clone({ reason: "[AntiNuke] Recovery: recreating deleted channel" })
+          .then(nc => nc.setPosition(channel.position).catch(() => {}).then(() => true))
+          .catch(() => false);
+      }
       await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass channel delete`);
-      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Channel Delete\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Channel Delete\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** channel recreated" : ""}`);
     }
   } catch {}
 });
@@ -5912,41 +6005,145 @@ client.on("channelDelete", async (channel) => {
 // Detect mass role delete
 client.on("roleDelete", async (role) => {
   const cfg = getAntiNuke(role.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.roleDelete === false) return;
   try {
     const logs = await role.guild.fetchAuditLogs({ type: 32, limit: 1 });
     const entry = logs.entries.first();
     if (!entry || !entry.executor) return;
-    if (entry.executor.id === client.user.id) return;
-    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (isAntiNukeExempt(role.guild, cfg, entry.executor.id)) return;
     if (trackAction(role.guild.id, entry.executor.id, "roleDelete", cfg.threshold)) {
+      let recovered = false;
+      if (cfg.recovery) {
+        recovered = await role.guild.roles.create({
+          name: role.name, color: role.color, hoist: role.hoist, position: role.position,
+          permissions: role.permissions, mentionable: role.mentionable,
+          reason: "[AntiNuke] Recovery: recreating deleted role",
+        }).then(() => true).catch(() => false);
+      }
       await punishUser(role.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Mass role delete`);
-      notifyOwner(role.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Role Delete\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(role.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Mass Role Delete\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** role recreated" : ""}`);
     }
   } catch {}
 });
 
-// Detect webhook creation
+// Detect webhook creation (and deletion)
 client.on("webhooksUpdate", async (channel) => {
   const cfg = getAntiNuke(channel.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.webhook === false) return;
   try {
     const logs = await channel.guild.fetchAuditLogs({ type: 50, limit: 1 });
-    const entry = logs.entries.first();
+    let entry = logs.entries.first();
+    let label = "Webhook Created";
+    // Also check for a more recent deletion — whichever audit entry is newer wins
+    const delLogs = await channel.guild.fetchAuditLogs({ type: 52, limit: 1 }).catch(() => null);
+    const delEntry = delLogs?.entries.first();
+    if (delEntry && (!entry || delEntry.createdTimestamp > entry.createdTimestamp)) { entry = delEntry; label = "Webhook Deleted"; }
     if (!entry || !entry.executor) return;
-    if (entry.executor.id === client.user.id) return;
-    if (cfg.whitelist.has(entry.executor.id)) return;
+    if (isAntiNukeExempt(channel.guild, cfg, entry.executor.id)) return;
+    if (Date.now() - entry.createdTimestamp > 15000) return; // stale entry, not this event
     if (trackAction(channel.guild.id, entry.executor.id, "webhook", 1)) {
+      let recovered = false;
+      if (cfg.recovery && label === "Webhook Created") {
+        recovered = await channel.fetchWebhooks()
+          .then(hooks => Promise.all(hooks.filter(h => h.owner?.id === entry.executor.id).map(h => h.delete("[AntiNuke] Recovery: removing unauthorized webhook"))))
+          .then(() => true).catch(() => false);
+      }
       await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized webhook`);
-      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Webhook Created\n**Punishment:** ${cfg.punishment}`);
+      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** ${label}\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** webhook removed" : ""}`);
     }
   } catch {}
+});
+
+// Detect unauthorized channel creation
+client.on("channelCreate", async (channel) => {
+  if (!channel.guild) return;
+  const cfg = getAntiNuke(channel.guild.id);
+  if (!cfg.enabled || cfg.modules.channelCreate === false) return;
+  try {
+    const logs = await channel.guild.fetchAuditLogs({ type: 10, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor || entry.target?.id !== channel.id) return;
+    if (isAntiNukeExempt(channel.guild, cfg, entry.executor.id)) return;
+    if (Date.now() - entry.createdTimestamp > 15000) return;
+    if (trackAction(channel.guild.id, entry.executor.id, "channelCreate", cfg.threshold)) {
+      const recovered = cfg.recovery ? await channel.delete("[AntiNuke] Recovery: removing unauthorized channel").then(() => true).catch(() => false) : false;
+      await punishUser(channel.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized channel create`);
+      notifyOwner(channel.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Channel Created\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** channel removed" : ""}`);
+    }
+  } catch {}
+});
+
+// Detect unauthorized role creation
+client.on("roleCreate", async (role) => {
+  const cfg = getAntiNuke(role.guild.id);
+  if (!cfg.enabled || cfg.modules.roleCreate === false) return;
+  try {
+    const logs = await role.guild.fetchAuditLogs({ type: 30, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor || entry.target?.id !== role.id) return;
+    if (isAntiNukeExempt(role.guild, cfg, entry.executor.id)) return;
+    if (Date.now() - entry.createdTimestamp > 15000) return;
+    if (trackAction(role.guild.id, entry.executor.id, "roleCreate", cfg.threshold)) {
+      const recovered = cfg.recovery ? await role.delete("[AntiNuke] Recovery: removing unauthorized role").then(() => true).catch(() => false) : false;
+      await punishUser(role.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized role create`);
+      notifyOwner(role.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Role Created\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** role removed" : ""}`);
+    }
+  } catch {}
+});
+
+// Detect unauthorized bots being added to the server
+client.on("guildMemberAdd", async (member) => {
+  if (!member.user.bot) return;
+  const cfg = getAntiNuke(member.guild.id);
+  if (!cfg.enabled || cfg.modules.botAdd === false) return;
+  try {
+    const logs = await member.guild.fetchAuditLogs({ type: 28, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor) return;
+    if (isAntiNukeExempt(member.guild, cfg, entry.executor.id)) return;
+    if (Date.now() - entry.createdTimestamp > 15000) return;
+    const recovered = cfg.recovery ? await member.kick("[AntiNuke] Recovery: removing unauthorized bot").then(() => true).catch(() => false) : false;
+    await punishUser(member.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Unauthorized bot add`);
+    notifyOwner(member.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Bot Added (${member.user.username})\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** bot removed" : ""}`);
+  } catch {}
+});
+
+// Detect @everyone / @here ping abuse
+client.on("messageCreate", async (message) => {
+  if (!message.guild || message.author.bot || !message.mentions.everyone) return;
+  const cfg = getAntiNuke(message.guild.id);
+  if (!cfg.enabled || cfg.modules.everyoneMention === false) return;
+  if (isAntiNukeExempt(message.guild, cfg, message.author.id)) return;
+  if (message.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
+  await message.delete().catch(() => {});
+  await message.member?.timeout(10 * 60 * 1000, "[AntiNuke] @everyone/@here abuse").catch(() => {});
+  notifyOwner(message.guild, `**AntiNuke** triggered!\n**User:** <@${message.author.id}>\n**Action:** @everyone/@here Ping\n**Punishment:** 10m timeout`);
+});
+
+// Live audit-log stream — catches mass member prune, server-settings changes and
+// integration create/update/delete (these don't have a dedicated discord.js client event)
+client.on("guildAuditLogEntryCreate", async (entry, guild) => {
+  const cfg = getAntiNuke(guild.id);
+  if (!cfg.enabled) return;
+  const executorId = entry.executorId;
+  if (isAntiNukeExempt(guild, cfg, executorId)) return;
+
+  let key = null, label = null;
+  if (entry.action === 21) { key = "prune"; label = "Mass Member Prune"; }
+  else if (entry.action === 1) { key = "guildUpdate"; label = "Server Settings Changed"; }
+  else if (entry.action === 80 || entry.action === 81 || entry.action === 82) { key = "integrationUpdate"; label = "Integration Modified"; }
+  if (!key || cfg.modules[key] === false) return;
+
+  if (trackAction(guild.id, executorId, key, key === "prune" ? 1 : cfg.threshold)) {
+    await punishUser(guild, executorId, cfg.punishment, `[AntiNuke] ${label}`);
+    notifyOwner(guild, `**AntiNuke** triggered!\n**User:** <@${executorId}>\n**Action:** ${label}\n**Punishment:** ${cfg.punishment}`);
+  }
 });
 
 // Detect dangerous role permission grants
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const cfg = getAntiNuke(newMember.guild.id);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled || cfg.modules.dangerousRole === false) return;
   const added = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
   for (const role of added.values()) {
     if (role.permissions.has(PermissionFlagsBits.Administrator) || role.permissions.has(PermissionFlagsBits.BanMembers) || role.permissions.has(PermissionFlagsBits.ManageGuild)) {
@@ -5954,11 +6151,11 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         const logs = await newMember.guild.fetchAuditLogs({ type: 25, limit: 1 });
         const entry = logs.entries.first();
         if (!entry || !entry.executor) return;
-        if (entry.executor.id === client.user.id) return;
-        if (cfg.whitelist.has(entry.executor.id)) return;
+        if (isAntiNukeExempt(newMember.guild, cfg, entry.executor.id)) return;
         if (trackAction(newMember.guild.id, entry.executor.id, "dangerousRole", cfg.threshold)) {
+          const recovered = cfg.recovery ? await newMember.roles.remove(role, "[AntiNuke] Recovery: revoking dangerous role").then(() => true).catch(() => false) : false;
           await punishUser(newMember.guild, entry.executor.id, cfg.punishment, `[AntiNuke] Dangerous role granted`);
-          notifyOwner(newMember.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Dangerous Role Grant\n**Punishment:** ${cfg.punishment}`);
+          notifyOwner(newMember.guild, `**AntiNuke** triggered!\n**User:** <@${entry.executor.id}>\n**Action:** Dangerous Role Grant (${role.name})\n**Punishment:** ${cfg.punishment}${recovered ? "\n**Recovery:** role revoked" : ""}`);
         }
       } catch {}
     }
@@ -6065,11 +6262,57 @@ client.on("messageCreate", async (message) => {
       cfg.whitelist.delete(target.id);
       saveAllConfigs();return ok(message, `**${target.username}** removed from AntiNuke whitelist`);
     }
+    // ,antinuke extraowner <add|remove|list> [@user]
+    if (sub === "extraowner" || sub === "extraowners") {
+      const action = args[2]?.toLowerCase();
+      if (action === "list" || !action) {
+        const list = cfg.extraOwners.size > 0 ? [...cfg.extraOwners].map(id => `<@${id}>`).join(", ") : "None";
+        return message.reply({ embeds: [{ color: PINK, title: "AntiNuke Extra Owners", description: list }] });
+      }
+      const target = message.mentions.users.first() || await client.users.fetch(args[3]).catch(() => null);
+      if (!target) return err(message, "missing required argument");
+      if (action === "add") { cfg.extraOwners.add(target.id); saveAllConfigs(); return ok(message, `**${target.username}** added as an AntiNuke extra owner — exempt from AntiNuke and trusted like the server owner.`); }
+      if (action === "remove") { cfg.extraOwners.delete(target.id); saveAllConfigs(); return ok(message, `**${target.username}** removed as an AntiNuke extra owner.`); }
+      return err(message, "usage: `,antinuke extraowner <add|remove|list> [@user]`");
+    }
+    // ,antinuke module <name> <on|off>  -- toggle a single granular watcher
+    if (sub === "module") {
+      const modName = args[2]?.toLowerCase();
+      const state = args[3]?.toLowerCase();
+      const validModules = Object.keys(defaultAntiNukeModules());
+      if (!modName || !validModules.includes(modName)) return err(message, `unknown module. valid modules: \`${validModules.join(", ")}\``);
+      if (!["on", "off"].includes(state)) return err(message, "usage: `,antinuke module <name> <on|off>`");
+      cfg.modules[modName] = state === "on";
+      saveAllConfigs(); return ok(message, `AntiNuke module **${modName}** turned **${state}**`);
+    }
+    // ,antinuke modules -- list every module and its state
+    if (sub === "modules") {
+      const lines = Object.entries(cfg.modules).map(([k, v]) => `${v ? "" : ""} \`${k}\``).join("\n");
+      return message.reply({ embeds: [{ color: PINK, title: "AntiNuke Modules", description: lines, footer: { text: "Toggle with ,antinuke module <name> <on|off>" } }] });
+    }
+    // ,antinuke recovery <on|off> -- attempt to auto-undo the damage (recreate channel/role, unban)
+    if (sub === "recovery") {
+      const state = args[2]?.toLowerCase();
+      if (!["on", "off"].includes(state)) return err(message, "usage: `,antinuke recovery <on|off>`");
+      cfg.recovery = state === "on";
+      saveAllConfigs(); return ok(message, `AntiNuke auto-recovery turned **${state}**`);
+    }
     if (sub === "status" || !sub) {
       const wl = cfg.whitelist.size > 0 ? [...cfg.whitelist].map(id => `<@${id}>`).join(", ") : "None";
-      return message.reply({ embeds: [{ color: PINK, title: "AntiNuke Status", fields: [{ name: "Status", value: cfg.enabled ? "Enabled" : "Disabled", inline: true }, { name: "Punishment", value: cfg.punishment, inline: true }, { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true }, { name: "Whitelist", value: wl }] }] });
+      const eo = cfg.extraOwners.size > 0 ? [...cfg.extraOwners].map(id => `<@${id}>`).join(", ") : "None";
+      const modsOn = Object.values(cfg.modules).filter(Boolean).length;
+      const modsTotal = Object.keys(cfg.modules).length;
+      return message.reply({ embeds: [{ color: PINK, title: "AntiNuke Status", fields: [
+        { name: "Status", value: cfg.enabled ? "Enabled" : "Disabled", inline: true },
+        { name: "Punishment", value: cfg.punishment, inline: true },
+        { name: "Threshold", value: `${cfg.threshold} actions/10s`, inline: true },
+        { name: "Recovery", value: cfg.recovery ? "On (auto-restores where possible)" : "Off", inline: true },
+        { name: "Modules", value: `${modsOn}/${modsTotal} active — \`,antinuke modules\` for the full list`, inline: true },
+        { name: "Whitelist", value: wl },
+        { name: "Extra Owners", value: eo },
+      ] }] });
     }
-    return err(message, "missing required argument");
+    return err(message, "missing required argument. usage: `,antinuke <on|off|punishment|threshold|recovery|whitelist|unwhitelist|extraowner|module|modules|status>`");
 
   }
 
@@ -6562,9 +6805,32 @@ const spamTracker = new Map();    // userId-guildId => [timestamps]
 const automodExempt = new Map();
 const modlogChannel = new Map();
 
+// Custom Discord emoji tags + broad unicode emoji ranges, for the emoji-spam filter
+const EMOJI_REGEX = /<a?:\w+:\d+>|[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}]/gu;
+// Default blocklist for the NSFW-link filter — guild admins can extend it with ,filter nsfwdomain add <domain>
+const DEFAULT_NSFW_DOMAINS = [
+  "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com", "redtube.com",
+  "youjizz.com", "onlyfans.com", "chaturbate.com", "spankbang.com",
+  "hentaihaven.xxx", "e-hentai.org", "rule34.xxx", "nhentai.net", "motherless.com",
+];
+
 function getFilter(guildId) {
-  if (!filterConfig.has(guildId)) filterConfig.set(guildId, { enabled: false, words: [], links: false, invites: false, caps: false, spam: false, maxMentions: 5, mentions: false });
-  return filterConfig.get(guildId);
+  if (!filterConfig.has(guildId)) {
+    filterConfig.set(guildId, {
+      enabled: false, words: [], links: false, invites: false, caps: false, spam: false,
+      maxMentions: 5, mentions: false,
+      emojiSpam: false, maxEmojis: 7,
+      nsfwLinks: false, nsfwDomains: [...DEFAULT_NSFW_DOMAINS],
+      punishments: {}, // rule key -> { type: "mute", minutes: N }  (unset = delete + warn only)
+    });
+  }
+  const f = filterConfig.get(guildId);
+  if (f.emojiSpam === undefined) f.emojiSpam = false;
+  if (f.maxEmojis === undefined) f.maxEmojis = 7;
+  if (f.nsfwLinks === undefined) f.nsfwLinks = false;
+  if (!Array.isArray(f.nsfwDomains)) f.nsfwDomains = [...DEFAULT_NSFW_DOMAINS];
+  if (!f.punishments || typeof f.punishments !== "object") f.punishments = {};
+  return f;
 }
 function getExempt(guildId) {
   if (!automodExempt.has(guildId)) automodExempt.set(guildId, { roles: new Set(), channels: new Set() });
@@ -6589,17 +6855,18 @@ client.on("messageCreate", async (message) => {
 
   const content = message.content;
   let triggered = null;
+  let rule = null; // key into filter.punishments
 
   // Bad words
-  if (filter.words.length > 0 && filter.words.some(w => content.toLowerCase().includes(w.toLowerCase()))) triggered = "Banned word";
+  if (filter.words.length > 0 && filter.words.some(w => content.toLowerCase().includes(w.toLowerCase()))) { triggered = "Banned word"; rule = "words"; }
   // Links
-  if (!triggered && filter.links && /https?:\/\/[^\s]+/.test(content)) triggered = "Unauthorized link";
+  if (!triggered && filter.links && /https?:\/\/[^\s]+/.test(content)) { triggered = "Unauthorized link"; rule = "links"; }
   // Discord invites
-  if (!triggered && filter.invites && /(discord\.gg|discord\.com\/invite)\/[a-zA-Z0-9]+/.test(content)) triggered = "Discord invite";
+  if (!triggered && filter.invites && /(discord\.gg|discord\.com\/invite)\/[a-zA-Z0-9]+/.test(content)) { triggered = "Discord invite"; rule = "invites"; }
   // Caps (>70% caps, >8 chars)
   if (!triggered && filter.caps && content.length > 8) {
     const upper = content.replace(/[^a-zA-Z]/g, "");
-    if (upper.length > 0 && (upper.split("").filter(c => c === c.toUpperCase()).length / upper.length) > 0.7) triggered = "Excessive caps";
+    if (upper.length > 0 && (upper.split("").filter(c => c === c.toUpperCase()).length / upper.length) > 0.7) { triggered = "Excessive caps"; rule = "caps"; }
   }
   // Spam (5 messages in 5s)
   if (!triggered && filter.spam) {
@@ -6608,14 +6875,31 @@ client.on("messageCreate", async (message) => {
     const times = (spamTracker.get(key) || []).filter(t => now - t < 5000);
     times.push(now);
     spamTracker.set(key, times);
-    if (times.length >= 5) triggered = "Spam";
+    if (times.length >= 5) { triggered = "Spam"; rule = "spam"; }
   }
   // Mass mentions
-  if (!triggered && filter.mentions && message.mentions.users.size >= filter.maxMentions) triggered = `Mass mention (${message.mentions.users.size})`;
+  if (!triggered && filter.mentions && message.mentions.users.size >= filter.maxMentions) { triggered = `Mass mention (${message.mentions.users.size})`; rule = "mentions"; }
+  // Emoji spam
+  if (!triggered && filter.emojiSpam) {
+    const emojiCount = (content.match(EMOJI_REGEX) || []).length;
+    if (emojiCount >= filter.maxEmojis) { triggered = `Emoji spam (${emojiCount})`; rule = "emojiSpam"; }
+  }
+  // NSFW links (domain blocklist)
+  if (!triggered && filter.nsfwLinks) {
+    const urls = content.match(/https?:\/\/[^\s]+/gi) || [];
+    if (urls.some(u => filter.nsfwDomains.some(d => u.toLowerCase().includes(d)))) { triggered = "NSFW link"; rule = "nsfwLinks"; }
+  }
 
   if (triggered) {
     await message.delete().catch(() => {});
-    const warn = await message.channel.send(`${message.author} your message was removed: **${triggered}**`);
+    let punishText = "";
+    const punishment = filter.punishments[rule];
+    if (punishment?.type === "mute" && message.member?.moderatable) {
+      const minutes = Math.max(1, punishment.minutes || 1);
+      await message.member.timeout(minutes * 60 * 1000, `[AutoMod] ${triggered}`).catch(() => {});
+      punishText = ` — muted **${minutes}m**`;
+    }
+    const warn = await message.channel.send(`${message.author} your message was removed: **${triggered}**${punishText}`);
     setTimeout(() => warn.delete().catch(() => {}), 5000);
     await sendModLog(message.guild, { color: PINK, title: "AutoMod", fields: [{ name: "User", value: message.author.username, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }, { name: "Reason", value: triggered, inline: true }, { name: "Message", value: content.substring(0, 512) }], timestamp: new Date() });
   }
@@ -6800,7 +7084,43 @@ client.on("messageCreate", async (message) => {
       cfg.mentions = !cfg.mentions;
       saveAllConfigs();return ok(message, `Mention filter: **${cfg.mentions ? "on" : "off"}**`);
     }
-    if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "On" : "Off", inline: true }, { name: "Links", value: cfg.links ? "" : "", inline: true }, { name: "Invites", value: cfg.invites ? "" : "", inline: true }, { name: "Caps", value: cfg.caps ? "" : "", inline: true }, { name: "Spam", value: cfg.spam ? "" : "", inline: true }, { name: "Mentions", value: cfg.mentions ? `(max ${cfg.maxMentions})` : "", inline: true }, { name: "Banned Words", value: `${cfg.words.length}` }] }] });
+    // ,filter emojispam [max]
+    if (sub === "emojispam") {
+      const max = parseInt(args[2]);
+      if (!isNaN(max)) { cfg.maxEmojis = Math.max(1, max); cfg.emojiSpam = true; saveAllConfigs(); return ok(message, `Emoji-spam filter: on (max **${cfg.maxEmojis}** per message)`); }
+      cfg.emojiSpam = !cfg.emojiSpam;
+      saveAllConfigs(); return ok(message, `Emoji-spam filter: **${cfg.emojiSpam ? "on" : "off"}** (max ${cfg.maxEmojis})`);
+    }
+    // ,filter nsfw
+    if (sub === "nsfw") {
+      cfg.nsfwLinks = !cfg.nsfwLinks;
+      saveAllConfigs(); return ok(message, `NSFW-link filter: **${cfg.nsfwLinks ? "on" : "off"}** (${cfg.nsfwDomains.length} domains blocked)`);
+    }
+    // ,filter nsfwdomain <add|remove|list> <domain>
+    if (sub === "nsfwdomain") {
+      const action = args[2]?.toLowerCase();
+      if (action === "list" || !action) return message.reply({ embeds: [{ color: PINK, title: "Blocked NSFW Domains", description: cfg.nsfwDomains.map(d => `\`${d}\``).join(", ") }] });
+      const domain = args[3]?.toLowerCase();
+      if (!domain) return err(message, "usage: `,filter nsfwdomain <add|remove|list> <domain>`");
+      if (action === "add") { if (!cfg.nsfwDomains.includes(domain)) cfg.nsfwDomains.push(domain); saveAllConfigs(); return ok(message, `**${domain}** added to the NSFW blocklist.`); }
+      if (action === "remove") { cfg.nsfwDomains = cfg.nsfwDomains.filter(d => d !== domain); saveAllConfigs(); return ok(message, `**${domain}** removed from the NSFW blocklist.`); }
+      return err(message, "usage: `,filter nsfwdomain <add|remove|list> <domain>`");
+    }
+    // ,filter punishment <rule> <delete|mute> [minutes]
+    if (sub === "punishment") {
+      const validRules = ["words", "links", "invites", "caps", "spam", "mentions", "emojiSpam", "nsfwLinks"];
+      const rule = validRules.find(r => r.toLowerCase() === args[2]?.toLowerCase());
+      const type = args[3]?.toLowerCase();
+      if (!rule) return err(message, `unknown rule. valid rules: \`${validRules.join(", ")}\``);
+      if (type === "delete" || !type) { delete cfg.punishments[rule]; saveAllConfigs(); return ok(message, `**${rule}** punishment set to **delete only**.`); }
+      if (type === "mute") {
+        const minutes = Math.max(1, parseInt(args[4]) || 5);
+        cfg.punishments[rule] = { type: "mute", minutes };
+        saveAllConfigs(); return ok(message, `**${rule}** punishment set to **delete + mute (${minutes}m)**.`);
+      }
+      return err(message, "usage: `,filter punishment <rule> <delete|mute> [minutes]`");
+    }
+    if (sub === "status" || !sub) return message.reply({ embeds: [{ color: PINK, title: "AutoMod Status", fields: [{ name: "Status", value: cfg.enabled ? "On" : "Off", inline: true }, { name: "Links", value: cfg.links ? "On" : "Off", inline: true }, { name: "Invites", value: cfg.invites ? "On" : "Off", inline: true }, { name: "Caps", value: cfg.caps ? "On" : "Off", inline: true }, { name: "Spam", value: cfg.spam ? "On" : "Off", inline: true }, { name: "Mentions", value: cfg.mentions ? `On (max ${cfg.maxMentions})` : "Off", inline: true }, { name: "Emoji Spam", value: cfg.emojiSpam ? `On (max ${cfg.maxEmojis})` : "Off", inline: true }, { name: "NSFW Links", value: cfg.nsfwLinks ? `On (${cfg.nsfwDomains.length} domains)` : "Off", inline: true }, { name: "Banned Words", value: `${cfg.words.length}`, inline: true }, { name: "Custom Punishments", value: Object.keys(cfg.punishments).length > 0 ? Object.entries(cfg.punishments).map(([r, p]) => `${r}: ${p.type} (${p.minutes}m)`).join("\n") : "None (delete only)" }] }] });
     return err(message, "missing required argument");
 
   }
@@ -6826,8 +7146,8 @@ client.on("messageCreate", async (message) => {
 
   // -- MOD LOG SETUP ------------------------------------
 
-  // ,modlog <#channel | off>
-  if (command === "modlog" || command === "modlogs" && args[1]?.startsWith("<#")) {
+  // ,modlog <#channel | off> -- setter only. (,modlogs is the separate audit-log viewer above.)
+  if (command === "modlog") {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageGuild)) return err(message, "Missing permissions.");
     if (args[1] === "off") { modlogChannel.delete(message.guild.id); return ok(message, "Mod logs disabled."); }
     const ch = message.mentions.channels.first();
@@ -8278,13 +8598,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // ,rolelist -- alias for roles
-  if (command === "rolelist") {
-    const roles = message.guild.roles.cache.sort((a, b) => b.position - a.position).filter(r => r.id !== message.guild.id);
-    const list = roles.map(r => `<@&${r.id}>`).slice(0, 30).join(", ");
-    return message.reply({ embeds: [{ color: PINK, title: `Roles (${roles.size})`, description: list }] });
-  }
-
   // ,emojiinfo <emoji>
   if (command === "emojiinfo") {
     const emoji = message.guild.emojis.cache.find(e => args[1]?.includes(e.id) || e.name === args[1]);
@@ -8407,16 +8720,6 @@ client.on("messageCreate", async (message) => {
     if (!text) return err(message, "missing required argument");
 
     return message.reply([...text].reverse().join(""));
-  }
-
-  // ,uppercase <text>
-  if (command === "uppercase") {
-    return message.reply(args.slice(1).join(" ").toUpperCase() || "No text provided.");
-  }
-
-  // ,lowercase <text>
-  if (command === "lowercase") {
-    return message.reply(args.slice(1).join(" ").toLowerCase() || "No text provided.");
   }
 
   // ,mock <text> -- SpOnGeBoB mOcKiNg
@@ -8891,7 +9194,7 @@ client.on("messageCreate", async (message) => {
   // -- HIGHLIGHTS ----------------------------------------
 
   // ,highlight add <word>
-  if (command === "highlight" || command === "hl") {
+  if (command === "highlight") {
     const sub = args[1]?.toLowerCase();
     if (sub === "add") {
       const word = args.slice(2).join(" ").toLowerCase();
@@ -10142,11 +10445,6 @@ client.on("messageCreate", async (message) => {
     const vc = message.mentions.channels.first() || message.member.voice.channel;
     if (!vc) return err(message, "No voice channel found.");
     return message.reply({ embeds: [{ color: PINK, title: `${vc.name}`, fields: [{ name: "Members", value: `${vc.members.size}`, inline: true }, { name: "User Limit", value: `${vc.userLimit || "∞"}`, inline: true }, { name: "Bitrate", value: `${vc.bitrate / 1000}kbps`, inline: true }, { name: "ID", value: vc.id }] }] });
-  }
-  if (command === "afklist") {
-    const list = [...afkUsers.entries()].filter(([k]) => k.startsWith(message.guild.id));
-    if (list.length === 0) return message.reply("No AFK users.");
-    return message.reply({ embeds: [{ color: PINK, title: "AFK Users", description: list.map(([k, v]) => `<@${k.split("-")[1]}> — ${v}`).join("\n") }] });
   }
   if (command === "removeafk") {
     if (!message.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return err(message, "Missing permissions.");
@@ -18061,11 +18359,12 @@ client.on("messageCreate", async (message) => {
     const scrambled = [...word].sort(() => Math.random() - 0.5).join("");
     return message.reply(`🔀 \`${scrambled}\``);
   }
-  if (command === "repeat") {
+  // Renamed from ",repeat" -- collided with the simpler ,repeat <n> <text> handler elsewhere in the file.
+  if (command === "repeatx") {
     const parts = rest.split("|").map(s => s.trim());
     const text = parts[0];
     const n = parseInt(parts[1]);
-    if (!text || isNaN(n)) return err(message, "missing required argument: **text** and **count**\nusage: `,repeat text | 3`");
+    if (!text || isNaN(n)) return err(message, "missing required argument: **text** and **count**\nusage: `,repeatx text | 3`");
     if (n < 1 || n > 20) return err(message, "count must be between **1** and **20**.");
     return message.reply(_ecTruncate(Array(n).fill(text).join(" "), 1900));
   }
@@ -20731,16 +21030,6 @@ client.on("messageCreate", async (message) => {
     const time = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: true, weekday: "short" }).format(new Date());
     return info(message, `**${target.username}**'s time: **${time}** (${tz})`);
   }
-  if (command === "urbandictionary" || command === "urban") {
-    if (!rest) return err(message, "missing required argument: **term**\nusage: `,urbandictionary <term>`");
-    try {
-      const res = await fetch(`https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(rest)}`);
-      const data = await res.json();
-      const def = data?.list?.[0];
-      if (!def) return err(message, "no definition found.");
-      return message.reply({ embeds: [{ color: PINK, title: def.word, description: `${def.definition.slice(0, 1800).replace(/[\[\]]/g, "")}\n\n*${def.example.slice(0, 500).replace(/[\[\]]/g, "")}*` }] });
-    } catch { return err(message, "couldn't reach Urban Dictionary right now."); }
-  }
   if (command === "vote") {
     return message.reply({ embeds: [{ color: PINK, title: "Vote", description: "Voting links aren't configured for this bot yet — ask a server admin to set one up." }] });
   }
@@ -20790,7 +21079,10 @@ client.on("messageCreate", async (message) => {
     if (!list.length) return ok(message, `**${target.username}** has no moderation history.`);
     return message.reply({ embeds: [{ color: PINK, title: `${target.username}'s Mod History`, description: list.map((w, i) => `**#${i + 1}** ${w.reason} — by ${w.mod} (${w.date})`).join("\n") }] });
   }
-  if (command === "modstats") {
+  // Renamed from the old duplicate ",modstats" handler (which collided with the
+  // properly-gated leaderboard version above and bypassed the moderation block list).
+  if (command === "modwarns") {
+    if (modGate(message, "modwarns")) return;
     const target = message.mentions.users.first() || message.author;
     let count = 0;
     for (const [key, list] of warns.entries()) {
@@ -21028,7 +21320,7 @@ client.on("messageCreate", async (message) => {
     if (!process.env.RIOT_API_KEY) return message.reply({ embeds: [{ color: PINK, title: args[1], description: "Full stats need a Riot API key, which isn't configured on this bot." }] });
     return err(message, "League lookup isn't fully configured yet.");
   }
-  if (command === "minecraft" || command === "mc") {
+  if (command === "minecraft") {
     if (!args[1]) return err(message, "missing required argument: **username**\nusage: `,minecraft <username>`");
     try {
       const res = await fetch(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(args[1])}`);
@@ -21712,6 +22004,177 @@ client.on("messageCreate", async (message) => {
       log(`[music] ,${command} failed: ${e.stack ?? e.message}`, "error");
       return err(message, `music error: ${e.message}`);
     }
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// INVITE TRACKER — caches every guild's invites and diffs the list on each
+// join to attribute which invite (and therefore which inviter) brought a
+// new member in. Falls back gracefully (no attribution) for vanity-URL
+// joins or when the bot lacks Manage Server in a particular guild.
+// ══════════════════════════════════════════════════════════════════════════
+const inviteCache = new Map();  // guildId -> Map(code -> { uses, inviterId })   (runtime only, rebuilt on ready)
+const inviteJoins = new Map();  // guildId -> Map(memberId -> { inviterId, code, joinedAt })   (persisted)
+
+async function cacheGuildInvites(guild) {
+  try {
+    const invites = await guild.invites.fetch();
+    const map = new Map();
+    invites.forEach(inv => map.set(inv.code, { uses: inv.uses || 0, inviterId: inv.inviter?.id || null }));
+    inviteCache.set(guild.id, map);
+  } catch {
+    // Missing Manage Server, or invites unavailable — tracker just won't attribute joins for this guild.
+  }
+}
+function getInviterJoinCount(guildId, userId) {
+  const guildJoins = inviteJoins.get(guildId);
+  if (!guildJoins) return 0;
+  let count = 0;
+  for (const rec of guildJoins.values()) if (rec.inviterId === userId) count++;
+  return count;
+}
+
+client.once("clientReady", async () => {
+  for (const guild of client.guilds.cache.values()) await cacheGuildInvites(guild);
+  log(`[invites] cached invites for ${client.guilds.cache.size} guild(s)`, "info");
+});
+client.on("guildCreate", guild => cacheGuildInvites(guild));
+client.on("inviteCreate", invite => {
+  if (!invite.guild) return;
+  const map = inviteCache.get(invite.guild.id) || new Map();
+  map.set(invite.code, { uses: invite.uses || 0, inviterId: invite.inviter?.id || null });
+  inviteCache.set(invite.guild.id, map);
+});
+client.on("inviteDelete", invite => {
+  if (!invite.guild) return;
+  inviteCache.get(invite.guild.id)?.delete(invite.code);
+});
+client.on("guildMemberAdd", async member => {
+  try {
+    const before = inviteCache.get(member.guild.id) || new Map();
+    const afterInvites = await member.guild.invites.fetch().catch(() => null);
+    if (!afterInvites) return;
+    const after = new Map();
+    afterInvites.forEach(inv => after.set(inv.code, { uses: inv.uses || 0, inviterId: inv.inviter?.id || null }));
+
+    let usedCode = null, inviterId = null;
+    for (const [code, data] of after) {
+      const prev = before.get(code);
+      if ((!prev && data.uses > 0) || (prev && data.uses > prev.uses)) { usedCode = code; inviterId = data.inviterId; break; }
+    }
+    inviteCache.set(member.guild.id, after);
+    if (!usedCode || !inviterId) return; // vanity URL join, or attribution not possible
+
+    if (!inviteJoins.has(member.guild.id)) inviteJoins.set(member.guild.id, new Map());
+    inviteJoins.get(member.guild.id).set(member.id, { inviterId, code: usedCode, joinedAt: Date.now() });
+    saveInvites();
+  } catch {}
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// PREMIUM SYSTEM — owner-granted subscription tiers that unlock a pool of
+// "boost" credits a user can apply to any server to raise its boost count.
+// ══════════════════════════════════════════════════════════════════════════
+const PREMIUM_PLANS = { basic: { boosts: 3, days: 30 }, pro: { boosts: 6, days: 30 }, ultra: { boosts: 12, days: 30 } };
+const premiumUsers = new Map();  // userId -> { plan, expiresAt, boostsUsed }
+const userBoosts   = new Map();  // `${userId}:${guildId}` -> amount boosted
+const guildBoosts  = new Map();  // guildId -> total boost count
+
+function getPremium(userId) { return premiumUsers.get(userId) || null; }
+
+// Sweep expired premium every 5 minutes: revoke the plan and pull back any boosts it funded.
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, p] of premiumUsers) {
+    if (p.expiresAt <= now) {
+      for (const key of [...userBoosts.keys()]) {
+        if (key.startsWith(`${userId}:`)) {
+          const guildId = key.split(":")[1];
+          guildBoosts.set(guildId, Math.max(0, (guildBoosts.get(guildId) || 0) - userBoosts.get(key)));
+          userBoosts.delete(key);
+        }
+      }
+      premiumUsers.delete(userId);
+    }
+  }
+  savePremium();
+}, 5 * 60 * 1000);
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (ignoreList.get(message.guild?.id)?.has(message.author.id)) return;
+
+  // ,premium grant|revoke|status ...
+  if (command === "premium") {
+    const sub = args[1]?.toLowerCase();
+    if (sub === "grant") {
+      if (!isOwner(message.author.id)) return err(message, "Bot-owner only.");
+      const target = message.mentions.users.first();
+      const plan = args[3]?.toLowerCase();
+      if (!target || !PREMIUM_PLANS[plan]) return err(message, `usage: \`,premium grant @user <${Object.keys(PREMIUM_PLANS).join("|")}>\``);
+      const { days, boosts } = PREMIUM_PLANS[plan];
+      premiumUsers.set(target.id, { plan, expiresAt: Date.now() + days * 86400000, boostsUsed: 0 });
+      savePremium();
+      return ok(message, `Granted **${plan}** premium to **${target.username}** for ${days} days (${boosts} boost credits).`);
+    }
+    if (sub === "revoke") {
+      if (!isOwner(message.author.id)) return err(message, "Bot-owner only.");
+      const target = message.mentions.users.first();
+      if (!target) return err(message, "missing required argument");
+      premiumUsers.delete(target.id);
+      savePremium();
+      return ok(message, `Revoked premium from **${target.username}**.`);
+    }
+    // ,premium status [@user]  (also the default with no subcommand)
+    const target = message.mentions.users.first() || message.author;
+    const p = getPremium(target.id);
+    if (!p || p.expiresAt <= Date.now()) return info(message, `**${target.username}** has no active premium plan.`);
+    const plan = PREMIUM_PLANS[p.plan];
+    return message.reply({ embeds: [{ color: PINK, title: "Premium Status", fields: [
+      { name: "User", value: target.username, inline: true },
+      { name: "Plan", value: p.plan, inline: true },
+      { name: "Expires", value: `<t:${Math.floor(p.expiresAt / 1000)}:R>`, inline: true },
+      { name: "Boosts", value: `${p.boostsUsed}/${plan.boosts} used`, inline: true },
+    ] }] });
+  }
+
+  // ,boost -- spend one boost credit on the current server
+  if (command === "boost") {
+    const p = getPremium(message.author.id);
+    if (!p || p.expiresAt <= Date.now()) return err(message, "You don't have an active premium plan. Ask the bot owner for one.");
+    const plan = PREMIUM_PLANS[p.plan];
+    if (p.boostsUsed >= plan.boosts) return err(message, `You've used all **${plan.boosts}** of your boost credits.`);
+    p.boostsUsed++;
+    const key = `${message.author.id}:${message.guild.id}`;
+    userBoosts.set(key, (userBoosts.get(key) || 0) + 1);
+    guildBoosts.set(message.guild.id, (guildBoosts.get(message.guild.id) || 0) + 1);
+    savePremium();
+    return ok(message, `Boosted **${message.guild.name}**! (${p.boostsUsed}/${plan.boosts} credits used) — server now has **${guildBoosts.get(message.guild.id)}** boost(s).`);
+  }
+
+  // ,unboost -- pull back your boost(s) from the current server
+  if (command === "unboost" || command === "boostremove") {
+    const key = `${message.author.id}:${message.guild.id}`;
+    const amt = userBoosts.get(key) || 0;
+    if (amt <= 0) return err(message, "You haven't boosted this server.");
+    userBoosts.delete(key);
+    guildBoosts.set(message.guild.id, Math.max(0, (guildBoosts.get(message.guild.id) || 0) - amt));
+    const p = getPremium(message.author.id);
+    if (p) p.boostsUsed = Math.max(0, p.boostsUsed - amt);
+    savePremium();
+    return ok(message, `Removed your boost(s) from **${message.guild.name}**.`);
+  }
+
+  // ,boosts -- this server's boost total + top boosters
+  if (command === "boosts") {
+    const total = guildBoosts.get(message.guild.id) || 0;
+    const top = [...userBoosts.entries()].filter(([k]) => k.endsWith(`:${message.guild.id}`)).sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([k, v], i) => `**${i + 1}.** <@${k.split(":")[0]}> — ${v}`).join("\n");
+    return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Boosts`, description: `Total: **${total}**\n\n${top || "No boosters yet."}` }] });
   }
 });
 
