@@ -3781,6 +3781,50 @@ client.on("messageCreate", async (message) => {
     // (global._helpExtraCategories) are intentionally not merged in anymore; their
     // underlying commands still work, they're just no longer listed here.
     const mergedCategories = { ...categoriess };
+
+    // ,help <command> -- single-command detail view, styled like the "greed" help embed
+    if (args[1]) {
+      const HELP_ALIASES = {
+        ban: ["hackban"], mute: ["timeout"], unmute: ["untimeout"], purge: ["clear"],
+        filter: ["automod"], voicemaster: ["vm"], highlow: ["hl"], membercount: ["mc"],
+        voicelist: ["vc"], urban: ["urbandictionary"],
+      };
+      const query = args[1].toLowerCase().replace(/^,/, "");
+      let foundCat = null, foundIndex = -1, tagList = [];
+      for (const cat of Object.values(mergedCategories)) {
+        const tags = _helpTags(cat);
+        const idx = tags.indexOf(query);
+        if (idx !== -1) { foundCat = cat; foundIndex = idx; tagList = tags; break; }
+      }
+      if (!foundCat) return err(message, `no command found matching \`${query}\`. Use \`,help\` to browse categories.`);
+
+      const buildDetailEmbed = (idx) => {
+        const tag = tagList[idx];
+        const entry = foundCat.commands.find(([c]) => _helpTagFor(c) === tag);
+        const rawDesc = entry?.[1]?.trim();
+        const aliases = HELP_ALIASES[tag]?.length ? HELP_ALIASES[tag].map(a => `\`${a}\``).join(", ") : "n/a";
+        return { color: PINK, title: tag, description: `> ${rawDesc || "No description set."}`,
+          fields: [
+            { name: "Aliases", value: aliases },
+            { name: "Parameters", value: "n/a" },
+            { name: "Information", value: "n/a" },
+            { name: "Usage", value: `\`\`\`\nSyntax: ,${tag}\nExample: ,${tag}\n\`\`\`` },
+          ],
+          footer: { text: `Page ${idx + 1}/${tagList.length} (${tagList.length} entries) • Module: ${foundCat.label}` } };
+      };
+      const buildDetailRow = (idx) => new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("help_cmd_prev").setEmoji("⬅️").setStyle(ButtonStyle.Secondary).setDisabled(idx <= 0),
+        new ButtonBuilder().setCustomId("help_cmd_next").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(idx >= tagList.length - 1),
+        new ButtonBuilder().setCustomId("help_cmd_search").setEmoji("🔎").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_cmd_stop").setEmoji("⛔").setStyle(ButtonStyle.Danger),
+      );
+
+      const detailMsg = await message.reply({ embeds: [buildDetailEmbed(foundIndex)], components: [buildDetailRow(foundIndex)] });
+      helpSessions.set(detailMsg.id, { type: "cmd", tagList, cat: foundCat, index: foundIndex, authorId: message.author.id, buildDetailEmbed, buildDetailRow });
+      setTimeout(() => helpSessions.delete(detailMsg.id), 60 * 60 * 1000);
+      return;
+    }
+
     let mainContainer, msg;
     try {
       const visibleCategories = Object.entries(mergedCategories)
@@ -3964,6 +4008,37 @@ client.on("interactionCreate", async (interaction) => {
     });
   } catch (e) {
     log(`[help] interaction error: ${e.message}`, "error");
+  }
+});
+
+// ── ,help <command> detail-view button handler (prev/next/search/stop) ────────
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.message || !interaction.isButton()) return;
+  if (!["help_cmd_prev", "help_cmd_next", "help_cmd_search", "help_cmd_stop"].includes(interaction.customId)) return;
+
+  const sess = helpSessions.get(interaction.message.id);
+  if (!sess || sess.type !== "cmd") return interaction.reply({ content: "Session expired — type `,help <command>` again.", flags: 64 });
+  if (interaction.user.id !== sess.authorId)
+    return interaction.reply({ embeds: [{ color: PINK, description: "This menu belongs to someone else." }], flags: 64 });
+
+  if (interaction.customId === "help_cmd_search") {
+    return interaction.reply({ content: `Type \`,help <command>\` to jump straight to another command's page.`, flags: 64 });
+  }
+  if (interaction.customId === "help_cmd_stop") {
+    const disabledRow = sess.buildDetailRow(sess.index);
+    disabledRow.components.forEach(b => b.setDisabled(true));
+    try { await interaction.update({ components: [disabledRow] }); } catch {}
+    helpSessions.delete(interaction.message.id);
+    return;
+  }
+
+  if (interaction.customId === "help_cmd_prev" && sess.index > 0) sess.index--;
+  if (interaction.customId === "help_cmd_next" && sess.index < sess.tagList.length - 1) sess.index++;
+
+  try {
+    await interaction.update({ embeds: [sess.buildDetailEmbed(sess.index)], components: [sess.buildDetailRow(sess.index)] });
+  } catch (e) {
+    log(`[help] cmd-detail interaction error: ${e.message}`, "error");
   }
 });
 
@@ -5276,9 +5351,18 @@ async function runMassDM(state) {
 }
 
 
-const TICKET_CATEGORY_ID = "1409003502826557560";
-const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
-const TICKET_NO_RESPONSE_MS = 30 * 60 * 1000;  // 30 minutes — delete if creator never writes
+const TICKET_CATEGORY_ID = "1409003502826557560"; // legacy fallback only — real categories now come from ticketConfig (see _ticketCategoryIdsFor)
+const TICKET_TIMEOUT_MS = 2 * 60 * 60 * 1000; // default general-inactivity window (creator responded at least once, then went quiet)
+const TICKET_NO_RESPONSE_MS = 15 * 60 * 1000;  // default — delete if creator never writes anything at all
+// Both windows are configurable per guild via ,ticketpanel timeout — see helpers below.
+function _ticketTimeoutMsFor(guildId) {
+  const mins = ticketConfig.get(guildId)?.inactivityMinutes;
+  return (typeof mins === "number" && mins > 0) ? mins * 60 * 1000 : TICKET_TIMEOUT_MS;
+}
+function _ticketNoResponseMsFor(guildId) {
+  const mins = ticketConfig.get(guildId)?.noResponseMinutes;
+  return (typeof mins === "number" && mins > 0) ? mins * 60 * 1000 : TICKET_NO_RESPONSE_MS;
+}
 const ticketActivity = new Map();    // channelId => { creatorId, guildId, lastActivity, closing, openedAt, creatorMsgSent }
 const ticketWarnings = new Map();
 
@@ -5292,8 +5376,9 @@ async function closeNoResponseTicket(channelId, activity) {
     if (!guild) { ticketActivity.delete(channelId); return; }
     const ch = guild.channels.cache.get(channelId);
     if (!ch) { ticketActivity.delete(channelId); return; }
+    const mins = Math.round(_ticketNoResponseMsFor(activity.guildId) / 60000);
 
-    await ch.send({ embeds:[{ color:0xFF4444, description:`<@${activity.creatorId}> This ticket has been deleted because no message was sent within **30 minutes**.` }] }).catch(()=>{});
+    await ch.send({ embeds:[{ color:0xFF4444, description:`<@${activity.creatorId}> This ticket has been deleted because no message was sent within **${mins} minute${mins===1?"":"s"}**.` }] }).catch(()=>{});
 
     ticketActivity.delete(channelId);
     ticketWarnings.delete(channelId);
@@ -5301,8 +5386,8 @@ async function closeNoResponseTicket(channelId, activity) {
       if (chId === channelId) { openTickets.delete(key); break; }
     }
     await new Promise(r => setTimeout(r, 5000));
-    await ch.delete("[Auto-Delete] No response in 30min").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
-    log(`[Tickets] Auto-deleted ${ch.name} (no creator response in 30min)`, "success");
+    await ch.delete("[Auto-Delete] No response from creator").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
+    log(`[Tickets] Auto-deleted ${ch.name} (no creator response)`, "success");
   } catch (e) {
     log(`[Tickets] closeNoResponseTicket error ${channelId}: ${e.message}`, "error");
     ticketActivity.delete(channelId);
@@ -5319,20 +5404,22 @@ async function closeInactiveTicket(channelId, activity) {
     if (!guild) { ticketActivity.delete(channelId); return; }
     const ch = guild.channels.cache.get(channelId);
     if (!ch) { ticketActivity.delete(channelId); return; }
+    const hrs = _ticketTimeoutMsFor(activity.guildId) / 3600000;
+    const windowStr = hrs >= 1 ? `${hrs} hour${hrs===1?"":"s"}` : `${Math.round(hrs*60)} minutes`;
 
     // DM creator
     client.users.fetch(activity.creatorId).then(creator => {
-      creator.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **2 hours** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      creator.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `Your ticket in **${guild.name}** was closed after **${windowStr}** of inactivity.\n\nPlease do not open troll tickets.`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
     }).catch(() => {});
 
     // Send warning in channel
-    await ch.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **2 hours** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
+    await ch.send({ embeds: [{ color: PINK, title: "Troll Ticket", description: `<@${activity.creatorId}> This ticket has been inactive for **${windowStr}** and will be deleted in **10 seconds**.\n\nPlease do not open troll tickets.`, footer: { text: guild.name } }] }).catch(() => {});
 
     // Log
     const cfg = ticketConfig.get(guild.id);
     if (cfg?.logChannelId) {
       const logCh = guild.channels.cache.get(cfg.logChannelId);
-      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **2 hours** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
+      if (logCh) logCh.send({ embeds: [{ color: PINK, title: "Ticket Auto-Closed", description: `**${ch.name}** auto-closed after **${windowStr}** of inactivity.\nCreator: <@${activity.creatorId}>`, footer: { text: guild.name }, timestamp: new Date() }] }).catch(() => {});
     }
 
     // Cleanup
@@ -5344,7 +5431,7 @@ async function closeInactiveTicket(channelId, activity) {
 
     // Delete channel immediately (await so we know if it works)
     await new Promise(r => setTimeout(r, 5000));
-    await ch.delete("[Auto-Close] Inactive 2h").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
+    await ch.delete("[Auto-Close] Inactive").catch(e => log(`[Tickets] Delete FAILED: ${e.message}`, "error"));
     log(`[Tickets] Deleted ${ch.name}`, "success");
   } catch (e) {
     log(`[Tickets] Error closing ${channelId}: ${e.message}`, "error");
@@ -5352,12 +5439,24 @@ async function closeInactiveTicket(channelId, activity) {
   }
 }
 
-// On startup: scan ticket category and re-register open tickets
+// On startup: scan every guild's REAL configured ticket categories and re-register open tickets.
+// (Previously this only checked one hardcoded category ID left over from another server's setup,
+// so it silently found zero of your tickets after every restart — breaking both the close
+// button, ",tc"/",ticket close", and the inactivity auto-close, since none of them could find
+// a ticketActivity entry for channels that existed before the restart.)
+function _ticketCategoryIdsFor(guildId) {
+  const ids = new Set([TICKET_CATEGORY_ID]); // kept as a harmless legacy fallback
+  const cfg = ticketConfig.get(guildId);
+  if (cfg?.categoryId) ids.add(cfg.categoryId);
+  for (const panel of cfg?.ticketPanels || []) if (panel.categoryId) ids.add(panel.categoryId);
+  return ids;
+}
 async function rehydrateTickets() {
   try {
     let count = 0;
     for (const guild of client.guilds.cache.values()) {
-      const ticketChannels = guild.channels.cache.filter(c => c.parentId === TICKET_CATEGORY_ID && c.type === 0);
+      const categoryIds = _ticketCategoryIdsFor(guild.id);
+      const ticketChannels = guild.channels.cache.filter(c => categoryIds.has(c.parentId) && c.type === 0);
       for (const ch of ticketChannels.values()) {
         if (ticketActivity.has(ch.id)) continue;
 
@@ -5384,13 +5483,17 @@ async function rehydrateTickets() {
         const lastActivity = lastCreatorMsg ? lastCreatorMsg.createdTimestamp : ch.createdTimestamp;
         const elapsed = Date.now() - lastActivity;
 
-        ticketActivity.set(ch.id, { creatorId, guildId: guild.id, lastActivity, closing: false });
+        ticketActivity.set(ch.id, {
+          creatorId, guildId: guild.id, lastActivity, closing: false,
+          openedAt: ch.createdTimestamp,          // was missing — without it, the no-response timer could never fire for a rehydrated ticket
+          creatorMsgSent: !!lastCreatorMsg,
+        });
         count++;
         log(`[Tickets] Re-registered ${ch.name} — inactive for ${Math.floor(elapsed/60000)}min`, "info");
 
-        // If already over 2 hours, close immediately
-        if (elapsed >= TICKET_TIMEOUT_MS) {
-          log(`[Tickets] ${ch.name} already past 2h — closing immediately`, "info");
+        // If already over the inactivity window, close immediately
+        if (elapsed >= _ticketTimeoutMsFor(guild.id)) {
+          log(`[Tickets] ${ch.name} already past the inactivity window — closing immediately`, "info");
           closeInactiveTicket(ch.id, ticketActivity.get(ch.id));
         }
       }
@@ -5413,7 +5516,7 @@ client.on("messageCreate", async (message) => {
   log(`[Tickets] Timer reset for ${message.channel.name}`, "info");
 });
 
-// Check every 5 minutes (more reliable than every minute)
+// Check every 2 minutes (tight enough that a 15-min no-response window is still meaningful)
 setInterval(async () => {
   const now = Date.now();
   const entries = [...ticketActivity.entries()];
@@ -5421,19 +5524,21 @@ setInterval(async () => {
   for (const [channelId, activity] of entries) {
     if (activity.closing) continue;
     const elapsed = now - activity.lastActivity;
-    // 30-minute no-response: creator never sent a message since ticket opened
-    if (!activity.creatorMsgSent && activity.openedAt && (now - activity.openedAt) >= TICKET_NO_RESPONSE_MS) {
-      log(`[Tickets] ${channelId}: creator never responded in 30min — auto-deleting`, "info");
+    const noResponseMs = _ticketNoResponseMsFor(activity.guildId);
+    const timeoutMs = _ticketTimeoutMsFor(activity.guildId);
+    // No-response: creator never sent a message since ticket opened
+    if (!activity.creatorMsgSent && activity.openedAt && (now - activity.openedAt) >= noResponseMs) {
+      log(`[Tickets] ${channelId}: creator never responded — auto-deleting`, "info");
       closeNoResponseTicket(channelId, activity);
       continue;
     }
-    const minutesLeft = Math.ceil((TICKET_TIMEOUT_MS - elapsed) / 60000);
+    const minutesLeft = Math.ceil((timeoutMs - elapsed) / 60000);
     log(`[Tickets] ${channelId}: ${Math.floor(elapsed/60000)}min inactive (${minutesLeft}min left)`, "info");
-    if (elapsed >= TICKET_TIMEOUT_MS) {
+    if (elapsed >= timeoutMs) {
       closeInactiveTicket(channelId, activity);
     }
   }
-}, 5 * 60 * 1000); // every 5 minutes
+}, 2 * 60 * 1000); // every 2 minutes
 
 // ===== TICKET + EXTRA COMMANDS =====
 client.on("messageCreate", async (message) => {
@@ -5447,8 +5552,9 @@ client.on("messageCreate", async (message) => {
   if (command === "tc") {
     const _cfg = ticketConfig.get(message.guild.id);
     const _act = ticketActivity.get(message.channel.id);
-    if (!_act) return err(message, "this channel is not a ticket");
-    const _isCreator = _act.creatorId === message.author.id;
+    const _looksLikeTicket = _act || message.channel.name.startsWith("ticket-") || _ticketCategoryIdsFor(message.guild.id).has(message.channel.parentId);
+    if (!_looksLikeTicket) return err(message, "this channel is not a ticket");
+    const _isCreator = _act ? _act.creatorId === message.author.id : false;
     const _hasPerm = message.member.permissions.has(PermissionFlagsBits.ManageChannels);
     const _hasRole = _cfg?.modRoleId && message.member.roles.cache.has(_cfg.modRoleId);
     if (!_isCreator && !_hasPerm && !_hasRole) return err(message, "you don't have permission to close this ticket");
@@ -5480,6 +5586,8 @@ client.on("messageCreate", async (message) => {
       const existing = openTickets.get(`${message.guild.id}-${message.author.id}`);
       if (existing) return err(message, `you already have an open ticket: <#${existing}>`);
       const cfg = ticketConfig.get(message.guild.id);
+      const realCategoryId = cfg?.categoryId || cfg?.ticketPanels?.[0]?.categoryId || null;
+      if (!realCategoryId) return err(message, "no ticket category is configured yet — an admin needs to run `,ticketpanel setup` first.");
       const permOverwrites = [
         { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
         { id: message.author.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
@@ -5492,7 +5600,7 @@ client.on("messageCreate", async (message) => {
       const ticketChannel = await message.guild.channels.create({
         name: `ticket-${message.author.username}`,
         type: 0,
-        parent: TICKET_CATEGORY_ID,
+        parent: realCategoryId,
         permissionOverwrites: permOverwrites
       }).catch(() => null);
       if (!ticketChannel) return err(message, "could not create ticket channel — check my permissions");
@@ -5501,9 +5609,12 @@ client.on("messageCreate", async (message) => {
         creatorId: message.author.id,
         guildId: message.guild.id,
         lastActivity: Date.now(),
+        openedAt: Date.now(),
+        creatorMsgSent: false,
         closing: false
       });
-      await ticketChannel.send({ embeds: [{ color: PINK, title: "Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\nThis ticket will be **automatically closed** if you don't respond within **2 hours**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
+      const noResponseMins = Math.round(_ticketNoResponseMsFor(message.guild.id) / 60000);
+      await ticketChannel.send({ embeds: [{ color: PINK, title: "Ticket Created", description: `Hello ${message.author}, support will be with you shortly.\n\nUse \`,ticket close\` to close this ticket.\n\nThis ticket will be **automatically closed** if you don't respond within **${noResponseMins} minutes**.`, footer: { text: message.guild.name }, timestamp: new Date() }] });
       return ok(message, `ticket created: ${ticketChannel}`);
     }
     if (sub === "close") {
@@ -10766,18 +10877,16 @@ function _sepBuildEmbed(s, guildName) {
     : "*not set*";
   return {
     color: PINK,
-    title: "Channel Separator",
+    title: "📐 Channel Separator",
     description: [
-      "Distribute **all server channels**, sorted **alphabetically (A→Z)**, evenly across **4 or more categories** (2 minimum).",
-      "Each category supports up to 50 channels — overflow categories are created automatically.",
-      "",
-      list,
-      "",
-      ready
-        ? "Ready — press **Run** to start"
-        : "Set at least **2** category names (4+ recommended) to continue",
+      "> Distribute **all server channels**, sorted **A→Z**, evenly across **4+ categories** (2 minimum).",
+      "> Each category supports up to 50 channels — overflow categories are created automatically.",
     ].join("\n"),
-    footer: { text: `sensational • white edition • ${guildName}` },
+    fields: [
+      { name: "Category Names", value: list },
+      { name: "Status", value: ready ? "✅ Ready — press **Run** to start" : "⏳ Set at least **2** category names (4+ recommended) to continue" },
+    ],
+    footer: { text: `${guildName} • Module: Utility` },
     timestamp: new Date(),
   };
 }
@@ -12041,7 +12150,7 @@ function buildPanelEmbed(s) {
 
   return {
     color: PINK,
-    title: " Setup Panel  ·  owner only",
+    title: "🛠️ Setup Panel  ·  owner only",
     description: [
       "Choose an **operation** from the dropdown, set **Source** and **Target**, then hit **Launch**.",
       "",
@@ -13852,24 +13961,23 @@ function buildScraperEmbed(guildId) {
 
   return {
     color: PINK,
-    title: " Video Scraper  ·  Config Panel",
+    title: "📡 Video Scraper · Config Panel",
     description: [
-      "Automatically pulls videos from source channels and reposts them to your target channel.",
-      "",
+      "> Automatically pulls videos from source channels and reposts them to your target channel.",
       readyHint,
     ].join("\n"),
     fields: [
-      { name: " Status",           value: statusStr,                                        inline: true  },
-      { name: " Schedule",          value: schedStr,                                          inline: true  },
-      { name: " Last run",          value: lastStr,                                           inline: true  },
-      { name: " This window",        value: hourlyStr,                                         inline: true  },
-      { name: " Next run",          value: nextStr,                                           inline: true  },
-      { name: " Last posted",       value: lastPostedStr,                                      inline: true  },
-      { name: " Target channel",   value: targetStr,                                          inline: false },
-      { name: " Source channels",  value: sourcesStr,                                         inline: false },
-      { name: " Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
+      { name: "🟢 Status",          value: statusStr,                                        inline: true  },
+      { name: "🗓️ Schedule",        value: schedStr,                                          inline: true  },
+      { name: "🕓 Last run",        value: lastStr,                                           inline: true  },
+      { name: "📊 This window",     value: hourlyStr,                                         inline: true  },
+      { name: "⏭️ Next run",        value: nextStr,                                           inline: true  },
+      { name: "🎬 Last posted",     value: lastPostedStr,                                      inline: true  },
+      { name: "🎯 Target channel",  value: targetStr,                                          inline: false },
+      { name: "📂 Source channels", value: sourcesStr,                                         inline: false },
+      { name: "✏️ Rename videos to", value: `\`${cfg.renamePrefix}\``,                         inline: false },
     ],
-    footer: { text: "sensational  ·  video scraper  ·  Administrator only" },
+    footer: { text: "sensational · video scraper · Module: Config • Administrator only" },
     timestamp: new Date(),
   };
 }
@@ -14088,7 +14196,7 @@ client.on("interactionCreate", async (interaction) => {
   if (cid === `sc_run_now:${guildId}`) {
     await interaction.deferUpdate();
     await interaction.message.edit({
-      embeds:     [{ color: PINK, title: " Video Scraper  ·  Running…", description: "Running the scraper now, please wait…" }],
+      embeds:     [{ color: PINK, title: "📡 Video Scraper  ·  Running…", description: "Running the scraper now, please wait…" }],
       components: [],
     }).catch(() => {});
     let result;
@@ -15721,7 +15829,7 @@ client.on("messageCreate", async (message) => {
     // status
     return message.reply({ embeds:[{
       color: PINK,
-      title: " Keto — Social Auto-Embed",
+      title: "🤖 Keto — Social Auto-Embed",
       description: [
         `**Status:** ${kc.enabled?"Enabled":"Disabled"}`,
         `**Delete original:** ${kc.deleteOriginal?"Yes":"No"}`,
@@ -16096,7 +16204,7 @@ client.on("messageCreate", async (message) => {
       : "*None — no permissions monitored.*";
     const embed = {
       color: PINK,
-      title: " Risky Permission Monitor",
+      title: "⚠️ Risky Permission Monitor",
       description: [
         "Select which permissions to flag as **risky**.",
         "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
@@ -16228,11 +16336,29 @@ client.on("messageCreate", async (message) => {
     if (!sub || sub === "list") {
       if (!cfg.ticketPanels.length)
         return err(message,"No ticket panels configured. Run `,ticketpanel setup` to create one.");
+      const noResponseMins = Math.round(_ticketNoResponseMsFor(message.guild.id) / 60000);
+      const inactivityMins = Math.round(_ticketTimeoutMsFor(message.guild.id) / 60000);
       return message.reply({ embeds:[{
-        color: PINK, title:" Ticket Panels",
-        description: cfg.ticketPanels.map((p,i)=>`**[${i+1}]** ${p.name} — Category: <#${p.categoryId||"not set"}>`).join("\n"),
-        footer:{text:"Use ,ticketpanel manage <#> to edit a panel"}
+        color: PINK, title:"🎫 Ticket Panels",
+        description: `> ${cfg.ticketPanels.length} panel(s) configured on this server.`,
+        fields: [
+          { name: "Panels", value: cfg.ticketPanels.map((p,i)=>`\`${i+1}.\` **${p.name}** — <#${p.categoryId||"not set"}>`).join("\n") },
+          { name: "⏱️ No-Response Timeout", value: `**${noResponseMins}** minute(s) — deletes if the opener never sends a message`, inline: true },
+          { name: "💤 Inactivity Timeout", value: `**${inactivityMins}** minute(s) — closes after the opener goes quiet`, inline: true },
+        ],
+        footer:{text:"Use ,ticketpanel manage <#> to edit a panel, or ,ticketpanel timeout to change the windows above"}
       }]}).catch(()=>{});
+    }
+
+    // ,ticketpanel timeout <no-response-minutes> [inactivity-minutes]
+    if (sub === "timeout") {
+      const noResp = parseInt(args[2]);
+      const inactivity = parseInt(args[3]);
+      if (isNaN(noResp) || noResp < 1) return err(message, "usage: `,ticketpanel timeout <no-response-minutes> [inactivity-minutes]`\ne.g. `,ticketpanel timeout 15 120`");
+      cfg.noResponseMinutes = noResp;
+      if (!isNaN(inactivity) && inactivity >= 1) cfg.inactivityMinutes = inactivity;
+      saveAllConfigs();
+      return ok(message, `ticket timeouts updated — no-response: **${cfg.noResponseMinutes}m**, inactivity: **${cfg.inactivityMinutes || Math.round(TICKET_TIMEOUT_MS/60000)}m**`);
     }
 
     if (sub === "setup" || sub === "create") {
@@ -16255,13 +16381,13 @@ client.on("messageCreate", async (message) => {
       );
       const msg1 = await message.reply({ embeds:[{
         color: PINK,
-        title: "Panel Setup — Step 1/6: Panel name & button",
-        description: "Click **Set Panel Name** to set the name shown in the panel embed title and on the open-ticket button.",
+        title: "🎫 Panel Setup — Step 1/6: Panel name & button",
+        description: "> Click **Set Panel Name** to set the name shown in the panel embed title and on the open-ticket button.",
         fields: [
           {name:"Panel title",   value:`\`${panelData.name}\``,        inline:true},
           {name:"Button label",  value:`\`${panelData.buttonLabel}\``, inline:true},
         ],
-        footer:{text:"Click a button below, or Skip to use defaults"},
+        footer:{text:"Click a button below, or Skip to use defaults • Module: Tickets"},
       }], components:[step1Row] }).catch(()=>null);
       if (!msg1) return;
 
@@ -16293,17 +16419,18 @@ client.on("messageCreate", async (message) => {
         )
       ];
       return message.reply({ embeds:[{
-        color: PINK, title:" Panel Editor",
-        description:[
-          `**Title:** ${panel.name}`,
-          `**Description:** ${(panel.description||"").slice(0,80)}${(panel.description||"").length>80?"…":""}`,
-          `**Button:** ${panel.buttonEmoji||""} ${panel.buttonLabel||panel.name} (${panel.buttonColor||"Success"})`,
-          `**Categories:** ${panel.categories?.map(c=>`${c.emoji||""}${c.name}`).join(", ")||"none (single button)"}`,
-          `**Support Roles:** ${panel.supportRoles?.map(r=>`<@&${r}>`).join(", ")||"none"}`,
-          `**Ticket Category:** ${panel.categoryId?`<#${panel.categoryId}>`:"not set"}`,
-          `**Transcript:** ${panel.transcriptChannelId?`<#${panel.transcriptChannelId}>`:"not set"}`,
-        ].join("\n"),
-        footer:{text:`Panel ${idx+1} of ${cfg.ticketPanels.length}`}
+        color: PINK, title:"🎟️ Panel Editor",
+        description: `> Editing panel **${panel.name}**. Pick an action from the menu below.`,
+        fields: [
+          { name: "Title", value: `\`${panel.name}\``, inline: true },
+          { name: "Button", value: `${panel.buttonEmoji||"—"} \`${panel.buttonLabel||panel.name}\` (${panel.buttonColor||"Success"})`, inline: true },
+          { name: "Ticket Category", value: panel.categoryId?`<#${panel.categoryId}>`:"*not set*", inline: true },
+          { name: "Description", value: (panel.description||"*none*").slice(0,200) + ((panel.description||"").length>200?"…":"") },
+          { name: "Categories", value: panel.categories?.length ? panel.categories.map(c=>`\`${c.emoji||""}${c.name}\``).join(", ") : "*none (single button)*", inline: true },
+          { name: "Support Roles", value: panel.supportRoles?.length ? panel.supportRoles.map(r=>`<@&${r}>`).join(", ") : "*none*", inline: true },
+          { name: "Transcript Channel", value: panel.transcriptChannelId?`<#${panel.transcriptChannelId}>`:"*not set*", inline: true },
+        ],
+        footer:{text:`Panel ${idx+1} of ${cfg.ticketPanels.length} • Module: Tickets`}
       }], components:rows}).catch(()=>{});
     }
 
@@ -16325,10 +16452,10 @@ const _TP_BSTYLE = { Primary:ButtonStyle.Primary, Success:ButtonStyle.Success, D
 function _wizardStepContent(step, wiz) {
   const { panelData } = wiz;
   if (step === 2) return {
-    embeds:[{color:PINK, title:"Panel Setup — Step 2/6: Panel description",
-      description:"Click **Set Description** to write the text shown inside the panel embed.\nSupports **bold**, *italic*, Discord emojis, and mentions.",
+    embeds:[{color:PINK, title:"🎫 Panel Setup — Step 2/6: Panel description",
+      description:"> Click **Set Description** to write the text shown inside the panel embed.\n> Supports **bold**, *italic*, Discord emojis, and mentions.",
       fields:[{name:"Current", value:(panelData.description||"*(none)*").slice(0,300), inline:false}],
-      footer:{text:"Click Skip to keep the default."}}],
+      footer:{text:"Click Skip to keep the default • Module: Tickets"}}],
     components:[new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("tp_setdesc").setLabel("Set Description").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip2").setLabel("Skip").setStyle(ButtonStyle.Secondary),
@@ -16336,9 +16463,9 @@ function _wizardStepContent(step, wiz) {
     )],
   };
   if (step === 3) return {
-    embeds:[{color:PINK, title:"Panel Setup — Step 3/6: Button colour",
-      description:"Pick a **colour** for the open-ticket button.\n\nCurrent emoji: `"+(panelData.buttonEmoji||"")+"` · Colour: **"+(panelData.buttonColor||"Success")+"**",
-      footer:{text:"Clicking a colour saves it and moves to the next step."}}],
+    embeds:[{color:PINK, title:"🎫 Panel Setup — Step 3/6: Button colour",
+      description:"> Pick a **colour** for the open-ticket button.\n\nCurrent emoji: `"+(panelData.buttonEmoji||"")+"` · Colour: **"+(panelData.buttonColor||"Success")+"**",
+      footer:{text:"Clicking a colour saves it and moves to the next step • Module: Tickets"}}],
     components:[
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("tp_color_Primary").setLabel("Blue").setStyle(ButtonStyle.Primary),
@@ -16353,10 +16480,10 @@ function _wizardStepContent(step, wiz) {
     ],
   };
   if (step === 4) return {
-    embeds:[{color:PINK, title:"Panel Setup — Step 4/6: Ticket categories",
-      description:'Add **categories** so users choose a topic when opening a ticket.\nEach category becomes a separate button on the panel.\n\nLeave blank for a single open-ticket button.',
+    embeds:[{color:PINK, title:"🎫 Panel Setup — Step 4/6: Ticket categories",
+      description:'> Add **categories** so users choose a topic when opening a ticket.\n> Each category becomes a separate button on the panel.\n\nLeave blank for a single open-ticket button.',
       fields:[{name:"Current", value:panelData.categories?.length ? panelData.categories.map(c=>`${c.emoji||""}  **${c.name}**`).join("\n") : "*(single button)*", inline:false}],
-      footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "Partners, Reports, Other"'}}],
+      footer:{text:'Format: "emoji Name, emoji Name"  e.g.  "Partners, Reports, Other" • Module: Tickets'}}],
     components:[new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("tp_setcats").setLabel("Set Categories").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip4").setLabel("Skip").setStyle(ButtonStyle.Secondary),
@@ -16364,10 +16491,10 @@ function _wizardStepContent(step, wiz) {
     )],
   };
   if (step === 5) return {
-    embeds:[{color:PINK, title:"Panel Setup — Step 5/6: Support roles",
-      description:"Enter the role IDs that can see and manage tickets.\nLeave blank to allow anyone with Manage Channels.",
+    embeds:[{color:PINK, title:"🎫 Panel Setup — Step 5/6: Support roles",
+      description:"> Enter the role IDs that can see and manage tickets.\n> Leave blank to allow anyone with Manage Channels.",
       fields:[{name:"Current", value:panelData.supportRoles?.length ? panelData.supportRoles.map(r=>`<@&${r}>`).join(", ") : "*(none)*", inline:false}],
-      footer:{text:"Enter role IDs separated by commas."}}],
+      footer:{text:"Enter role IDs separated by commas • Module: Tickets"}}],
     components:[new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("tp_setroles").setLabel("Set Roles").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip5").setLabel("Skip").setStyle(ButtonStyle.Secondary),
@@ -16375,13 +16502,13 @@ function _wizardStepContent(step, wiz) {
     )],
   };
   if (step === 6) return {
-    embeds:[{color:PINK, title:"Panel Setup — Step 6/6: Category & transcript channels",
-      description:"Set the **Discord category** where ticket channels are created, and a **transcript channel** for closed ticket logs.",
+    embeds:[{color:PINK, title:"🎫 Panel Setup — Step 6/6: Category & transcript channels",
+      description:"> Set the **Discord category** where ticket channels are created, and a **transcript channel** for closed ticket logs.",
       fields:[
         {name:"Ticket category", value:panelData.categoryId?`<#${panelData.categoryId}>`:"*(not set)*", inline:true},
         {name:"Transcript", value:panelData.transcriptChannelId?`<#${panelData.transcriptChannelId}>`:"*(not set)*", inline:true},
       ],
-      footer:{text:"Click Set Channels or Skip to finish."}}],
+      footer:{text:"Click Set Channels or Skip to finish • Module: Tickets"}}],
     components:[new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("tp_setchannels").setLabel("Set Channels").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("tp_skip6").setLabel("Skip / Finish").setStyle(ButtonStyle.Secondary),
@@ -16393,8 +16520,9 @@ function _wizardStepContent(step, wiz) {
 function _wizardDoneContent(wiz) {
   const cfg = guildCfg(wiz.guildId);
   const n   = (cfg.ticketPanels||[]).length;
-  return { embeds:[{color:PINK, title:" Panel Created!",
-    description:`**${wiz.panelData.name}** saved as panel **#${n}**.\n\nRun \`,ticketpanel manage ${n}\` → **Send panel to a channel** to deploy it.`}], components:[] };
+  return { embeds:[{color:PINK, title:"✅ Panel Created!",
+    description:`> **${wiz.panelData.name}** saved as panel **#${n}**.\n\nRun \`,ticketpanel manage ${n}\` → **Send panel to a channel** to deploy it.`,
+    footer:{text:"Module: Tickets"}}], components:[] };
 }
 function _tpWizardSave(wiz) {
   const cfg = guildCfg(wiz.guildId);
@@ -16747,16 +16875,20 @@ client.on("interactionCreate", async (interaction) => {
   if (id.startsWith("ticket_close:") && interaction.isButton()) {
     const [,channelId,creatorId] = id.split(":");
     const activity = ticketActivity.get(channelId);
-    if (!activity) return interaction.reply({content:"This ticket is already closed.",flags:64});
+    // Fall back to the creatorId embedded in the button itself if the in-memory
+    // tracking entry is gone (e.g. right after a restart, before rehydration finishes) —
+    // previously this just refused with "already closed" even for open tickets.
+    const effectiveCreatorId = activity?.creatorId || creatorId || null;
+    if (!activity && !creatorId) return interaction.reply({content:"Couldn't identify this ticket — an admin can close it manually with `,tc`.",flags:64});
     const cfg2 = guildCfg(interaction.guild.id);
-    const canClose = interaction.user.id===(creatorId||activity.creatorId)
+    const canClose = interaction.user.id===effectiveCreatorId
       || interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)
       || (cfg2.ticketPanels||[]).some(p=>p.supportRoles?.some(r=>interaction.member.roles.cache.has(r)));
     if (!canClose) return interaction.reply({content:"No permission to close this ticket.",flags:64});
     return interaction.reply({
       embeds:[{color:0xFF4444, description:"**Are you sure you would like to close this ticket?**"}],
       components:[new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`ticket_confirm_close:${channelId}:${creatorId||activity.creatorId}`).setLabel("Close").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`ticket_confirm_close:${channelId}:${effectiveCreatorId||""}`).setLabel("Close").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("ticket_cancel_close").setLabel("Cancel").setStyle(ButtonStyle.Secondary),
       )],
     });
@@ -16770,9 +16902,14 @@ client.on("interactionCreate", async (interaction) => {
   // ── Confirmed close ───────────────────────────────────────────────────────
   if (id.startsWith("ticket_confirm_close:") && interaction.isButton()) {
     const [,channelId,creatorId] = id.split(":");
-    const activity = ticketActivity.get(channelId);
     const cfg2     = guildCfg(interaction.guild.id);
-    if (!activity) return interaction.update({embeds:[{color:PINK,description:"Already closed."}],components:[]}).catch(()=>{});
+    // Fall back to a synthetic activity record (derived from the button + channel name)
+    // if tracking is missing, instead of wrongly telling the user it's already closed.
+    const activity = ticketActivity.get(channelId) || {
+      creatorId: creatorId || null,
+      ticketNum: interaction.channel.name.match(/\d{3,}/)?.[0] || "0000",
+      panelIdx: 0,
+    };
 
     const ticketNum = activity.ticketNum||"0000";
 
@@ -16877,7 +17014,7 @@ client.on("interactionCreate", async (interaction) => {
       : "*None — no permissions monitored.*";
     const newEmbed = {
       color: PINK,
-      title: " Risky Permission Monitor — Updated",
+      title: "⚠️ Risky Permission Monitor — Updated",
       description: [
         "Select which permissions to flag as **risky**.",
         "If any member gains a role that contains a monitored permission, the bot **instantly strips that role**.",
@@ -16981,7 +17118,7 @@ client.on("roleUpdate", async (oldRole, newRole) => {
       const logCh = newRole.guild.channels.cache.get(logChId);
       if (logCh) await logCh.send({ embeds:[{
         color: 0xFF4444,
-        title: " Risky Permission Blocked",
+        title: "🛡️ Risky Permission Blocked",
         description: [
           `**Role:** <@&${newRole.id}> (\`${newRole.name}\`)`,
           `**Blocked permission(s):** ${permNames}`,
@@ -17357,7 +17494,7 @@ function _notifyHubEmbed() {
   const active = jobs.filter(j => j.active).length;
   return {
     color: PINK,
-    title: " Notify System",
+    title: "📢 Notify System",
     description: [
       "Broadcast a message on a daily schedule through webhooks placed across any servers the bot is in.",
       "",
@@ -17379,7 +17516,7 @@ function _notifyStepGuilds(wiz) {
   const allGuilds = [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name));
   if (!allGuilds.length) {
     return {
-      embeds: [{ color: PINK, title: "Notify Setup", description: "The bot isn't in any servers." }],
+      embeds: [{ color: PINK, title: "📢 Notify Setup", description: "> The bot isn't in any servers." }],
       components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("ntf_cancel").setLabel("Cancel").setStyle(ButtonStyle.Danger))],
     };
   }
@@ -17408,9 +17545,9 @@ function _notifyStepGuilds(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: "Notify Setup — Step 1/3: Select servers",
-      description: `Page **${wiz.guildPage + 1}/${totalPages}** — tick every server that should receive this notification. Selections carry over between pages.\n\n**Selected so far:** ${selectedNames}`,
-      footer: { text: "Tick servers, use Prev/Next for more, then Confirm." },
+      color: PINK, title: "📢 Notify Setup — Step 1/3: Select servers",
+      description: `> Page **${wiz.guildPage + 1}/${totalPages}** — tick every server that should receive this notification. Selections carry over between pages.\n\n**Selected so far:** ${selectedNames}`,
+      footer: { text: "Tick servers, use Prev/Next for more, then Confirm • Module: Notify" },
     }],
     components: [selectRow, navRow],
   };
@@ -17446,7 +17583,7 @@ async function _notifyStepChannel(wiz) {
 
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `Notify Setup — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID, skip this server, or cancel setup.` }],
+      embeds: [{ color: PINK, title: `📢 Notify Setup — Channel for ${guild.name}`, description: `> No text channels found in **${guild.name}**. Enter a channel ID, skip this server, or cancel setup.`, footer: { text: "Module: Notify" } }],
       components: [navRow],
     };
   }
@@ -17458,9 +17595,10 @@ async function _notifyStepChannel(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: `Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
-      description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
+      color: PINK, title: `📢 Notify Setup — Step 2/3: Channel (${doneCount + 1}/${total})`,
+      description: `> Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
+      footer: { text: "Module: Notify" },
     }],
     components: [selectRow, navRow],
   };
@@ -17477,16 +17615,14 @@ function _notifyStepReview(wiz) {
 
   return {
     embeds: [{
-      color: PINK, title: "Notify Setup — Step 3/3: Review",
-      description: [
-        `**Message:**\n> ${wiz.message.length > 300 ? wiz.message.slice(0, 300) + "…" : wiz.message}`,
-        ``,
-        `**Time:** \`${String(wiz.hour).padStart(2, "0")}:${String(wiz.minute).padStart(2, "0")}\` Italy time, daily`,
-        `**Duration:** ${wiz.durationLabel} — runs until ${endStr}`,
-        `**Targets (${entries.length}):**`,
-        lines.join("\n") || "*none*",
-      ].join("\n"),
-      footer: { text: "Pressing Activate creates one webhook per channel right now." },
+      color: PINK, title: "📢 Notify Setup — Step 3/3: Review",
+      description: `> ${wiz.message.length > 300 ? wiz.message.slice(0, 300) + "…" : wiz.message}`,
+      fields: [
+        { name: "🕐 Time", value: `\`${String(wiz.hour).padStart(2, "0")}:${String(wiz.minute).padStart(2, "0")}\` Italy time, daily`, inline: true },
+        { name: "⏳ Duration", value: `${wiz.durationLabel} — until ${endStr}`, inline: true },
+        { name: `🎯 Targets (${entries.length})`, value: lines.join("\n") || "*none*" },
+      ],
+      footer: { text: "Pressing Activate creates one webhook per channel right now • Module: Notify" },
     }],
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("ntf_activate").setLabel("Activate").setStyle(ButtonStyle.Success),
@@ -17550,7 +17686,7 @@ async function _notifyEditChannelPicker(guild) {
 
   if (!channels.length) {
     return {
-      embeds: [{ color: PINK, title: `Notify Edit — Channel for ${guild.name}`, description: `No text channels found in **${guild.name}**. Enter a channel ID instead.` }],
+      embeds: [{ color: PINK, title: `✏️ Notify Edit — Channel for ${guild.name}`, description: `> No text channels found in **${guild.name}**. Enter a channel ID instead.`, footer: { text: "Module: Notify" } }],
       components: [idRow],
     };
   }
@@ -17558,9 +17694,10 @@ async function _notifyEditChannelPicker(guild) {
   const options = channels.map(c => new StringSelectMenuOptionBuilder().setLabel(`#${c.name}`.slice(0, 100)).setValue(c.id));
   return {
     embeds: [{
-      color: PINK, title: `Notify Edit — Channel for ${guild.name}`,
-      description: `Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
+      color: PINK, title: `✏️ Notify Edit — Channel for ${guild.name}`,
+      description: `> Pick the channel in **${guild.name}** where the webhook should post. Only the first 25 channels are listed — if yours isn't shown, use "Enter Channel ID".`,
       thumbnail: guild.iconURL() ? { url: guild.iconURL() } : undefined,
+      footer: { text: "Module: Notify" },
     }],
     components: [
       new ActionRowBuilder().addComponents(
@@ -17609,10 +17746,12 @@ client.on("messageCreate", async (message) => {
     if (sub === "list") {
       const jobs = [...notifyJobs.values()];
       if (!jobs.length) return err(message, "No notify jobs configured yet. Run `,notify` to create one.");
+      const activeCount = jobs.filter(j => j.active).length;
       return message.reply({ embeds: [{
-        color: PINK, title: "Notify Jobs",
-        description: jobs.map(_notifyJobSummary).join("\n\n"),
-        footer: { text: ",notify stop/start/delete <id>" },
+        color: PINK, title: "📢 Notify Jobs",
+        description: `> **${jobs.length}** job(s) configured • **${activeCount}** active`,
+        fields: jobs.map(j => ({ name: `\`${j.id}\` ${j.active ? "🟢" : "⚪"}`, value: _notifyJobSummary(j) })),
+        footer: { text: "Module: Notify • ,notify stop/start/delete/sync <id>" },
       }] }).catch(() => {});
     }
 
@@ -17701,8 +17840,9 @@ client.on("interactionCreate", async (interaction) => {
         .setLabel(`${j.id} · ${j.active ? "Active" : "Paused"}`)
         .setDescription((j.message || "").slice(0, 90) || "(no message)")
         .setValue(j.id));
+      const activeCount = jobs.filter(j => j.active).length;
       return interaction.reply({
-        embeds: [{ color: PINK, title: "Notify Jobs", description: jobs.map(_notifyJobSummary).join("\n\n") }],
+        embeds: [{ color: PINK, title: "📢 Notify Jobs", description: `> **${jobs.length}** job(s) configured • **${activeCount}** active`, fields: jobs.map(j => ({ name: `\`${j.id}\` ${j.active ? "🟢" : "⚪"}`, value: _notifyJobSummary(j) })), footer: { text: "Module: Notify" } }],
         components: [new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder().setCustomId("ntf_manage_pick").setPlaceholder("Manage a job...").addOptions(options)
         )],
