@@ -190,6 +190,7 @@ const DB = {
   NOTIFY:        'notify_jobs',      // scheduled multi-server webhook notify jobs
   INVITES:       'invite_tracker',   // per-guild invite-use cache + join attribution
   PREMIUM:       'premium_system',   // premium users / booster credits
+  MUSIC247:      'music_247',        // guild IDs with 24/7 mode enabled
 };
 
 // ── Build the full guild config snapshot ─────────────────────────────────────
@@ -247,6 +248,7 @@ function saveTwitterCfg()     { scheduleSave(DB.TWITTER_CFG,    () => twitterRep
 function saveTwitterCursors() { scheduleSave(DB.TWITTER_CURSOR, () => twitterCursors,   3000); }
 function saveInvites()        { scheduleSave(DB.INVITES,        () => inviteJoins,      3000); }
 function savePremium()        { scheduleSave(DB.PREMIUM,        () => ({ premiumUsers, userBoosts, guildBoosts }), 2000); }
+function saveMusic247()       { scheduleSave(DB.MUSIC247,       () => MUSIC_247,         2000); }
 
 // ── Load ALL data from DB on startup ─────────────────────────────────────────
 async function loadAllData() {
@@ -637,6 +639,13 @@ async function loadAllData() {
     console.log(`[DB] premium_system restored (${premiumUsers.size} premium user(s))`);
   }
 
+  // ── 24/7 music mode ─────────────────────────────────────────────────────────
+  if (d[DB.MUSIC247] instanceof Set) {
+    MUSIC_247.clear();
+    d[DB.MUSIC247].forEach(gid => MUSIC_247.add(gid));
+    console.log(`[DB] music_247 restored (${MUSIC_247.size} guild(s))`);
+  }
+
   console.log('[DB] All data loaded from Railway PostgreSQL');
 }
 
@@ -658,6 +667,7 @@ setInterval(async () => {
   if (!_saveQueue.has(DB.ECONOMY))    saveEconomy();
   if (!_saveQueue.has(DB.INVITES))    saveInvites();
   if (!_saveQueue.has(DB.PREMIUM))    savePremium();
+  if (!_saveQueue.has(DB.MUSIC247))   saveMusic247();
   if (!_saveQueue.has(DB.AFK))        saveAFK();
   if (!_saveQueue.has(DB.POLLS))      savePolls();
   if (!_saveQueue.has(DB.TODOS))      saveTodos();
@@ -20947,9 +20957,19 @@ MUSIC["247"] = async message => {
   const gid = message.guild.id;
   if (MUSIC_247.has(gid)) {
     MUSIC_247.delete(gid);
+    saveMusic247();
     return ok(message, "24/7 mode **disabled** -- I'll leave when the queue empties.");
   }
   MUSIC_247.add(gid);
+  saveMusic247();
+
+  // The toggle itself is just a stored preference and always works. Actually joining a
+  // voice channel right now additionally needs a connected Lavalink node — if that's not
+  // available yet, the preference is still saved and will apply automatically as soon as
+  // the node comes up (or as soon as ,play creates a player).
+  if (!lavalink || !_mNodeReady()) {
+    return ok(message, "24/7 mode **enabled** -- saved. I'll join and stay connected automatically once the music node is up (or as soon as you `,play` something).");
+  }
   const existing = lavalink.getPlayer(gid);
   if (existing) { _mClearIdle(existing); return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties."); }
   const vc = message.member.voice.channel;
@@ -22136,6 +22156,13 @@ client.on("messageCreate", async (message) => {
 
   // -- MUSIC (Lavalink -- see the MUSIC PLAYER / MUSIC COMMANDS blocks above) --
   if (Object.hasOwn(MUSIC, command)) {
+    // ,247 is just a stored preference (which guilds should auto-stay-connected) — it
+    // shouldn't be blocked by Lavalink being unconfigured/disconnected. It applies itself
+    // automatically as soon as the node comes back up or ,play creates a player.
+    if (command === "247") {
+      try { return await MUSIC["247"](message, args, rest); }
+      catch (e) { log(`[music] ,247 failed: ${e.stack ?? e.message}`, "error"); return err(message, `music error: ${e.message}`); }
+    }
     if (!lavalink) return err(message, "music isn't configured -- set `LAVALINK_HOST`, `LAVALINK_PORT`, `LAVALINK_PASSWORD` (and `LAVALINK_SECURE=true` for wss nodes) in the bot's environment variables, then redeploy.");
     if (!_mNodeReady()) return err(message, "the Lavalink audio node isn't connected right now -- check the logs for a `[music] Lavalink node ... error` line (wrong host/port/password, or the node itself is down).");
     try {
@@ -22315,6 +22342,140 @@ client.on("messageCreate", async (message) => {
     const top = [...userBoosts.entries()].filter(([k]) => k.endsWith(`:${message.guild.id}`)).sort((a, b) => b[1] - a[1]).slice(0, 5)
       .map(([k, v], i) => `**${i + 1}.** <@${k.split(":")[0]}> — ${v}`).join("\n");
     return message.reply({ embeds: [{ color: PINK, title: `${message.guild.name} Boosts`, description: `Total: **${total}**\n\n${top || "No boosters yet."}` }] });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// DATABASE BACKUP / RESTORE — owner-only. Dumps/restores every row of the
+// bot_kv Postgres table exactly as stored (already-serialized text), so a
+// round trip is lossless and needs no Map/Set reconstruction at export time.
+// ══════════════════════════════════════════════════════════════════════════
+const zlib = require("zlib");
+const dbRestoreConfirms = new Map(); // confirmId -> { data, expiresAt }
+
+async function _dbExportPayload() {
+  const rows = await _db.query("SELECT key, value FROM bot_kv ORDER BY key");
+  return { exportedAt: new Date().toISOString(), keyCount: rows.rows.length, data: Object.fromEntries(rows.rows.map(r => [r.key, r.value])) };
+}
+function _dbPayloadToAttachment(payload, namePrefix) {
+  const rawBuf = Buffer.from(JSON.stringify(payload), "utf8");
+  const gzip = rawBuf.length > 8 * 1024 * 1024;
+  const buf = gzip ? zlib.gzipSync(rawBuf) : rawBuf;
+  return { attachment: new AttachmentBuilder(buf, { name: `${namePrefix}-${Date.now()}.json${gzip ? ".gz" : ""}` }), buf, gzip };
+}
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith(",")) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args[0].toLowerCase();
+  if (command !== "db") return;
+  if (!isOwner(message.author.id)) return err(message, "Bot-owner only.");
+  if (!_db) return err(message, "No database connection is configured (`DATABASE_URL` isn't set).");
+
+  const sub = args[1]?.toLowerCase();
+
+  // ,db / ,db export / ,db dump -- export every key to a file in this channel
+  if (!sub || sub === "export" || sub === "dump") {
+    let payload;
+    try { payload = await _dbExportPayload(); } catch (e) { return err(message, `Could not read the database: ${e.message}`); }
+    const { attachment, buf, gzip } = _dbPayloadToAttachment(payload, "db-backup");
+    if (buf.length > 24 * 1024 * 1024) return err(message, `The backup is **${(buf.length/1024/1024).toFixed(1)}MB** even gzipped — too large to upload here.`);
+    return message.reply({
+      embeds: [{
+        color: PINK, title: "💾 Database Export",
+        description: `> Dumped **${payload.keyCount}** key(s) from the live database.`,
+        fields: [
+          { name: "Size", value: `${(buf.length/1024).toFixed(1)} KB${gzip ? " (gzipped)" : ""}`, inline: true },
+          { name: "Exported", value: `<t:${Math.floor(Date.now()/1000)}:f>`, inline: true },
+        ],
+        footer: { text: "Run ,db read with this file attached (on any bot instance) to restore it • Module: Database" },
+      }],
+      files: [attachment],
+    });
+  }
+
+  // ,db read / ,db import -- restore from an attached (or replied-to) backup file
+  if (sub === "read" || sub === "import") {
+    const ref = message.reference ? await message.fetchReference().catch(() => null) : null;
+    const att = message.attachments.first() || ref?.attachments.first();
+    if (!att) return err(message, "Attach the backup `.json`/`.json.gz` file (or reply to the message that has it) with `,db read`.");
+
+    let raw;
+    try {
+      const res = await fetch(att.url);
+      const buf = Buffer.from(await res.arrayBuffer());
+      raw = att.name.endsWith(".gz") ? zlib.gunzipSync(buf).toString("utf8") : buf.toString("utf8");
+    } catch (e) { return err(message, `Could not download/read that file: ${e.message}`); }
+
+    let payload;
+    try { payload = JSON.parse(raw); } catch { return err(message, "That file isn't valid JSON."); }
+    if (!payload?.data || typeof payload.data !== "object") return err(message, "That file doesn't look like a `,db export` backup (missing `data`).");
+
+    const keyCount = Object.keys(payload.data).length;
+    const confirmId = `${message.author.id}-${Date.now()}`;
+    dbRestoreConfirms.set(confirmId, { data: payload.data });
+    setTimeout(() => dbRestoreConfirms.delete(confirmId), 5 * 60 * 1000);
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`db_restore_confirm:${confirmId}`).setLabel("Confirm Restore").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`db_restore_cancel:${confirmId}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary),
+    );
+    const backedUpAt = payload.exportedAt ? `, backed up <t:${Math.floor(new Date(payload.exportedAt).getTime()/1000)}:R>` : "";
+    return message.reply({
+      embeds: [{
+        color: 0xFF4444, title: "⚠️ Database Restore",
+        description: `> This will **overwrite** **${keyCount}** key(s) in the live database with this file${backedUpAt}.\n\nA safety backup of the **current** state is posted automatically before anything is overwritten.`,
+        footer: { text: "This expires in 5 minutes • Module: Database" },
+      }],
+      components: [row],
+    });
+  }
+});
+
+// Button handler for the restore confirmation
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith("db_restore_confirm:") && !interaction.customId.startsWith("db_restore_cancel:")) return;
+  const confirmId = interaction.customId.split(":").slice(1).join(":");
+  if (!isOwner(interaction.user.id)) return interaction.reply({ content: "Bot-owner only.", flags: 64 });
+
+  if (interaction.customId.startsWith("db_restore_cancel:")) {
+    dbRestoreConfirms.delete(confirmId);
+    return interaction.update({ embeds: [{ color: PINK, description: "Restore cancelled." }], components: [] });
+  }
+
+  const pending = dbRestoreConfirms.get(confirmId);
+  if (!pending) {
+    return interaction.update({ embeds: [{ color: 0xFF4444, description: "This confirmation expired — run `,db read` again." }], components: [] });
+  }
+  dbRestoreConfirms.delete(confirmId);
+  await interaction.update({ embeds: [{ color: PINK, description: "⏳ Taking a safety backup of the current state..." }], components: [] });
+
+  try {
+    // Safety backup of the current state, posted BEFORE anything is overwritten
+    const safetyPayload = await _dbExportPayload();
+    const { attachment: safetyAttachment } = _dbPayloadToAttachment(safetyPayload, "pre-restore-safety-backup");
+    await interaction.followUp({ content: "📦 Safety backup of the **current** (pre-restore) state:", files: [safetyAttachment] });
+
+    // Write every key from the import payload, raw (already in stored-text format — no re-serialization needed)
+    let written = 0;
+    for (const [key, value] of Object.entries(pending.data)) {
+      await _db.query(
+        `INSERT INTO bot_kv(key,value,updated_at) VALUES($1,$2,NOW())
+         ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+        [key, value]
+      );
+      written++;
+    }
+
+    // Reload everything into live memory immediately — no bot restart needed
+    await loadAllData();
+
+    await interaction.followUp({ embeds: [{ color: PINK, title: "✅ Database Restored", description: `> Restored **${written}** key(s) and reloaded all live data — no restart needed.`, footer: { text: "Module: Database" } }] });
+  } catch (e) {
+    log(`[db restore] ${e.message}`, "error");
+    await interaction.followUp({ content: `❌ Restore failed: ${e.message}` });
   }
 });
 
