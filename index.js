@@ -22530,7 +22530,7 @@ client.on("interactionCreate", async (interaction) => {
 
 // ══════════════════════════════════════════════════════════════════════════
 // XENON-STYLE SERVER BACKUPS  —  ,server create | load | list | info | delete
-// Saves roles, categories, channels (+ permission overwrites), server name /
+// Saves roles, categories, channels (+ permission overwrites), webhooks, server name /
 // icon / banner / splash / settings, emojis and member→role assignments into
 // Postgres (bot_kv). Keys:  srvbm:<id> = small metadata,  srvbd:<id> = full data.
 // Who can use it: the server owner (or a bot owner). Loading wipes the target
@@ -22603,6 +22603,20 @@ async function _srvSnapshot(guild) {
     for (const e of chunk) if (e.data) emojis.push(e);
   }
 
+  // Incoming webhooks only (type 1). Their URL/token can't be cloned — Discord issues new ones on load.
+  const webhooks = [];
+  try {
+    const hooks = await guild.fetchWebhooks();
+    const list = [...hooks.values()].filter(w => w.type === 1 && w.channelId);
+    for (let i = 0; i < list.length; i += 10) {
+      const chunk = await Promise.all(list.slice(i, i + 10).map(async w => ({
+        name: w.name, channelId: w.channelId,
+        avatar: await _srvDownload(w.avatarURL({ extension: "png", size: 256 })),
+      })));
+      webhooks.push(...chunk);
+    }
+  } catch (e) { log(`[server create] webhooks: ${e.message}`, "error"); }
+
   const animated = guild.icon?.startsWith("a_");
   const images = {
     icon:   await _srvDownload(guild.iconURL({ extension: animated ? "gif" : "png", size: 1024 })),
@@ -22618,7 +22632,7 @@ async function _srvSnapshot(guild) {
       systemChannelId: guild.systemChannelId, preferredLocale: guild.preferredLocale,
     },
     everyone: guild.roles.everyone.permissions.bitfield.toString(),
-    roles, channels, emojis, memberRoles, images,
+    roles, channels, emojis, webhooks, memberRoles, images,
   };
 }
 
@@ -22627,7 +22641,7 @@ async function _srvLoad(guild, backup, notify) {
   const d = backup.data;
   const T = _SRV_CT;
   const reason = `Server load ${backup.id}`;
-  const stats = { chDeleted: 0, rolesDeleted: 0, roles: 0, channels: 0, emojis: 0, members: 0, errors: 0 };
+  const stats = { chDeleted: 0, rolesDeleted: 0, roles: 0, channels: 0, emojis: 0, webhooks: 0, members: 0, errors: 0 };
   const fail = (what, e) => { stats.errors++; log(`[server load] ${what}: ${e?.message || e}`, "error"); };
 
   // 1) wipe
@@ -22745,6 +22759,17 @@ async function _srvLoad(guild, backup, notify) {
     catch (er) { if (/maximum number of (static |animated )?emojis/i.test(er.message || "")) break; }
   }
 
+  // 5b) webhooks (new URLs — the old ones can't be recreated)
+  await notify("🪝 Recreating webhooks...");
+  for (const w of d.webhooks || []) {
+    const ch = guild.channels.cache.get(chMap[w.channelId]);
+    if (!ch || typeof ch.createWebhook !== "function") continue;
+    try {
+      await ch.createWebhook({ name: w.name, avatar: w.avatar ? Buffer.from(w.avatar, "base64") : undefined, reason });
+      stats.webhooks++;
+    } catch (e) { fail(`create webhook ${w.name}`, e); }
+  }
+
   // 6) give members their roles back (only members who are in this server right now)
   await notify("👥 Re-assigning member roles...");
   for (const [uid, oldIds] of Object.entries(d.memberRoles || {})) {
@@ -22778,7 +22803,7 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [{
         color, title: "Server backups",
         description:
-          "`,server create` — save this server (roles, channels, permissions, icon, emojis...)\n" +
+          "`,server create` — save this server (roles, channels, permissions, icon, emojis, webhooks...)\n" +
           "`,server list` — your saved backups\n" +
           "`,server load <id>` — rebuild **this** server from a backup (wipes it first)\n" +
           "`,server info <id>` — details of a backup\n" +
@@ -22794,7 +22819,7 @@ client.on("messageCreate", async (message) => {
       if (!botOwner && metas.filter(m => m.creatorId === message.author.id).length >= SRV_MAX_PER_USER)
         return err(message, `You already have **${SRV_MAX_PER_USER}** backups — delete one with \`,server delete <id>\`.`);
 
-      const wait = await message.reply({ embeds: [{ color, description: "⏳ Saving the server — roles, channels, permissions, icon, emojis..." }] }).catch(() => null);
+      const wait = await message.reply({ embeds: [{ color, description: "⏳ Saving the server — roles, channels, permissions, icon, emojis, webhooks..." }] }).catch(() => null);
       const data = await _srvSnapshot(guild);
       const id = _srvNewId();
       const T = _SRV_CT;
@@ -22805,7 +22830,7 @@ client.on("messageCreate", async (message) => {
           categories: data.channels.filter(c => c.type === T.GuildCategory).length,
           text: data.channels.filter(c => c.type !== T.GuildCategory && c.type !== T.GuildVoice && c.type !== T.GuildStageVoice).length,
           voice: data.channels.filter(c => c.type === T.GuildVoice || c.type === T.GuildStageVoice).length,
-          emojis: data.emojis.length, members: Object.keys(data.memberRoles).length,
+          emojis: data.emojis.length, webhooks: data.webhooks.length, members: Object.keys(data.memberRoles).length,
         },
       };
       await _srvPut(`srvbd:${id}`, { id, data });
@@ -22813,7 +22838,7 @@ client.on("messageCreate", async (message) => {
       const c = meta.counts;
       const payload = { embeds: [{
         color, title: "✅ Backup created",
-        description: `ID: \`${id}\`\n**${guild.name}**\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.members} members with roles`,
+        description: `ID: \`${id}\`\n**${guild.name}**\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.members} members with roles`,
         footer: { text: `Load it with ,server load ${id}` },
       }] };
       return wait ? wait.edit(payload).catch(() => message.reply(payload)) : message.reply(payload);
@@ -22826,7 +22851,7 @@ client.on("messageCreate", async (message) => {
       if (!showAll) metas = metas.filter(m => m.creatorId === message.author.id);
       if (!metas.length) return err(message, "No backups yet — run `,server create` first.");
       const lines = metas.slice(0, 25).map(m =>
-        `\`${m.id}\` **${m.name}**${showAll ? ` — <@${m.creatorId}>` : ""}\n-# <t:${Math.floor(m.createdAt / 1000)}:R> • ${m.counts.roles} roles • ${m.counts.categories + m.counts.text + m.counts.voice} channels • ${m.counts.emojis} emojis`);
+        `\`${m.id}\` **${m.name}**${showAll ? ` — <@${m.creatorId}>` : ""}\n-# <t:${Math.floor(m.createdAt / 1000)}:R> • ${m.counts.roles} roles • ${m.counts.categories + m.counts.text + m.counts.voice} channels • ${m.counts.emojis} emojis • ${m.counts.webhooks ?? 0} webhooks`);
       return message.reply({ embeds: [{
         color, title: `Server backups (${metas.length})`, description: lines.join("\n\n"),
         footer: { text: "Use ,server load <id> to restore one" },
@@ -22844,7 +22869,7 @@ client.on("messageCreate", async (message) => {
         const c = meta.counts;
         return message.reply({ embeds: [{
           color, title: `Backup \`${id}\``,
-          description: `**${meta.name}**\nCreated <t:${Math.floor(meta.createdAt / 1000)}:f> by <@${meta.creatorId}>\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.members} members with roles`,
+          description: `**${meta.name}**\nCreated <t:${Math.floor(meta.createdAt / 1000)}:f> by <@${meta.creatorId}>\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.members} members with roles`,
         }] }).catch(() => {});
       }
 
@@ -22910,7 +22935,7 @@ client.on("interactionCreate", async (interaction) => {
     const notify = (text) => user.send({ embeds: [{ color: PINK, description: text }] }).catch(() => {});
     try {
       const stats = await _srvLoad(guild, backup, notify);
-      const summary = `✅ **Server loaded** from backup \`${p.backupId}\`\n${stats.roles} roles • ${stats.channels} channels • ${stats.emojis} emojis • ${stats.members} members re-roled` +
+      const summary = `✅ **Server loaded** from backup \`${p.backupId}\`\n${stats.roles} roles • ${stats.channels} channels • ${stats.emojis} emojis • ${stats.webhooks} webhooks • ${stats.members} members re-roled` +
         (stats.errors ? `\n⚠️ ${stats.errors} item(s) failed (e.g. community-only features or roles above mine) — see the bot logs.` : "");
       await notify(summary);
       const first = guild.channels.cache.filter(c => c.type === _SRV_CT.GuildText).sort((a, b) => a.rawPosition - b.rawPosition).first();
