@@ -640,9 +640,9 @@ async function loadAllData() {
   }
 
   // ── 24/7 music mode ─────────────────────────────────────────────────────────
-  if (d[DB.MUSIC247] instanceof Set) {
+  if (d[DB.MUSIC247] instanceof Map) {
     MUSIC_247.clear();
-    d[DB.MUSIC247].forEach(gid => MUSIC_247.add(gid));
+    d[DB.MUSIC247].forEach((channelId, gid) => MUSIC_247.set(gid, channelId));
     console.log(`[DB] music_247 restored (${MUSIC_247.size} guild(s))`);
   }
 
@@ -920,7 +920,17 @@ client.setMaxListeners(50);
 //   LAVALINK_SECURE    "true" for wss:// nodes (port 443), otherwise omit
 //   LASTFM_API_KEY     optional -- better ,autoplay recommendations (falls back to
 //                      "more from the same artist" without it)
-const MUSIC_247 = new Set(); // guild IDs with ,247 on -- bot stays in VC even when the queue empties
+const MUSIC_247 = new Map(); // guildId -> channelId -- ,247 on: bot stays in that VC even when the queue empties / Lavalink is down
+// Raw Discord gateway voice join/leave -- bypasses Lavalink entirely. This is enough to make
+// the bot *appear* connected in a voice channel (what ,247 needs); it carries no audio by
+// itself. If Lavalink later creates a real player for the same guild, its own connect() just
+// takes over the same voice session, so there's no conflict.
+function _rawVoiceJoin(guild, channelId) {
+  guild.shard.send({ op: 4, d: { guild_id: guild.id, channel_id: channelId, self_mute: false, self_deaf: true } });
+}
+function _rawVoiceLeave(guild) {
+  guild.shard.send({ op: 4, d: { guild_id: guild.id, channel_id: null, self_mute: false, self_deaf: false } });
+}
 const MUSIC_MAX_QUEUE = 200;
 const LAVALINK_CFG = {
   host: process.env.LAVALINK_HOST,
@@ -1498,6 +1508,21 @@ client.once("clientReady", async () => {
 
   // 2. Re-register any open tickets from before restart
   setTimeout(() => rehydrateTickets(), 3000);
+
+  // 2b. Rejoin every saved ,247 voice channel. This never depends on Lavalink -- it's a raw
+  // gateway voice join, so it works even if the music node is down/unconfigured. If Lavalink
+  // already has a player for that guild (e.g. it reconnected faster and started playing),
+  // leave it alone instead of fighting over the voice session.
+  setTimeout(() => {
+    for (const [gid, channelId] of MUSIC_247.entries()) {
+      const guild = client.guilds.cache.get(gid);
+      const channel = guild?.channels.cache.get(channelId);
+      if (!guild || !channel) continue;
+      if (lavalink?.getPlayer(gid)) continue; // Lavalink is already handling this guild's voice connection
+      _rawVoiceJoin(guild, channelId);
+    }
+    if (MUSIC_247.size) log(`[music] rejoined ${MUSIC_247.size} saved 24/7 voice channel(s)`, "info");
+  }, 4000);
 
   // 3. Resume mass DM if it was in progress before restart
   setTimeout(() => resumeMassDMIfNeeded(), 5000);
@@ -16023,26 +16048,52 @@ client.on("messageCreate", async (message) => {
   // ═══════════════════════════════════════════════════════════════════════════
   // ██  FUN — Anime Action GIFs  (hug · kiss · slap · pat · etc.)
   // ═══════════════════════════════════════════════════════════════════════════
+  // Previously only ~20 of these actually fetched a gif — the rest were either silent
+  // no-ops or were shadowed by a second, later listener (actionMap/soloMap below) that
+  // replied with plain emoji text only, sometimes firing a SECOND reply right after the
+  // real gif one. Every name below is a verified real nekos.best v2 endpoint, so they all
+  // get a real gif now, and the old duplicate handlers for these same names were removed.
   const FUN_ACTIONS = {
-    hug:       { verb:"hugs",          url:"https://nekos.best/api/v2/hug"       },
-    kiss:      { verb:"kisses",        url:"https://nekos.best/api/v2/kiss"      },
-    slap:      { verb:"slaps",         url:"https://nekos.best/api/v2/slap"      },
-    pat:       { verb:"pats",          url:"https://nekos.best/api/v2/pat"       },
-    cuddle:    { verb:"cuddles",       url:"https://nekos.best/api/v2/cuddle"    },
-    poke:      { verb:"pokes",         url:"https://nekos.best/api/v2/poke"      },
-    bite:      { verb:"bites",         url:"https://nekos.best/api/v2/bite"      },
-    highfive:  { verb:"high fives",    url:"https://nekos.best/api/v2/highfive"  },
-    wave:      { verb:"waves at",      url:"https://nekos.best/api/v2/wave"      },
-    punch:     { verb:"punches",       url:"https://nekos.best/api/v2/punch"     },
-    dance:     { verb:"dances with",   url:"https://nekos.best/api/v2/dance"     },
-    feed:      { verb:"feeds",         url:"https://nekos.best/api/v2/feed"      },
-    tickle:    { verb:"tickles",       url:"https://nekos.best/api/v2/tickle"    },
-    smile:     { verb:"smiles at",     url:"https://nekos.best/api/v2/smile"     },
-    cry:       { verb:"cries with",    url:"https://nekos.best/api/v2/cry"       },
-    blush:     { verb:"blushes at",    url:"https://nekos.best/api/v2/blush"     },
-    wink:      { verb:"winks at",      url:"https://nekos.best/api/v2/wink"      },
-    bored:     { verb:"is bored with", url:"https://nekos.best/api/v2/bored"     },
-    throw:     { verb:"throws at",     url:"https://nekos.best/api/v2/throw"     },
+    hug:       { verb:"hugs",           url:"https://nekos.best/api/v2/hug"       },
+    kiss:      { verb:"kisses",         url:"https://nekos.best/api/v2/kiss"      },
+    slap:      { verb:"slaps",          url:"https://nekos.best/api/v2/slap"      },
+    pat:       { verb:"pats",           url:"https://nekos.best/api/v2/pat"       },
+    cuddle:    { verb:"cuddles",        url:"https://nekos.best/api/v2/cuddle"    },
+    poke:      { verb:"pokes",          url:"https://nekos.best/api/v2/poke"      },
+    bite:      { verb:"bites",          url:"https://nekos.best/api/v2/bite"      },
+    highfive:  { verb:"high fives",     url:"https://nekos.best/api/v2/highfive"  },
+    wave:      { verb:"waves at",       url:"https://nekos.best/api/v2/wave"      },
+    punch:     { verb:"punches",        url:"https://nekos.best/api/v2/punch"     },
+    dance:     { verb:"dances with",    url:"https://nekos.best/api/v2/dance"     },
+    feed:      { verb:"feeds",          url:"https://nekos.best/api/v2/feed"      },
+    tickle:    { verb:"tickles",        url:"https://nekos.best/api/v2/tickle"    },
+    smile:     { verb:"smiles at",      url:"https://nekos.best/api/v2/smile"     },
+    cry:       { verb:"cries with",     url:"https://nekos.best/api/v2/cry"       },
+    blush:     { verb:"blushes at",     url:"https://nekos.best/api/v2/blush"     },
+    wink:      { verb:"winks at",       url:"https://nekos.best/api/v2/wink"      },
+    bored:     { verb:"is bored with",  url:"https://nekos.best/api/v2/bored"     },
+    baka:      { verb:"calls baka",     url:"https://nekos.best/api/v2/baka"      },
+    facepalm:  { verb:"facepalms at",   url:"https://nekos.best/api/v2/facepalm"  },
+    handhold:  { verb:"holds hands with", url:"https://nekos.best/api/v2/handhold" },
+    handshake: { verb:"shakes hands with", url:"https://nekos.best/api/v2/handshake" },
+    happy:     { verb:"is happy with",  url:"https://nekos.best/api/v2/happy"     },
+    laugh:     { verb:"laughs with",    url:"https://nekos.best/api/v2/laugh"     },
+    lurk:      { verb:"lurks near",     url:"https://nekos.best/api/v2/lurk"      },
+    nod:       { verb:"nods at",        url:"https://nekos.best/api/v2/nod"       },
+    nom:       { verb:"noms on",        url:"https://nekos.best/api/v2/nom"       },
+    nope:      { verb:"says nope to",   url:"https://nekos.best/api/v2/nope"      },
+    peck:      { verb:"pecks",          url:"https://nekos.best/api/v2/peck"      },
+    pout:      { verb:"pouts at",       url:"https://nekos.best/api/v2/pout"      },
+    run:       { verb:"runs from",      url:"https://nekos.best/api/v2/run"       },
+    shoot:     { verb:"shoots",         url:"https://nekos.best/api/v2/shoot"     },
+    shrug:     { verb:"shrugs at",      url:"https://nekos.best/api/v2/shrug"     },
+    sleep:     { verb:"sleeps near",    url:"https://nekos.best/api/v2/sleep"     },
+    smug:      { verb:"looks smug at",  url:"https://nekos.best/api/v2/smug"      },
+    stare:     { verb:"stares at",      url:"https://nekos.best/api/v2/stare"     },
+    think:     { verb:"thinks about",   url:"https://nekos.best/api/v2/think"     },
+    thumbsup:  { verb:"gives a thumbs up to", url:"https://nekos.best/api/v2/thumbsup" },
+    yawn:      { verb:"yawns at",       url:"https://nekos.best/api/v2/yawn"      },
+    yeet:      { verb:"yeets",          url:"https://nekos.best/api/v2/yeet"      },
   };
   // NSFW
   const FUN_NSFW = {
@@ -20958,32 +21009,24 @@ MUSIC["247"] = async message => {
   if (MUSIC_247.has(gid)) {
     MUSIC_247.delete(gid);
     saveMusic247();
-    return ok(message, "24/7 mode **disabled** -- I'll leave when the queue empties.");
+    const existingPlayer = lavalink?.getPlayer(gid);
+    if (!existingPlayer) _rawVoiceLeave(message.guild); // no Lavalink player managing this guild -- leave immediately ourselves
+    return ok(message, existingPlayer ? "24/7 mode **disabled** -- I'll leave when the queue empties." : "24/7 mode **disabled** -- left the voice channel.");
   }
-  MUSIC_247.add(gid);
+
+  // Joining/staying in the voice channel itself never needs Lavalink -- that only manages
+  // actual audio playback. ,247 just keeps the bot physically connected via Discord's own
+  // gateway, so it works even if the music node is unconfigured, down, or never set up.
+  const vc = message.member.voice.channel;
+  if (!vc) return err(message, "join a voice channel first, then run `,247` again.");
+  MUSIC_247.set(gid, vc.id);
   saveMusic247();
 
-  // The toggle itself is just a stored preference and always works. Actually joining a
-  // voice channel right now additionally needs a connected Lavalink node — if that's not
-  // available yet, the preference is still saved and will apply automatically as soon as
-  // the node comes up (or as soon as ,play creates a player).
-  if (!lavalink || !_mNodeReady()) {
-    return ok(message, "24/7 mode **enabled** -- saved. I'll join and stay connected automatically once the music node is up (or as soon as you `,play` something).");
-  }
-  const existing = lavalink.getPlayer(gid);
+  const existing = lavalink?.getPlayer(gid);
   if (existing) { _mClearIdle(existing); return ok(message, "24/7 mode **enabled** -- I'll stay connected even when the queue empties."); }
-  const vc = message.member.voice.channel;
-  if (!vc) return ok(message, "24/7 mode **enabled** -- join a voice channel and run `,247` again (or `,play`) to bring me in.");
-  try {
-    const p = lavalink.createPlayer({
-      guildId: gid, voiceChannelId: vc.id, textChannelId: message.channel.id,
-      selfDeaf: true, selfMute: false, volume: 100, instaUpdateFiltersFix: true, applyVolumeAsFilter: false,
-    });
-    await p.connect();
-    return ok(message, "24/7 mode **enabled** -- joined your voice channel and I'll stay connected.");
-  } catch (e) {
-    return ok(message, `24/7 mode **enabled**, but I couldn't join right now (${e.message}) -- it'll apply as soon as you \`,play\` something.`);
-  }
+
+  _rawVoiceJoin(message.guild, vc.id);
+  return ok(message, `24/7 mode **enabled** -- staying in **${vc.name}**.${(!lavalink || !_mNodeReady()) ? " (Music playback will work once the audio node is connected -- this just keeps me in the channel.)" : ""}`);
 };
 
 MUSIC.preset = async (message, args) => {
@@ -21635,23 +21678,24 @@ client.on("messageCreate", async (message) => {
       : `**${message.author.username}** ${verb}s the air ${emoji}`;
     return message.reply({ embeds: [{ color: PINK, description: desc }] });
   }
+  // ,nutkick, ,spank, ,smoke, ,vape, ,taps, ,angry -- no real public gif source for these,
+  // so they stay as plain text/emoji reactions. Everything else that used to live here
+  // (bite, cuddle, feed, handhold, handshake, highfive, hug, kiss, nod, pat, peck, poke,
+  // punch, slap, tickle, wave, stare, shoot, facepalm, think, shrug, smug, yawn, cry, laugh,
+  // happy, blush, smile, sleep, run, lurk, pout, thumbsup, bored, wink, yeet, baka) now gets
+  // a real gif from the unified FUN_ACTIONS table above instead of firing a second,
+  // gif-less reply right after (or, for several of these, being the ONLY handler and
+  // never fetching a gif at all).
   const actionMap = {
-    bite: ["bites", "🦷"], cuddle: ["cuddles", "🥰"], feed: ["feeds", "🍰"], handhold: ["holds hands with", "🤝"],
-    handshake: ["shakes hands with", "🤝"], highfive: ["high-fives", "🖐️"], hug: ["hugs", "🤗"], kiss: ["kisses", "😘"],
-    nod: ["nods at", "😌"], pat: ["pats", "🫳"], peck: ["pecks", "😙"], poke: ["pokes", "👉"], punch: ["punches", "👊"],
-    slap: ["slaps", "✋"], tickle: ["tickles", "🤭"], wave: ["waves at", "👋"], nutkick: ["kicks", "🥾"],
-    spank: ["spanks", "✋"], stare: ["stares at", "👀"], shoot: ["shoots", "🔫"],
+    nutkick: ["kicks", "🥾"], spank: ["spanks", "✋"],
   };
   if (actionMap[command]) {
     const [verb, emoji] = actionMap[command];
     return _gdAction(verb, emoji);
   }
   const soloMap = {
-    facepalm: ["facepalms", "🤦"], think: ["is thinking...", "🤔"], shrug: ["shrugs", "🤷"], smug: ["looks smug", "😏"],
-    taps: ["taps their foot impatiently", "🦶"], yawn: ["yawns", "🥱"], cry: ["is crying", "😢"], laugh: ["is laughing", "😂"],
-    happy: ["is happy", "😄"], angry: ["is angry", "😠"], blush: ["is blushing", "😳"], smile: ["is smiling", "😊"],
-    sleep: ["is sleeping", "😴"], smoke: ["is smoking", "🚬"], vape: ["is vaping", "💨"], run: ["is running away", "🏃"],
-    lurk: ["is now lurking", "👁️"], pout: ["is pouting", "😤"], thumbsup: ["gives a thumbs up", "👍"], bored: ["is bored", "🥱"],
+    taps: ["taps their foot impatiently", "🦶"], angry: ["is angry", "😠"],
+    smoke: ["is smoking", "🚬"], vape: ["is vaping", "💨"],
   };
   if (soloMap[command]) {
     const [verb, emoji] = soloMap[command];
@@ -21659,18 +21703,6 @@ client.on("messageCreate", async (message) => {
   }
   if (command === "spark") {
     return message.reply(`✨ **${message.author.username}** sparks up the conversation!`);
-  }
-  if (command === "wink") {
-    const target = message.mentions.users.first();
-    return message.reply({ embeds: [{ color: PINK, description: target ? `**${message.author.username}** winks at **${target.username}** 😉` : `**${message.author.username}** winks 😉` }] });
-  }
-  if (command === "yeet") {
-    const target = message.mentions.users.first();
-    return message.reply({ embeds: [{ color: PINK, description: target ? `**${message.author.username}** yeets **${target.username}** into the sun! 🚀` : `**${message.author.username}** yeets themselves into the sun! 🚀` }] });
-  }
-  if (command === "baka") {
-    const target = message.mentions.users.first();
-    return message.reply(target ? `**${target.username}**, b-baka! It's not like I like you or anything! 😳` : "b-baka!! 😳");
   }
   if (command === "bitches") {
     const lines = ["ain't got time for that.", "be like that sometimes.", "love drama, apparently.", "never text back first."];
@@ -21754,12 +21786,6 @@ client.on("messageCreate", async (message) => {
   if (command === "interact") {
     const list = Object.keys(actionMap).concat(Object.keys(soloMap)).sort().join(", ");
     return message.reply({ embeds: [{ color: PINK, title: "Interaction Commands", description: list }] });
-  }
-  if (command === "nom") {
-    return message.reply({ embeds: [{ color: PINK, description: `**${message.author.username}** noms on a snack 🍪` }] });
-  }
-  if (command === "nope") {
-    return message.reply(`**${message.author.username}** says nope. 🙅`);
   }
   if (command === "quickpoll") {
     if (!rest) return err(message, "missing required argument: **question**\nusage: `,quickpoll <question>`");
@@ -22171,6 +22197,28 @@ client.on("messageCreate", async (message) => {
       log(`[music] ,${command} failed: ${e.stack ?? e.message}`, "error");
       return err(message, `music error: ${e.message}`);
     }
+  }
+});
+
+// ,247 self-heal: if the bot is disconnected from its saved 24/7 channel (kicked, Discord
+// timing it out, etc.) and Lavalink isn't already handling that guild, rejoin right away
+// instead of waiting for the next restart. If someone just moves the bot to another
+// channel, respect that and update the saved channel rather than fighting it.
+client.on("voiceStateUpdate", (oldState, newState) => {
+  if (oldState.id !== client.user.id) return;
+  const gid = oldState.guild.id;
+  if (!MUSIC_247.has(gid)) return;
+  if (lavalink?.getPlayer(gid)) return; // Lavalink owns this guild's voice session -- don't interfere
+
+  if (!newState.channelId) {
+    // Disconnected entirely -- rejoin the saved channel
+    const channelId = MUSIC_247.get(gid);
+    const channel = oldState.guild.channels.cache.get(channelId);
+    if (channel) setTimeout(() => _rawVoiceJoin(oldState.guild, channelId), 2000);
+  } else if (newState.channelId !== MUSIC_247.get(gid)) {
+    // Moved to a different channel -- just track the new one
+    MUSIC_247.set(gid, newState.channelId);
+    saveMusic247();
   }
 });
 
