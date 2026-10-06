@@ -22568,8 +22568,54 @@ async function _srvDownload(url) {
   } catch { return null; }
 }
 
+// ── Message history (every author, webhook messages included) ───────────────
+// Replayed on load through a temporary webhook that imitates each author's name + avatar.
+function _srvSafeName(n) { return String(n || "Unknown").replace(/discord/gi, "d1scord").replace(/clyde/gi, "cl1de").slice(0, 80) || "Unknown"; }
+async function _srvSnapshotMessages(guild, perChannel) {
+  const out = {}; let total = 0; let budget = 15 * 1024 * 1024; // total attachment bytes kept per backup
+  if (perChannel <= 0) return { messages: out, total };
+  const T = _SRV_CT;
+  for (const ch of guild.channels.cache.values()) {
+    if (ch.type !== T.GuildText && ch.type !== T.GuildAnnouncement) continue;
+    if (!ch.viewable) continue;
+    const fetched = []; let before;
+    try {
+      while (fetched.length < perChannel) {
+        const limit = Math.min(100, perChannel - fetched.length);
+        const batch = await ch.messages.fetch({ limit, before });
+        if (!batch.size) break;
+        fetched.push(...batch.values());
+        before = batch.last().id;
+        if (batch.size < limit) break;
+      }
+    } catch { continue; }
+    const msgs = [];
+    for (const m of fetched.sort((a, b) => a.createdTimestamp - b.createdTimestamp)) {
+      if (m.system) continue;
+      const files = [], links = [];
+      for (const a of m.attachments.values()) {
+        if (a.size <= 5 * 1024 * 1024 && budget >= a.size) {
+          const data = await _srvDownload(a.url);
+          if (data) { budget -= a.size; files.push({ name: a.name, data }); continue; }
+        }
+        links.push(a.url); // too big / budget used up -> keep the link instead
+      }
+      // link-preview embeds regenerate on their own; only keep real (rich) embeds
+      const embeds = m.embeds.map(e => e.toJSON()).filter(e => !e.type || e.type === "rich").slice(0, 10);
+      if (!m.content && !embeds.length && !files.length && !links.length) continue;
+      msgs.push({
+        name: (m.member?.displayName || m.author.username || "Unknown").slice(0, 80),
+        avatar: m.author.displayAvatarURL({ extension: "png", size: 128 }),
+        content: m.content || "", embeds, files, links, webhook: !!m.webhookId,
+      });
+    }
+    if (msgs.length) { out[ch.id] = msgs; total += msgs.length; }
+  }
+  return { messages: out, total };
+}
+
 // ── Snapshot a guild into a plain JSON-safe object ───────────────────────────
-async function _srvSnapshot(guild) {
+async function _srvSnapshot(guild, perChannel = 0) {
   await guild.roles.fetch().catch(() => {});
   await guild.channels.fetch().catch(() => {});
   let members = guild.members.cache;
@@ -22617,6 +22663,8 @@ async function _srvSnapshot(guild) {
     }
   } catch (e) { log(`[server create] webhooks: ${e.message}`, "error"); }
 
+  const msgSnap = await _srvSnapshotMessages(guild, perChannel);
+
   const animated = guild.icon?.startsWith("a_");
   const images = {
     icon:   await _srvDownload(guild.iconURL({ extension: animated ? "gif" : "png", size: 1024 })),
@@ -22632,7 +22680,7 @@ async function _srvSnapshot(guild) {
       systemChannelId: guild.systemChannelId, preferredLocale: guild.preferredLocale,
     },
     everyone: guild.roles.everyone.permissions.bitfield.toString(),
-    roles, channels, emojis, webhooks, memberRoles, images,
+    roles, channels, emojis, webhooks, messages: msgSnap.messages, memberRoles, images,
   };
 }
 
@@ -22641,7 +22689,7 @@ async function _srvLoad(guild, backup, notify) {
   const d = backup.data;
   const T = _SRV_CT;
   const reason = `Server load ${backup.id}`;
-  const stats = { chDeleted: 0, rolesDeleted: 0, roles: 0, channels: 0, emojis: 0, webhooks: 0, members: 0, errors: 0 };
+  const stats = { chDeleted: 0, rolesDeleted: 0, roles: 0, channels: 0, emojis: 0, webhooks: 0, messages: 0, members: 0, errors: 0 };
   const fail = (what, e) => { stats.errors++; log(`[server load] ${what}: ${e?.message || e}`, "error"); };
 
   // 1) wipe
@@ -22779,6 +22827,36 @@ async function _srvLoad(guild, backup, notify) {
     if (!ids.length) continue;
     try { await m.roles.add(ids, reason); stats.members++; } catch (e) { stats.errors++; }
   }
+  // 7) message history, replayed through a temporary webhook per channel (slow part, so it runs last)
+  const msgChannels = Object.entries(d.messages || {});
+  if (msgChannels.length) {
+    await notify("💬 Restoring message history (this can take a few minutes)...");
+    for (const [oldId, msgs] of msgChannels) {
+      const ch = guild.channels.cache.get(chMap[oldId]);
+      if (!ch || typeof ch.createWebhook !== "function") continue;
+      let hook;
+      try { hook = await ch.createWebhook({ name: "Server restore", reason }); }
+      catch (e) { fail(`restore webhook in ${ch.name}`, e); continue; }
+      let misses = 0;
+      for (const m of msgs) {
+        let content = m.content || "";
+        if (m.links?.length) content = (content ? content + "\n" : "") + m.links.join("\n");
+        try {
+          await hook.send({
+            username: _srvSafeName(m.name), avatarURL: m.avatar || undefined,
+            content: content.slice(0, 2000) || undefined, embeds: m.embeds || [],
+            files: (m.files || []).map(f => ({ attachment: Buffer.from(f.data, "base64"), name: f.name })),
+            allowedMentions: { parse: [] },
+          });
+          stats.messages++; misses = 0;
+        } catch (e) {
+          stats.errors++;
+          if (++misses >= 5) { log(`[server load] giving up on messages in ${ch.name}: ${e.message}`, "error"); break; }
+        }
+      }
+      await hook.delete(reason).catch(() => {});
+    }
+  }
   return stats;
 }
 
@@ -22803,7 +22881,7 @@ client.on("messageCreate", async (message) => {
       return message.reply({ embeds: [{
         color, title: "Server backups",
         description:
-          "`,server create` — save this server (roles, channels, permissions, icon, emojis, webhooks...)\n" +
+          "`,server create [messages]` — save this server (roles, channels, permissions, icon, emojis, webhooks, last N messages per channel — default 50, max 200, `0` = none)\n" +
           "`,server list` — your saved backups\n" +
           "`,server load <id>` — rebuild **this** server from a backup (wipes it first)\n" +
           "`,server info <id>` — details of a backup\n" +
@@ -22819,8 +22897,9 @@ client.on("messageCreate", async (message) => {
       if (!botOwner && metas.filter(m => m.creatorId === message.author.id).length >= SRV_MAX_PER_USER)
         return err(message, `You already have **${SRV_MAX_PER_USER}** backups — delete one with \`,server delete <id>\`.`);
 
-      const wait = await message.reply({ embeds: [{ color, description: "⏳ Saving the server — roles, channels, permissions, icon, emojis, webhooks..." }] }).catch(() => null);
-      const data = await _srvSnapshot(guild);
+      const wait = await message.reply({ embeds: [{ color, description: "⏳ Saving the server — roles, channels, permissions, icon, emojis, webhooks, messages..." }] }).catch(() => null);
+      const perCh = /^\d+$/.test(args[2] || "") ? Math.min(200, parseInt(args[2], 10)) : 50;
+      const data = await _srvSnapshot(guild, perCh);
       const id = _srvNewId();
       const T = _SRV_CT;
       const meta = {
@@ -22830,7 +22909,8 @@ client.on("messageCreate", async (message) => {
           categories: data.channels.filter(c => c.type === T.GuildCategory).length,
           text: data.channels.filter(c => c.type !== T.GuildCategory && c.type !== T.GuildVoice && c.type !== T.GuildStageVoice).length,
           voice: data.channels.filter(c => c.type === T.GuildVoice || c.type === T.GuildStageVoice).length,
-          emojis: data.emojis.length, webhooks: data.webhooks.length, members: Object.keys(data.memberRoles).length,
+          emojis: data.emojis.length, webhooks: data.webhooks.length,
+          messages: Object.values(data.messages).reduce((n, a) => n + a.length, 0), members: Object.keys(data.memberRoles).length,
         },
       };
       await _srvPut(`srvbd:${id}`, { id, data });
@@ -22838,7 +22918,7 @@ client.on("messageCreate", async (message) => {
       const c = meta.counts;
       const payload = { embeds: [{
         color, title: "✅ Backup created",
-        description: `ID: \`${id}\`\n**${guild.name}**\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.members} members with roles`,
+        description: `ID: \`${id}\`\n**${guild.name}**\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.messages ?? 0} messages • ${c.members} members with roles`,
         footer: { text: `Load it with ,server load ${id}` },
       }] };
       return wait ? wait.edit(payload).catch(() => message.reply(payload)) : message.reply(payload);
@@ -22851,7 +22931,7 @@ client.on("messageCreate", async (message) => {
       if (!showAll) metas = metas.filter(m => m.creatorId === message.author.id);
       if (!metas.length) return err(message, "No backups yet — run `,server create` first.");
       const lines = metas.slice(0, 25).map(m =>
-        `\`${m.id}\` **${m.name}**${showAll ? ` — <@${m.creatorId}>` : ""}\n-# <t:${Math.floor(m.createdAt / 1000)}:R> • ${m.counts.roles} roles • ${m.counts.categories + m.counts.text + m.counts.voice} channels • ${m.counts.emojis} emojis • ${m.counts.webhooks ?? 0} webhooks`);
+        `\`${m.id}\` **${m.name}**${showAll ? ` — <@${m.creatorId}>` : ""}\n-# <t:${Math.floor(m.createdAt / 1000)}:R> • ${m.counts.roles} roles • ${m.counts.categories + m.counts.text + m.counts.voice} channels • ${m.counts.emojis} emojis • ${m.counts.webhooks ?? 0} webhooks • ${m.counts.messages ?? 0} messages`);
       return message.reply({ embeds: [{
         color, title: `Server backups (${metas.length})`, description: lines.join("\n\n"),
         footer: { text: "Use ,server load <id> to restore one" },
@@ -22869,7 +22949,7 @@ client.on("messageCreate", async (message) => {
         const c = meta.counts;
         return message.reply({ embeds: [{
           color, title: `Backup \`${id}\``,
-          description: `**${meta.name}**\nCreated <t:${Math.floor(meta.createdAt / 1000)}:f> by <@${meta.creatorId}>\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.members} members with roles`,
+          description: `**${meta.name}**\nCreated <t:${Math.floor(meta.createdAt / 1000)}:f> by <@${meta.creatorId}>\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.webhooks ?? 0} webhooks • ${c.messages ?? 0} messages • ${c.members} members with roles`,
         }] }).catch(() => {});
       }
 
@@ -22935,7 +23015,7 @@ client.on("interactionCreate", async (interaction) => {
     const notify = (text) => user.send({ embeds: [{ color: PINK, description: text }] }).catch(() => {});
     try {
       const stats = await _srvLoad(guild, backup, notify);
-      const summary = `✅ **Server loaded** from backup \`${p.backupId}\`\n${stats.roles} roles • ${stats.channels} channels • ${stats.emojis} emojis • ${stats.webhooks} webhooks • ${stats.members} members re-roled` +
+      const summary = `✅ **Server loaded** from backup \`${p.backupId}\`\n${stats.roles} roles • ${stats.channels} channels • ${stats.emojis} emojis • ${stats.webhooks} webhooks • ${stats.messages} messages • ${stats.members} members re-roled` +
         (stats.errors ? `\n⚠️ ${stats.errors} item(s) failed (e.g. community-only features or roles above mine) — see the bot logs.` : "");
       await notify(summary);
       const first = guild.channels.cache.filter(c => c.type === _SRV_CT.GuildText).sort((a, b) => a.rawPosition - b.rawPosition).first();
