@@ -22528,6 +22528,458 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 
+// ══════════════════════════════════════════════════════════════════════════
+// XENON-STYLE SERVER BACKUPS  —  ,server create | load | list | info | delete
+// Saves roles, categories, channels (+ permission overwrites), server name /
+// icon / banner / splash / settings, emojis and member→role assignments into
+// Postgres (bot_kv). Keys:  srvbm:<id> = small metadata,  srvbd:<id> = full data.
+// Who can use it: the server owner (or a bot owner). Loading wipes the target
+// server first, then rebuilds everything from the backup.
+// ══════════════════════════════════════════════════════════════════════════
+const _SRV_CT = require("discord.js").ChannelType;
+const _srvPending = new Map(); // token -> { backupId, guildId, userId }
+const _srvBusy = new Set();    // guildIds currently being loaded
+const SRV_MAX_PER_USER = 15;
+
+function _srvNewId() { return require("crypto").randomBytes(4).toString("hex"); }
+
+async function _srvPut(key, value) {
+  await _db.query(
+    `INSERT INTO bot_kv(key,value,updated_at) VALUES($1,$2,NOW())
+     ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+    [key, JSON.stringify(value)]
+  );
+}
+async function _srvGet(key) {
+  const r = await _db.query("SELECT value FROM bot_kv WHERE key=$1", [key]);
+  return r.rows[0] ? JSON.parse(r.rows[0].value) : null;
+}
+async function _srvDel(key) { await _db.query("DELETE FROM bot_kv WHERE key=$1", [key]); }
+async function _srvListMeta() {
+  const r = await _db.query("SELECT value FROM bot_kv WHERE key LIKE 'srvbm:%' ORDER BY updated_at DESC");
+  return r.rows.map(x => JSON.parse(x.value));
+}
+async function _srvDownload(url) {
+  if (!url) return null;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer()).toString("base64");
+  } catch { return null; }
+}
+
+// ── Snapshot a guild into a plain JSON-safe object ───────────────────────────
+async function _srvSnapshot(guild) {
+  await guild.roles.fetch().catch(() => {});
+  await guild.channels.fetch().catch(() => {});
+  let members = guild.members.cache;
+  try { members = await guild.members.fetch({ time: 60000 }); } catch {}
+
+  const roles = [...guild.roles.cache.values()].filter(r => r.id !== guild.id).map(r => ({
+    id: r.id, name: r.name, color: r.color, hoist: r.hoist, mentionable: r.mentionable,
+    permissions: r.permissions.bitfield.toString(), position: r.position, managed: r.managed,
+  }));
+
+  const channels = [...guild.channels.cache.values()].filter(c => !c.isThread?.()).map(c => ({
+    id: c.id, name: c.name, type: c.type, parentId: c.parentId || null, position: c.rawPosition ?? 0,
+    topic: c.topic ?? null, nsfw: !!c.nsfw, rateLimitPerUser: c.rateLimitPerUser ?? 0,
+    bitrate: c.bitrate ?? null, userLimit: c.userLimit ?? 0, rtcRegion: c.rtcRegion ?? null,
+    overwrites: [...(c.permissionOverwrites?.cache.values() || [])].map(o => ({
+      id: o.id, type: o.type, allow: o.allow.bitfield.toString(), deny: o.deny.bitfield.toString(),
+    })),
+  }));
+
+  const memberRoles = {};
+  for (const m of members.values()) {
+    if (m.user.bot) continue;
+    const ids = m.roles.cache.filter(r => r.id !== guild.id && !r.managed).map(r => r.id);
+    if (ids.length) memberRoles[m.id] = ids;
+  }
+
+  const emojis = [];
+  const emojiList = [...guild.emojis.cache.values()].slice(0, 100);
+  for (let i = 0; i < emojiList.length; i += 10) {
+    const chunk = await Promise.all(emojiList.slice(i, i + 10).map(async e => ({ name: e.name, data: await _srvDownload(e.imageURL({ size: 128 })) })));
+    for (const e of chunk) if (e.data) emojis.push(e);
+  }
+
+  const animated = guild.icon?.startsWith("a_");
+  const images = {
+    icon:   await _srvDownload(guild.iconURL({ extension: animated ? "gif" : "png", size: 1024 })),
+    banner: await _srvDownload(guild.bannerURL({ extension: "png", size: 1024 })),
+    splash: await _srvDownload(guild.splashURL({ extension: "png", size: 1024 })),
+  };
+
+  return {
+    version: 1, guildId: guild.id, name: guild.name,
+    settings: {
+      verificationLevel: guild.verificationLevel, defaultMessageNotifications: guild.defaultMessageNotifications,
+      explicitContentFilter: guild.explicitContentFilter, afkTimeout: guild.afkTimeout, afkChannelId: guild.afkChannelId,
+      systemChannelId: guild.systemChannelId, preferredLocale: guild.preferredLocale,
+    },
+    everyone: guild.roles.everyone.permissions.bitfield.toString(),
+    roles, channels, emojis, memberRoles, images,
+  };
+}
+
+// ── Rebuild a guild from a backup ────────────────────────────────────────────
+async function _srvLoad(guild, backup, notify) {
+  const d = backup.data;
+  const T = _SRV_CT;
+  const reason = `Server load ${backup.id}`;
+  const stats = { chDeleted: 0, rolesDeleted: 0, roles: 0, channels: 0, emojis: 0, members: 0, errors: 0 };
+  const fail = (what, e) => { stats.errors++; log(`[server load] ${what}: ${e?.message || e}`, "error"); };
+
+  // 1) wipe
+  await notify("🧹 Deleting current channels, roles and emojis...");
+  await guild.channels.fetch().catch(() => {});
+  await guild.roles.fetch().catch(() => {});
+  try { await guild.members.fetch({ time: 60000 }); } catch {}
+  for (const ch of [...guild.channels.cache.values()]) {
+    try { await ch.delete(reason); stats.chDeleted++; } catch (e) { fail(`delete channel ${ch.name}`, e); }
+  }
+  for (const r of [...guild.roles.cache.values()]) {
+    if (r.id === guild.id || r.managed || !r.editable) continue;
+    try { await r.delete(reason); stats.rolesDeleted++; } catch (e) { fail(`delete role ${r.name}`, e); }
+  }
+  try {
+    const oldEmojis = await guild.emojis.fetch();
+    for (const e of oldEmojis.values()) await e.delete(reason).catch(() => {});
+  } catch {}
+
+  // 2) roles (highest first so the final order matches the original)
+  await notify("🎭 Creating roles...");
+  const roleMap = { [d.guildId]: guild.id };
+  for (const r of d.roles.filter(r => r.managed)) {
+    const ex = guild.roles.cache.find(x => x.managed && x.name === r.name);
+    if (ex) roleMap[r.id] = ex.id;
+  }
+  for (const r of d.roles.filter(r => !r.managed).sort((a, b) => b.position - a.position)) {
+    try {
+      const nr = await guild.roles.create({
+        name: r.name, color: r.color, hoist: r.hoist, mentionable: r.mentionable,
+        permissions: BigInt(r.permissions), reason,
+      });
+      roleMap[r.id] = nr.id; stats.roles++;
+    } catch (e) { fail(`create role ${r.name}`, e); }
+  }
+  try { await guild.roles.everyone.setPermissions(BigInt(d.everyone), reason); } catch (e) { fail("@everyone perms", e); }
+
+  // 3) channels
+  await notify("📁 Creating categories and channels...");
+  const mapOw = (list) => {
+    const out = [];
+    for (const o of list || []) {
+      if (o.type === 0) {
+        const nid = roleMap[o.id];
+        if (nid) out.push({ id: nid, type: 0, allow: BigInt(o.allow), deny: BigInt(o.deny) });
+      } else if (guild.members.cache.has(o.id)) {
+        out.push({ id: o.id, type: 1, allow: BigInt(o.allow), deny: BigInt(o.deny) });
+      }
+    }
+    return out;
+  };
+  const mkChannel = async (c, parentId) => {
+    const opts = { name: c.name, type: c.type, permissionOverwrites: mapOw(c.overwrites), reason };
+    if (parentId) opts.parent = parentId;
+    if ([T.GuildText, T.GuildAnnouncement, T.GuildForum, T.GuildMedia].filter(x => x !== undefined).includes(c.type)) {
+      if (c.topic) opts.topic = c.topic;
+      opts.nsfw = !!c.nsfw;
+      if (c.rateLimitPerUser) opts.rateLimitPerUser = c.rateLimitPerUser;
+    } else if (c.type === T.GuildVoice || c.type === T.GuildStageVoice) {
+      opts.bitrate = Math.max(8000, Math.min(c.bitrate || 64000, guild.maximumBitrate || 96000));
+      if (c.type === T.GuildVoice) opts.userLimit = c.userLimit || 0;
+      if (c.rtcRegion) opts.rtcRegion = c.rtcRegion;
+    }
+    try { return await guild.channels.create(opts); }
+    catch (e) {
+      // community-only types (announcement / stage / forum / media) fall back to plain text/voice
+      const fb = c.type === T.GuildStageVoice ? T.GuildVoice
+        : (c.type !== T.GuildVoice && c.type !== T.GuildCategory && c.type !== T.GuildText) ? T.GuildText : null;
+      if (fb === null) throw e;
+      return await guild.channels.create({ ...opts, type: fb });
+    }
+  };
+
+  const chMap = {};
+  const cats = d.channels.filter(c => c.type === T.GuildCategory).sort((a, b) => a.position - b.position);
+  const catPos = Object.fromEntries(cats.map(c => [c.id, c.position]));
+  const rest = d.channels.filter(c => c.type !== T.GuildCategory).sort((a, b) =>
+    ((a.parentId ? (catPos[a.parentId] ?? 0) : -1) - (b.parentId ? (catPos[b.parentId] ?? 0) : -1)) || (a.position - b.position));
+  for (const c of cats) {
+    try { chMap[c.id] = (await mkChannel(c)).id; stats.channels++; } catch (e) { fail(`create category ${c.name}`, e); }
+  }
+  for (const c of rest) {
+    try { chMap[c.id] = (await mkChannel(c, c.parentId ? chMap[c.parentId] : null)).id; stats.channels++; } catch (e) { fail(`create channel ${c.name}`, e); }
+  }
+  try {
+    await guild.channels.setPositions(d.channels.filter(c => chMap[c.id]).map(c => ({
+      channel: chMap[c.id], position: c.position, parent: c.parentId ? (chMap[c.parentId] || null) : null,
+    })));
+  } catch (e) { fail("channel positions", e); }
+
+  // 4) server settings + images
+  await notify("⚙️ Restoring server settings, icon and emojis...");
+  try {
+    await guild.edit({
+      name: d.name,
+      verificationLevel: d.settings.verificationLevel,
+      defaultMessageNotifications: d.settings.defaultMessageNotifications,
+      explicitContentFilter: d.settings.explicitContentFilter,
+      afkTimeout: d.settings.afkTimeout,
+      preferredLocale: d.settings.preferredLocale,
+      afkChannel: d.settings.afkChannelId ? (chMap[d.settings.afkChannelId] ?? null) : null,
+      systemChannel: d.settings.systemChannelId ? (chMap[d.settings.systemChannelId] ?? null) : null,
+      reason,
+    });
+  } catch (e) { fail("guild settings", e); }
+  if (d.images?.icon) { try { await guild.edit({ icon: Buffer.from(d.images.icon, "base64"), reason }); } catch (e) { fail("icon", e); } }
+  // banner / splash need a boost level — failures there are expected on low-tier servers, so they aren't counted as errors
+  for (const k of ["banner", "splash"]) {
+    if (d.images?.[k]) await guild.edit({ [k]: Buffer.from(d.images[k], "base64"), reason }).catch(() => {});
+  }
+
+  // 5) emojis
+  for (const e of d.emojis || []) {
+    try { await guild.emojis.create({ attachment: Buffer.from(e.data, "base64"), name: e.name, reason }); stats.emojis++; }
+    catch (er) { if (/maximum number of (static |animated )?emojis/i.test(er.message || "")) break; }
+  }
+
+  // 6) give members their roles back (only members who are in this server right now)
+  await notify("👥 Re-assigning member roles...");
+  for (const [uid, oldIds] of Object.entries(d.memberRoles || {})) {
+    const m = guild.members.cache.get(uid);
+    if (!m) continue;
+    const ids = oldIds.map(i => roleMap[i]).filter(Boolean);
+    if (!ids.length) continue;
+    try { await m.roles.add(ids, reason); stats.members++; } catch (e) { stats.errors++; }
+  }
+  return stats;
+}
+
+// ── Command: ,server ─────────────────────────────────────────────────────────
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(",")) return;
+    const args = message.content.slice(1).trim().split(/ +/);
+    if (args[0].toLowerCase() !== "server") return;
+
+    const sub = (args[1] || "").toLowerCase();
+    const guild = message.guild;
+    const color = guildColor(guild.id);
+    const botOwner = isOwner(message.author.id);
+    const canManage = guild.ownerId === message.author.id || botOwner;
+
+    if (!_db) return err(message, "No database connection is configured (`DATABASE_URL` isn't set).");
+
+    // ,server  -> usage
+    if (!sub || sub === "help") {
+      return message.reply({ embeds: [{
+        color, title: "Server backups",
+        description:
+          "`,server create` — save this server (roles, channels, permissions, icon, emojis...)\n" +
+          "`,server list` — your saved backups\n" +
+          "`,server load <id>` — rebuild **this** server from a backup (wipes it first)\n" +
+          "`,server info <id>` — details of a backup\n" +
+          "`,server delete <id>` — delete a backup",
+        footer: { text: "Server owner only • the bot needs Administrator to load" },
+      }] }).catch(() => {});
+    }
+
+    // ,server create
+    if (sub === "create" || sub === "save" || sub === "backup") {
+      if (!canManage) return err(message, "Only the **server owner** can create backups.");
+      const metas = await _srvListMeta();
+      if (!botOwner && metas.filter(m => m.creatorId === message.author.id).length >= SRV_MAX_PER_USER)
+        return err(message, `You already have **${SRV_MAX_PER_USER}** backups — delete one with \`,server delete <id>\`.`);
+
+      const wait = await message.reply({ embeds: [{ color, description: "⏳ Saving the server — roles, channels, permissions, icon, emojis..." }] }).catch(() => null);
+      const data = await _srvSnapshot(guild);
+      const id = _srvNewId();
+      const T = _SRV_CT;
+      const meta = {
+        id, name: guild.name, sourceGuildId: guild.id, creatorId: message.author.id, createdAt: Date.now(),
+        counts: {
+          roles: data.roles.filter(r => !r.managed).length,
+          categories: data.channels.filter(c => c.type === T.GuildCategory).length,
+          text: data.channels.filter(c => c.type !== T.GuildCategory && c.type !== T.GuildVoice && c.type !== T.GuildStageVoice).length,
+          voice: data.channels.filter(c => c.type === T.GuildVoice || c.type === T.GuildStageVoice).length,
+          emojis: data.emojis.length, members: Object.keys(data.memberRoles).length,
+        },
+      };
+      await _srvPut(`srvbd:${id}`, { id, data });
+      await _srvPut(`srvbm:${id}`, meta);
+      const c = meta.counts;
+      const payload = { embeds: [{
+        color, title: "✅ Backup created",
+        description: `ID: \`${id}\`\n**${guild.name}**\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.members} members with roles`,
+        footer: { text: `Load it with ,server load ${id}` },
+      }] };
+      return wait ? wait.edit(payload).catch(() => message.reply(payload)) : message.reply(payload);
+    }
+
+    // ,server list [all]
+    if (sub === "list" || sub === "ls") {
+      let metas = await _srvListMeta();
+      const showAll = botOwner && (args[2] || "").toLowerCase() === "all";
+      if (!showAll) metas = metas.filter(m => m.creatorId === message.author.id);
+      if (!metas.length) return err(message, "No backups yet — run `,server create` first.");
+      const lines = metas.slice(0, 25).map(m =>
+        `\`${m.id}\` **${m.name}**${showAll ? ` — <@${m.creatorId}>` : ""}\n-# <t:${Math.floor(m.createdAt / 1000)}:R> • ${m.counts.roles} roles • ${m.counts.categories + m.counts.text + m.counts.voice} channels • ${m.counts.emojis} emojis`);
+      return message.reply({ embeds: [{
+        color, title: `Server backups (${metas.length})`, description: lines.join("\n\n"),
+        footer: { text: "Use ,server load <id> to restore one" },
+      }] }).catch(() => {});
+    }
+
+    // ,server info|delete|load <id>
+    if (["info", "delete", "del", "remove", "load", "restore"].includes(sub)) {
+      const id = (args[2] || "").toLowerCase();
+      if (!/^[a-f0-9]{8}$/.test(id)) return err(message, `Give me a backup ID, e.g. \`,server ${sub} a1b2c3d4\` — see \`,server list\`.`);
+      const meta = await _srvGet(`srvbm:${id}`);
+      if (!meta || (meta.creatorId !== message.author.id && !botOwner)) return err(message, "No backup with that ID (or it isn't yours).");
+
+      if (sub === "info") {
+        const c = meta.counts;
+        return message.reply({ embeds: [{
+          color, title: `Backup \`${id}\``,
+          description: `**${meta.name}**\nCreated <t:${Math.floor(meta.createdAt / 1000)}:f> by <@${meta.creatorId}>\n\n${c.roles} roles • ${c.categories} categories • ${c.text} text • ${c.voice} voice • ${c.emojis} emojis • ${c.members} members with roles`,
+        }] }).catch(() => {});
+      }
+
+      if (sub === "delete" || sub === "del" || sub === "remove") {
+        await _srvDel(`srvbm:${id}`); await _srvDel(`srvbd:${id}`);
+        return ok(message, `Backup \`${id}\` (**${meta.name}**) deleted.`);
+      }
+
+      // load
+      if (!canManage) return err(message, "Only the **server owner** can load a backup.");
+      if (!guild.members.me.permissions.has(PermissionFlagsBits.Administrator)) return err(message, "I need the **Administrator** permission to rebuild a server.");
+      if (_srvBusy.has(guild.id)) return err(message, "A load is already running in this server.");
+      const token = _srvNewId() + _srvNewId();
+      _srvPending.set(token, { backupId: id, guildId: guild.id, userId: message.author.id });
+      setTimeout(() => _srvPending.delete(token), 5 * 60 * 1000);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`srv_load_yes:${token}`).setLabel("Wipe & load").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`srv_load_no:${token}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary),
+      );
+      return message.reply({ embeds: [{
+        color: 0xFF4444, title: "⚠️ Load backup",
+        description: `This will **delete every channel and role** in **${guild.name}** and rebuild it from backup \`${id}\` (**${meta.name}**).\n\nProgress is sent to your DMs and to the new first text channel.`,
+        footer: { text: "Expires in 5 minutes" },
+      }], components: [row] }).catch(() => {});
+    }
+
+    return err(message, "Unknown subcommand — run `,server` to see the list.");
+  } catch (e) {
+    log(`[server] ${e.message}\n${e.stack}`, "error");
+    message.reply({ content: `Server backup error: \`${e.message}\`` }).catch(() => {});
+  }
+});
+
+// ── Buttons for ,server load ─────────────────────────────────────────────────
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (!interaction.isButton()) return;
+    const cid = interaction.customId;
+    if (!cid.startsWith("srv_load_yes:") && !cid.startsWith("srv_load_no:")) return;
+    const token = cid.split(":")[1];
+    const p = _srvPending.get(token);
+    if (!p) return interaction.update({ embeds: [{ color: 0xFF4444, description: "This confirmation expired — run `,server load` again." }], components: [] });
+    if (interaction.user.id !== p.userId) return interaction.reply({ content: "That's not your command.", flags: 64 });
+
+    if (cid.startsWith("srv_load_no:")) {
+      _srvPending.delete(token);
+      return interaction.update({ embeds: [{ color: PINK, description: "Load cancelled." }], components: [] });
+    }
+
+    _srvPending.delete(token);
+    const guild = client.guilds.cache.get(p.guildId);
+    if (!guild) return interaction.update({ content: "Server not found.", embeds: [], components: [] });
+    if (guild.ownerId !== interaction.user.id && !isOwner(interaction.user.id))
+      return interaction.update({ embeds: [{ color: 0xFF4444, description: "Only the server owner can do this." }], components: [] });
+    if (_srvBusy.has(guild.id)) return interaction.update({ embeds: [{ color: 0xFF4444, description: "A load is already running." }], components: [] });
+
+    const backup = await _srvGet(`srvbd:${p.backupId}`);
+    if (!backup) return interaction.update({ embeds: [{ color: 0xFF4444, description: "That backup no longer exists." }], components: [] });
+    await interaction.update({ embeds: [{ color: PINK, description: "⏳ Loading started — this channel is about to be deleted. Follow progress in your DMs." }], components: [] });
+
+    _srvBusy.add(guild.id);
+    const user = interaction.user;
+    const notify = (text) => user.send({ embeds: [{ color: PINK, description: text }] }).catch(() => {});
+    try {
+      const stats = await _srvLoad(guild, backup, notify);
+      const summary = `✅ **Server loaded** from backup \`${p.backupId}\`\n${stats.roles} roles • ${stats.channels} channels • ${stats.emojis} emojis • ${stats.members} members re-roled` +
+        (stats.errors ? `\n⚠️ ${stats.errors} item(s) failed (e.g. community-only features or roles above mine) — see the bot logs.` : "");
+      await notify(summary);
+      const first = guild.channels.cache.filter(c => c.type === _SRV_CT.GuildText).sort((a, b) => a.rawPosition - b.rawPosition).first();
+      if (first) await first.send({ embeds: [{ color: PINK, description: summary }] }).catch(() => {});
+    } catch (e) {
+      log(`[server load] FATAL ${e.message}\n${e.stack}`, "error");
+      await notify(`❌ Load failed: \`${e.message}\``);
+    } finally {
+      _srvBusy.delete(guild.id);
+    }
+  } catch (e) {
+    log(`[server load button] ${e.message}`, "error");
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// VOICE AUTO-REJOIN — remembers which voice channel the bot is in (per guild,
+// in Postgres) and goes back there after a restart. Works for ANY channel the
+// bot was in, not only ,247. Manual disconnects clear the saved channel.
+// ══════════════════════════════════════════════════════════════════════════
+const BOT_VC_KEY = "bot_vc_last";
+const _botVc = new Map();   // guildId -> channelId
+let _botVcLoaded = false;   // saved map merged in — only then are we allowed to write
+let _botVcArmed = false;    // after boot settles — only then do "left the VC" events delete the saved channel
+function _saveBotVc() { if (_botVcLoaded) scheduleSave(BOT_VC_KEY, () => _botVc, 1000); }
+
+client.on("voiceStateUpdate", (oldState, newState) => {
+  try {
+    if (!client.user || oldState.id !== client.user.id) return;
+    const gid = newState.guild.id;
+    if (newState.channelId) {
+      if (_botVc.get(gid) !== newState.channelId) { _botVc.set(gid, newState.channelId); _saveBotVc(); }
+    } else if (_botVcArmed && _botVc.has(gid)) {
+      _botVc.delete(gid); _saveBotVc();
+    }
+  } catch {}
+});
+
+client.once("clientReady", async () => {
+  try {
+    for (let i = 0; i < 60 && !_db; i++) await new Promise(r => setTimeout(r, 1000)); // wait for initDB() in the main ready handler
+    if (_db) {
+      const saved = await dbGet(BOT_VC_KEY);
+      if (saved instanceof Map) saved.forEach((cid, gid) => { if (!_botVc.has(gid)) _botVc.set(gid, cid); });
+    }
+  } catch (e) { log(`[vc-rejoin] load failed: ${e.message}`, "error"); }
+  _botVcLoaded = true;
+
+  setTimeout(() => {
+    let n = 0, i = 0;
+    for (const [gid, cid] of [..._botVc.entries()]) {
+      const guild = client.guilds.cache.get(gid);
+      const channel = guild?.channels.cache.get(cid);
+      if (!guild || !channel || !channel.isVoiceBased?.()) { _botVc.delete(gid); _saveBotVc(); continue; }
+      if (MUSIC_247.has(gid)) continue;                       // the ,247 handler already rejoins this one
+      if (lavalink?.getPlayer(gid)) continue;                 // Lavalink owns this guild's voice session
+      const me = guild.members.me;
+      if (!me || me.voice?.channelId === cid) continue;
+      if (!channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect])) continue;
+      setTimeout(() => _rawVoiceJoin(guild, cid), 600 * i++);
+      n++;
+    }
+    if (n) log(`[vc-rejoin] rejoined ${n} saved voice channel(s)`, "info");
+  }, 6000);
+
+  setTimeout(() => { _botVcArmed = true; }, 25000);
+});
+
+
 // ── LOGIN ────────────────────────────────────────────────────────────────────
 client.login(process.env.TOKEN).catch(e => {
   console.error('[Bot] Login failed:', e.message);
