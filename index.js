@@ -899,7 +899,9 @@ const client = new Client({
     GatewayIntentBits.GuildVoiceStates, // required for music playback (voice channel join/state)
     GatewayIntentBits.GuildInvites,     // required for invite tracker (inviteCreate/inviteDelete)
   ],
-  partials: ["CHANNEL"]
+  partials: ["CHANNEL"],
+  // Makes the bot show as online from a mobile device (green phone icon)
+  ws: { properties: { browser: "Discord iOS" } }
 });
 // Raise listener limit to suppress MaxListenersExceededWarning
 // (bot intentionally uses many separate handlers for modularity)
@@ -1558,11 +1560,7 @@ client.once("clientReady", async () => {
 
   client.user.setPresence({
     status: "online",
-    activities: [{
-      name: "/sensual",
-      type: ActivityType.Streaming,
-      url: "https://www.twitch.tv/sensational"
-    }]
+    activities: []
   });
 });
 
