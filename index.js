@@ -887,6 +887,19 @@ async function initUserRelay() {
 }
 
 process.setMaxListeners(20);
+// ── Mobile presence (phone icon next to the online dot) ─────────────────────────
+// Discord shows the phone icon when the gateway IDENTIFY says browser = "Discord iOS"
+// (or "Discord Android"). Depending on the discord.js version the property is read from
+// different places, so it is set in all of them -- the unused ones are simply ignored.
+const MOBILE_IDENTIFY = { browser: "Discord iOS", device: "discord.js", os: process.platform };
+try {
+  const { DefaultWebSocketManagerOptions } = require("@discordjs/ws");
+  DefaultWebSocketManagerOptions.identifyProperties = {
+    ...DefaultWebSocketManagerOptions.identifyProperties,
+    ...MOBILE_IDENTIFY
+  };
+} catch { /* @discordjs/ws not resolvable -- the Client options below still apply */ }
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -900,8 +913,11 @@ const client = new Client({
     GatewayIntentBits.GuildInvites,     // required for invite tracker (inviteCreate/inviteDelete)
   ],
   partials: ["CHANNEL"],
-  // Makes the bot show as online from a mobile device (green phone icon)
-  ws: { properties: { browser: "Discord iOS" } }
+  // Makes the bot show as online from a mobile device (phone icon)
+  ws: {
+    properties: MOBILE_IDENTIFY,          // older discord.js v14 builds
+    identifyProperties: MOBILE_IDENTIFY   // newer builds (@discordjs/ws)
+  }
 });
 // Raise listener limit to suppress MaxListenersExceededWarning
 // (bot intentionally uses many separate handlers for modularity)
