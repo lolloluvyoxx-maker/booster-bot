@@ -6805,7 +6805,11 @@ client.on("messageCreate", async (message) => {
       return err(message, "missing required argument: **role2**");
     }
 
-    const statusMsg = await message.reply({ embeds: [{ color: guildColor(guild.id), description: `${message.author} copying **${src.name}**${dst ? ` → **${dst.name}**` : ` → new role **${newName}**`}...` }] }).catch(() => null);
+    // One reply only: no progress message, just a typing indicator while it works
+    if (globalThis.__copyHandled?.has(message.id)) return;
+    (globalThis.__copyHandled ??= new Set()).add(message.id);
+    setTimeout(() => globalThis.__copyHandled.delete(message.id), 60000);
+    message.channel.sendTyping?.().catch(() => {});
     const reason = `,copy by ${message.author.tag}`;
 
     try {
@@ -6824,8 +6828,7 @@ client.on("messageCreate", async (message) => {
         await dst.setPosition(src.position, { reason }).catch(() => {});
       }
     } catch (e) {
-      const text = `${message.author} failed to copy the role: ${e.message}`;
-      return statusMsg ? statusMsg.edit({ embeds: [{ color: guildColor(guild.id), description: text }] }).catch(() => {}) : err(message, text);
+      return err(message, `failed to copy the role: ${e.message}`);
     }
 
     // Icon / unicode emoji (needs server boost level 2 — failure here is non-fatal)
@@ -6861,9 +6864,7 @@ client.on("messageCreate", async (message) => {
       } catch { failed++; }
     }
 
-    const done = `${message.author} **${dst.name}** is now a copy of **${src.name}** — permissions, color, hoist, mentionable, and **${changed}** channel override${changed === 1 ? "" : "s"}${failed ? ` (${failed} channel${failed === 1 ? "" : "s"} failed)` : ""}${iconNote}`;
-    const doneEmbed = { embeds: [{ color: guildColor(guild.id), description: done }] };
-    return statusMsg ? statusMsg.edit(doneEmbed).catch(() => message.channel.send(doneEmbed).catch(() => {})) : message.channel.send(doneEmbed).catch(() => {});
+    return ok(message, `**${dst.name}** is now a copy of **${src.name}** — permissions, color, hoist, mentionable, and **${changed}** channel override${changed === 1 ? "" : "s"}${failed ? ` (${failed} channel${failed === 1 ? "" : "s"} failed)` : ""}${iconNote}`);
   }
 
   // ,roleall -- list all roles
