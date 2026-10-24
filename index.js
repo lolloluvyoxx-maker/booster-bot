@@ -2376,6 +2376,7 @@ const CMD_SCHEMA = {
   rolecreate: { usage: ",rolecreate <name> [color]", args: ["name"] },
   roledelete: { usage: ",roledelete <@role>", args: [] },
   rolecolor: { usage: ",rolecolor <@role> <#hex>", args: [] },
+  copy: { usage: ",copy <role1> <role2>", args: ["role1"] },
   rolehoist: { usage: ",rolehoist <@role>", args: [] },
   rolemention: { usage: ",rolemention <@role>", args: [] },
   roleicon: { usage: ",roleicon <@role> <emoji>", args: [] },
@@ -3439,6 +3440,7 @@ client.on("messageCreate", async (message) => {
           [",rolecreate", ""],
           [",roledelete", ""],
           [",rolecolor", ""],
+          [",copy", "Copy a role onto another (perms + channel overrides)"],
           [",rolehoist", ""],
           [",rolemention", ""],
           [",rolepos", ""],
@@ -6745,6 +6747,107 @@ client.on("messageCreate", async (message) => {
 
     await role.setColor(color).catch(() => null);
     return ok(message, `Changed **${role.name}** color to **${color}**`);
+  }
+
+  // ,copy <role1> <role2> -- role2 becomes an exact copy of role1
+  // (permissions, color, hoist, mentionable, icon + every channel permission override).
+  // If role2 isn't an existing role, a NEW role named <role2> is created as the copy.
+  if (command === "copy") {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageRoles)) return err(message, "Missing permissions.");
+    const guild = message.guild;
+    const isBypass = message.author.id === guild.ownerId || isOwner(message.author.id);
+
+    const resolveRoleArg = (str) => {
+      if (!str) return null;
+      const m = str.match(/^<@&(\d+)>$/) || str.match(/^(\d{15,25})$/);
+      if (m) return guild.roles.cache.get(m[1]) || null;
+      return guild.roles.cache.find(r => r.name.toLowerCase() === str.toLowerCase()) || null;
+    };
+
+    const src = resolveRoleArg(args[1]);
+    if (!src) return err(message, `couldn't find the first role\nusage: \`,copy <role1> <role2>\``);
+    if (src.id === guild.id) return err(message, "can't copy @everyone.");
+    if (!args[2]) return err(message, `missing required argument: **role2**\nusage: \`,copy <role1> <role2>\``);
+
+    let dst = resolveRoleArg(args[2]);
+    const newName = args.slice(2).join(" ").replace(/<@&\d+>/g, "").trim();
+
+    // Can't hand out a role higher than your own
+    if (!isBypass && src.position >= message.member.roles.highest.position) {
+      return err(message, `**${src.name}** is higher than or equal to your top role.`);
+    }
+
+    if (dst) {
+      if (dst.id === src.id) return err(message, "role1 and role2 are the same role.");
+      if (dst.id === guild.id) return err(message, "can't overwrite @everyone.");
+      if (dst.managed) return err(message, `**${dst.name}** is managed by an integration and can't be edited.`);
+      if (!isBypass && dst.position >= message.member.roles.highest.position) {
+        return err(message, `**${dst.name}** is higher than or equal to your top role.`);
+      }
+      if (!dst.editable) return err(message, `I can't edit **${dst.name}** — move my role above it.`);
+    } else if (!newName) {
+      return err(message, "missing required argument: **role2**");
+    }
+
+    const statusMsg = await message.reply({ embeds: [{ color: guildColor(guild.id), description: `${message.author} copying **${src.name}**${dst ? ` → **${dst.name}**` : ` → new role **${newName}**`}...` }] }).catch(() => null);
+    const reason = `,copy by ${message.author.tag}`;
+
+    try {
+      const base = {
+        permissions: src.permissions,
+        color: src.color,
+        hoist: src.hoist,
+        mentionable: src.mentionable,
+        reason
+      };
+      if (dst) {
+        dst = await dst.edit(base);
+      } else {
+        dst = await guild.roles.create({ name: newName.slice(0, 100), ...base });
+        // Put the new role right next to the original
+        await dst.setPosition(src.position, { reason }).catch(() => {});
+      }
+    } catch (e) {
+      const text = `${message.author} failed to copy the role: ${e.message}`;
+      return statusMsg ? statusMsg.edit({ embeds: [{ color: guildColor(guild.id), description: text }] }).catch(() => {}) : err(message, text);
+    }
+
+    // Icon / unicode emoji (needs server boost level 2 — failure here is non-fatal)
+    let iconNote = "";
+    try {
+      if (src.icon) await dst.setIcon(src.iconURL({ size: 512, extension: "png" }), reason);
+      else if (src.unicodeEmoji) await dst.setUnicodeEmoji(src.unicodeEmoji, reason);
+    } catch { iconNote = " (icon skipped — needs boost level 2)"; }
+
+    // Channel permission overrides: make role2's overwrites identical to role1's in every channel
+    let changed = 0, failed = 0;
+    for (const ch of guild.channels.cache.values()) {
+      const po = ch.permissionOverwrites;
+      if (!po) continue; // threads etc.
+      const srcOw = po.cache.get(src.id);
+      const dstOw = po.cache.get(dst.id);
+      try {
+        if (srcOw) {
+          const obj = {};
+          // clear anything role2 had that role1 doesn't
+          if (dstOw) {
+            for (const p of dstOw.allow.toArray()) obj[p] = null;
+            for (const p of dstOw.deny.toArray()) obj[p] = null;
+          }
+          for (const p of srcOw.allow.toArray()) obj[p] = true;
+          for (const p of srcOw.deny.toArray()) obj[p] = false;
+          await po.edit(dst.id, obj, { reason });
+          changed++;
+        } else if (dstOw) {
+          await dstOw.delete(reason);
+          changed++;
+        }
+      } catch { failed++; }
+    }
+
+    const done = `${message.author} **${dst.name}** is now a copy of **${src.name}** — permissions, color, hoist, mentionable, and **${changed}** channel override${changed === 1 ? "" : "s"}${failed ? ` (${failed} channel${failed === 1 ? "" : "s"} failed)` : ""}${iconNote}`;
+    const doneEmbed = { embeds: [{ color: guildColor(guild.id), description: done }] };
+    return statusMsg ? statusMsg.edit(doneEmbed).catch(() => message.channel.send(doneEmbed).catch(() => {})) : message.channel.send(doneEmbed).catch(() => {});
   }
 
   // ,roleall -- list all roles
