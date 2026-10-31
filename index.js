@@ -25,6 +25,15 @@ const Jimp = require("jimp");
 // the deployed file is NOT this one — check your GitHub push / build.
 console.log("BUILD MARKER: owner-fix-v5 (,clone + ,servers rewritten as standalone owner-gated listeners, full try/catch, 2 owner IDs)");
 
+// ── KEEP-ALIVE WEB SERVER (Render needs an open port + inbound pings) ─────────
+(() => {
+  const keepAliveHttp = require("http");
+  const KEEPALIVE_PORT = process.env.PORT || 3000;
+  keepAliveHttp
+    .createServer((req, res) => { res.writeHead(200); res.end("OK"); })
+    .listen(KEEPALIVE_PORT, "0.0.0.0", () => console.log("[KeepAlive] Web server on port " + KEEPALIVE_PORT));
+})();
+
 // ===================================================
 // ===== PERSISTENCE SYSTEM (Discord-backed) =========
 // ===================================================
