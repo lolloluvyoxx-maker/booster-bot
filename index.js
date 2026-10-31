@@ -23220,6 +23220,12 @@ client.on("warn", (m) => console.log("[Diag] warn:", m));
 client.on("shardError", (e) => console.log("[Diag] shardError:", e && e.message));
 client.on("shardDisconnect", (ev, id) => console.log("[Diag] shardDisconnect:", id, ev && ev.code));
 client.once("clientReady", () => console.log("[Diag] clientReady fired"));
+let _diagDbg = 0;
+client.on("debug", (m) => { if (_diagDbg++ < 40) console.log("[Diag] debug:", String(m).slice(0, 160)); });
+client.rest.on("rateLimited", (i) => console.log("[Diag] RATE LIMITED:", JSON.stringify(i)));
+fetch("https://discord.com/api/v10/gateway")
+  .then(async (r) => { const t = await r.text(); console.log("[Diag] Discord API test: HTTP " + r.status + " | " + t.slice(0, 120).replace(/\s+/g, " ")); })
+  .catch((e) => console.log("[Diag] Discord API test FAILED:", e && e.message));
 setTimeout(() => { if (!client.isReady()) console.log("[Diag] 60s after login() and still NOT ready (token/intents/IP block?)"); }, 60000);
 client.login(process.env.TOKEN).then(() => console.log("[Diag] login() resolved")).catch(e => {
   console.error('[Bot] Login failed:', e.message);
