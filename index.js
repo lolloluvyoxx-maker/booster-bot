@@ -23213,7 +23213,15 @@ client.once("clientReady", async () => {
 
 
 // ── LOGIN ────────────────────────────────────────────────────────────────────
-client.login(process.env.TOKEN).catch(e => {
+// ── LOGIN DIAGNOSTICS (temporary: remove once the bot is online on Render) ───
+console.log("[Diag] TOKEN set: " + (process.env.TOKEN ? "yes (length " + process.env.TOKEN.length + ")" : "NO - add TOKEN in Render > Environment"));
+console.log("[Diag] Node " + process.version + ", discord.js " + require("discord.js").version);
+client.on("warn", (m) => console.log("[Diag] warn:", m));
+client.on("shardError", (e) => console.log("[Diag] shardError:", e && e.message));
+client.on("shardDisconnect", (ev, id) => console.log("[Diag] shardDisconnect:", id, ev && ev.code));
+client.once("clientReady", () => console.log("[Diag] clientReady fired"));
+setTimeout(() => { if (!client.isReady()) console.log("[Diag] 60s after login() and still NOT ready (token/intents/IP block?)"); }, 60000);
+client.login(process.env.TOKEN).then(() => console.log("[Diag] login() resolved")).catch(e => {
   console.error('[Bot] Login failed:', e.message);
   process.exit(1);
 });
